@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <!-- Background -->
+    <rect width="1024" height="1024" rx="224" fill="#4CAF50"/>
+    
+    <!-- Dollar sign -->
+    <path d="M512 200C405.6 200 320 285.6 320 392C320 498.4 405.6 584 512 584C618.4 584 704 669.6 704 776C704 882.4 618.4 968 512 968M512 200C618.4 200 704 285.6 704 392C704 498.4 618.4 584 512 584C405.6 584 320 669.6 320 776C320 882.4 405.6 968 512 968M512 200V968" stroke="white" stroke-width="64" stroke-linecap="round"/>
+    
+    <!-- Horizontal lines -->
+    <path d="M416 392H608" stroke="white" stroke-width="64" stroke-linecap="round"/>
+    <path d="M416 776H608" stroke="white" stroke-width="64" stroke-linecap="round"/>
+</svg> 

@@ -6,6 +6,7 @@ struct TransactionView: View {
     @State private var showingAddTransaction = false
     @State private var selectedTransaction: CDTransaction?
     @State private var isRefreshing = false
+    @State private var selectedTransactionType: TransactionType?
     
     var body: some View {
         NavigationView {
@@ -17,6 +18,20 @@ struct TransactionView: View {
                                 .contentShape(Rectangle())
                                 .onTapGesture {
                                     selectedTransaction = transaction
+                                }
+                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                    Button(role: .destructive) {
+                                        viewModel.deleteTransaction(transaction)
+                                    } label: {
+                                        Label("Delete", systemImage: "trash")
+                                    }
+                                    
+                                    Button {
+                                        selectedTransaction = transaction
+                                    } label: {
+                                        Label("Edit", systemImage: "pencil")
+                                    }
+                                    .tint(.blue)
                                 }
                         }
                         .onDelete { indexSet in
@@ -36,7 +51,35 @@ struct TransactionView: View {
                     }
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button(action: { showingAddTransaction = true }) {
+                    Menu {
+                        Button(action: { 
+                            showingAddTransaction = true
+                            selectedTransactionType = .expense
+                        }) {
+                            Label("Add Expense", systemImage: "arrow.down.circle")
+                        }
+                        
+                        Button(action: { 
+                            showingAddTransaction = true
+                            selectedTransactionType = .income
+                        }) {
+                            Label("Add Income", systemImage: "arrow.up.circle")
+                        }
+                        
+                        Button(action: { 
+                            showingAddTransaction = true
+                            selectedTransactionType = .loanPayment
+                        }) {
+                            Label("Loan Payment", systemImage: "indianrupeesign.circle")
+                        }
+                        
+                        Button(action: { 
+                            showingAddTransaction = true
+                            selectedTransactionType = .creditCardPayment
+                        }) {
+                            Label("Credit Card Payment", systemImage: "creditcard.circle")
+                        }
+                    } label: {
                         Image(systemName: "plus")
                     }
                 }
@@ -45,7 +88,9 @@ struct TransactionView: View {
                 await refreshData()
             }
             .sheet(isPresented: $showingAddTransaction) {
-                AddTransactionView(viewModel: viewModel)
+                if let type = selectedTransactionType {
+                    AddTransactionView(viewModel: viewModel, transactionType: type)
+                }
             }
             .sheet(item: $selectedTransaction) { transaction in
                 EditTransactionView(viewModel: viewModel, transaction: transaction)

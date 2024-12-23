@@ -20,10 +20,69 @@ class ExpenseViewModel: ObservableObject {
             selector: #selector(managedObjectContextObjectsDidChange),
             name: NSManagedObjectContext.didChangeObjectsNotification,
             object: context)
+        
+        // Start timer for automatic interest calculation
+        startInterestCalculationTimer()
     }
     
     deinit {
         NotificationCenter.default.removeObserver(self)
+    }
+    
+    private func startInterestCalculationTimer() {
+        // Check every hour if we need to calculate interest
+        Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in
+            self?.checkAndCalculateInterest()
+        }
+    }
+    
+    private func checkAndCalculateInterest() {
+        let calendar = Calendar.current
+        let now = Date()
+        
+        // Only proceed if it's the 30th day of the month
+        guard calendar.component(.day, from: now) == 30 else { return }
+        
+        // Get all loans
+        let loans = accounts.filter { $0.accountType == AccountType.loan.rawValue }
+        
+        for loan in loans {
+            guard let metadata = loan.metadata,
+                  let rateString = metadata["interestRate"],
+                  let rate = Double(rateString),
+                  let lastInterestDateString = metadata["lastInterestDate"],
+                  let lastInterestDate = ISO8601DateFormatter().date(from: lastInterestDateString) else {
+                continue
+            }
+            
+            // Check if we already calculated interest this month
+            let lastInterestMonth = calendar.component(.month, from: lastInterestDate)
+            let currentMonth = calendar.component(.month, from: now)
+            
+            if lastInterestMonth != currentMonth {
+                // Calculate and add interest
+                let balance = loan.balance
+                let monthlyRate = rate / 12.0 / 100.0  // Convert annual rate to monthly decimal
+                let interest = balance * monthlyRate
+                
+                // Add interest transaction
+                addTransaction(
+                    amount: interest,
+                    category: .interest,
+                    isCredit: false,  // Debit because it increases the loan amount
+                    account: loan,
+                    notes: "Monthly Interest @ \(rate)% per annum",
+                    date: now
+                )
+                
+                // Update last interest date
+                var updatedMetadata = metadata
+                updatedMetadata["lastInterestDate"] = now.ISO8601Format()
+                loan.metadata = updatedMetadata
+                
+                saveContext()
+            }
+        }
     }
     
     @objc private func managedObjectContextObjectsDidChange(_ notification: Notification) {
@@ -58,13 +117,20 @@ class ExpenseViewModel: ObservableObject {
     }
     
     // MARK: - Account Operations
-    func addAccount(name: String, type: AccountType, balance: Double, creditLimit: Double? = nil) {
+    func addAccount(
+        name: String,
+        type: AccountType,
+        balance: Double,
+        creditLimit: Double? = nil,
+        metadata: [String: String]? = nil
+    ) {
         let account = CDAccount(context: viewContext)
         account.id = UUID()
         account.accountName = name
         account.accountType = type.rawValue
         account.balance = balance
         account.creditLimit = creditLimit ?? 0.0
+        account.metadata = metadata
         
         saveContext()
     }
@@ -102,10 +168,16 @@ class ExpenseViewModel: ObservableObject {
         transaction.notes = notes
         transaction.date = date
         
-        if isCredit {
-            account.balance += amount
+        // For credit cards:
+        // - When spending (isCredit = false), increase the balance
+        // - When paying bill (isCredit = true), decrease the balance
+        if account.accountType == AccountType.creditCard.rawValue {
+            account.balance += isCredit ? -amount : amount
         } else {
-            account.balance -= amount
+            // For all other accounts:
+            // - Credit transactions increase the balance
+            // - Debit transactions decrease the balance
+            account.balance += isCredit ? amount : -amount
         }
         
         saveContext()
@@ -191,7 +263,8 @@ class ExpenseViewModel: ObservableObject {
         return [:]
     }
     
-    private func saveContext() {
+    // MARK: - Core Data Operations
+    func saveContext() {
         if viewContext.hasChanges {
             do {
                 try viewContext.save()
@@ -237,5 +310,122 @@ class ExpenseViewModel: ObservableObject {
         fetchAccounts()
         fetchRecentTransactions()
         objectWillChange.send()
+    }
+    
+    // MARK: - Data Import/Export
+    struct ExportData: Codable {
+        struct AccountData: Codable {
+            let id: UUID
+            let name: String
+            let type: String
+            let balance: Double
+            let creditLimit: Double
+            let metadata: [String: String]?
+        }
+        
+        struct TransactionData: Codable {
+            let id: UUID
+            let amount: Double
+            let category: String
+            let isCredit: Bool
+            let notes: String?
+            let date: Date
+            let accountID: UUID
+        }
+        
+        let accounts: [AccountData]
+        let transactions: [TransactionData]
+        let customCategories: [String]
+    }
+    
+    func exportData() throws -> Data {
+        let accountsData = accounts.map { account in
+            ExportData.AccountData(
+                id: account.id ?? UUID(),
+                name: account.accountName ?? "",
+                type: account.accountType ?? "",
+                balance: account.balance,
+                creditLimit: account.creditLimit,
+                metadata: account.metadata
+            )
+        }
+        
+        let transactionsData = recentTransactions.map { transaction in
+            ExportData.TransactionData(
+                id: transaction.id ?? UUID(),
+                amount: transaction.amount,
+                category: transaction.category ?? "",
+                isCredit: transaction.isCredit,
+                notes: transaction.notes,
+                date: transaction.date ?? Date(),
+                accountID: transaction.account?.id ?? UUID()
+            )
+        }
+        
+        let exportData = ExportData(
+            accounts: accountsData,
+            transactions: transactionsData,
+            customCategories: customCategories
+        )
+        
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        return try encoder.encode(exportData)
+    }
+    
+    func importData(from data: Data) throws {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let importData = try decoder.decode(ExportData.self, from: data)
+        
+        viewContext.performAndWait {
+            // Clear existing data
+            let fetchRequest: NSFetchRequest<NSFetchRequestResult> = NSFetchRequest(entityName: "Account")
+            let deleteRequest = NSBatchDeleteRequest(fetchRequest: fetchRequest)
+            try? viewContext.execute(deleteRequest)
+            
+            let transactionsFetchRequest: NSFetchRequest<NSFetchRequestResult> = NSFetchRequest(entityName: "Transaction")
+            let deleteTransactionsRequest = NSBatchDeleteRequest(fetchRequest: transactionsFetchRequest)
+            try? viewContext.execute(deleteTransactionsRequest)
+            
+            // Create accounts dictionary for lookup
+            var accountsDict: [UUID: CDAccount] = [:]
+            
+            // Import accounts
+            for accountData in importData.accounts {
+                let account = CDAccount(context: viewContext)
+                account.id = accountData.id
+                account.accountName = accountData.name
+                account.accountType = accountData.type
+                account.balance = accountData.balance
+                account.creditLimit = accountData.creditLimit
+                account.metadata = accountData.metadata
+                accountsDict[accountData.id] = account
+            }
+            
+            // Import transactions
+            for transactionData in importData.transactions {
+                let transaction = CDTransaction(context: viewContext)
+                transaction.id = transactionData.id
+                transaction.amount = transactionData.amount
+                transaction.category = transactionData.category
+                transaction.isCredit = transactionData.isCredit
+                transaction.notes = transactionData.notes
+                transaction.date = transactionData.date
+                transaction.account = accountsDict[transactionData.accountID]
+            }
+            
+            // Import custom categories
+            customCategories = importData.customCategories
+            UserDefaults.standard.set(customCategories, forKey: "CustomCategories")
+            
+            // Save changes
+            try? viewContext.save()
+            
+            // Refresh data
+            fetchAccounts()
+            fetchRecentTransactions()
+            objectWillChange.send()
+        }
     }
 } 

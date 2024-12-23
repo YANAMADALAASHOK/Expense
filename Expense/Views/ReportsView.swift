@@ -4,9 +4,10 @@ import Charts
 struct ReportsView: View {
     @ObservedObject var viewModel: ExpenseViewModel
     @StateObject private var currencySettings = CurrencySettings.shared
-    @State private var selectedPeriod = TimePeriod.currentWeek
+    @State private var selectedPeriod: TimePeriod = .currentMonth
     @State private var customStartDate = Date()
     @State private var customEndDate = Date()
+    @State private var selectedCategory: String?
     
     enum TimePeriod: String, CaseIterable {
         case currentWeek = "This Week"
@@ -77,6 +78,12 @@ struct ReportsView: View {
         filteredTransactions.filter { !$0.isCredit }.reduce(0) { $0 + $1.amount }
     }
     
+    var categoryTransactions: [CDTransaction] {
+        guard let category = selectedCategory else { return [] }
+        return filteredTransactions.filter { $0.wrappedCategory == category }
+            .sorted { $0.wrappedDate > $1.wrappedDate }
+    }
+    
     var body: some View {
         NavigationView {
             List {
@@ -124,10 +131,34 @@ struct ReportsView: View {
                             Text(item.amount, format: .currency(code: currencySettings.selectedCurrency.rawValue))
                                 .foregroundColor(item.amount >= 0 ? .green : .red)
                         }
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            selectedCategory = item.category
+                        }
                     }
                 }
             }
             .navigationTitle("Reports")
+            .sheet(item: $selectedCategory) { category in
+                NavigationView {
+                    List {
+                        Section(header: Text("\(category) Transactions")) {
+                            ForEach(categoryTransactions) { transaction in
+                                TransactionRow(transaction: transaction)
+                            }
+                        }
+                    }
+                    .navigationTitle(category)
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") {
+                                selectedCategory = nil
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -139,6 +170,10 @@ extension Calendar {
         components.second = -1
         return self.date(byAdding: components, to: startOfDay(for: date))!
     }
+}
+
+extension String: Identifiable {
+    public var id: String { self }
 }
 
 #if DEBUG

@@ -5,8 +5,9 @@ struct AccountsView: View {
     @ObservedObject var viewModel: ExpenseViewModel
     @StateObject private var currencySettings = CurrencySettings.shared
     @State private var showingAddAccount = false
-    @State private var selectedAccount: CDAccount?
     @State private var showingAddMutualFund = false
+    @State private var showingAddPersonalLoan = false
+    @State private var selectedAccount: CDAccount?
     @State private var isRefreshing = false
     @State private var selectedAccountType: AccountType?
     
@@ -34,6 +35,10 @@ struct AccountsView: View {
         liabilityAccounts.filter { $0.accountType == AccountType.creditCard.rawValue }
     }
     
+    private var personalLoansGiven: [CDAccount] {
+        assetAccounts.filter { $0.accountType == AccountType.personalLoanGiven.rawValue }
+    }
+    
     var body: some View {
         NavigationView {
             List {
@@ -59,6 +64,30 @@ struct AccountsView: View {
                                 }
                         }
                     }
+                    
+                    DisclosureGroup("Personal Loans Given") {
+                        ForEach(personalLoansGiven) { account in
+                            AccountRow(account: account)
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    selectedAccount = account
+                                }
+                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                    Button(role: .destructive) {
+                                        viewModel.deleteAccount(account)
+                                    } label: {
+                                        Label("Delete", systemImage: "trash")
+                                    }
+                                    
+                                    Button {
+                                        selectedAccount = account
+                                    } label: {
+                                        Label("Edit", systemImage: "pencil")
+                                    }
+                                    .tint(.blue)
+                                }
+                        }
+                    }
                 }
                 
                 Section("Liabilities") {
@@ -79,6 +108,27 @@ struct AccountsView: View {
                                 .onTapGesture {
                                     selectedAccount = account
                                 }
+                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                    Button(role: .destructive) {
+                                        viewModel.deleteAccount(account)
+                                    } label: {
+                                        Label("Delete", systemImage: "trash")
+                                    }
+                                    
+                                    Button {
+                                        recordLoanInterest(for: account)
+                                    } label: {
+                                        Label("Add Interest", systemImage: "percent")
+                                    }
+                                    .tint(.orange)
+                                    
+                                    Button {
+                                        selectedAccount = account
+                                    } label: {
+                                        Label("Edit", systemImage: "pencil")
+                                    }
+                                    .tint(.blue)
+                                }
                         }
                     }
                 }
@@ -95,7 +145,8 @@ struct AccountsView: View {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     AddAccountMenu(
                         showingAddAccount: $showingAddAccount,
-                        showingAddMutualFund: $showingAddMutualFund
+                        showingAddMutualFund: $showingAddMutualFund,
+                        showingAddPersonalLoan: $showingAddPersonalLoan
                     )
                 }
             }
@@ -108,8 +159,15 @@ struct AccountsView: View {
             .sheet(isPresented: $showingAddMutualFund) {
                 AddMutualFundView(viewModel: viewModel)
             }
+            .sheet(isPresented: $showingAddPersonalLoan) {
+                AddPersonalLoanGivenView(viewModel: viewModel)
+            }
             .sheet(item: $selectedAccount) { account in
-                EditAccountView(viewModel: viewModel, account: account)
+                if account.accountType == AccountType.personalLoanGiven.rawValue {
+                    EditPersonalLoanGivenView(viewModel: viewModel, account: account)
+                } else {
+                    EditAccountView(viewModel: viewModel, account: account)
+                }
             }
         }
     }
@@ -120,6 +178,29 @@ struct AccountsView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
             isRefreshing = false
         }
+    }
+    
+    private func recordLoanInterest(for account: CDAccount) {
+        guard let metadata = account.metadata,
+              let rateString = metadata["interestRate"],
+              let rate = Double(rateString) else {
+            return
+        }
+        
+        // Calculate interest based on current balance
+        let balance = account.balance
+        let monthlyRate = rate / 12.0 / 100.0  // Convert annual rate to monthly decimal
+        let interest = balance * monthlyRate
+        
+        // Add interest transaction
+        viewModel.addTransaction(
+            amount: interest,
+            category: .interest,
+            isCredit: false,  // Debit because it increases the loan amount
+            account: account,
+            notes: "Monthly Interest @ \(rate)% per annum",
+            date: Date()
+        )
     }
 }
 
@@ -145,6 +226,18 @@ private struct BalanceSummarySection: View {
     var investmentReturns: Double {
         let returns = investmentBalance - totalInvestment
         return returns
+    }
+    
+    var personalLoansGivenBalance: Double {
+        accounts.filter { $0.accountType == AccountType.personalLoanGiven.rawValue }.reduce(0) { $0 + $1.balance }
+    }
+    
+    var personalLoansPrincipal: Double {
+        accounts.filter { $0.accountType == AccountType.personalLoanGiven.rawValue }.reduce(0) { $0 + $1.creditLimit }
+    }
+    
+    var personalLoansInterest: Double {
+        personalLoansGivenBalance - personalLoansPrincipal
     }
     
     var totalBalance: Double {
@@ -222,6 +315,38 @@ private struct BalanceSummarySection: View {
                             Spacer()
                             Text(investmentReturns, format: .currency(code: currencySettings.selectedCurrency.rawValue))
                                 .foregroundColor(investmentReturns >= 0 ? .green : .red)
+                        }
+                        .font(.caption)
+                    }
+                    
+                    Group {
+                        Text("Personal Loans Given:")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                        
+                        HStack {
+                            Text("Total Principal")
+                                .padding(.leading)
+                            Spacer()
+                            Text(personalLoansPrincipal, format: .currency(code: currencySettings.selectedCurrency.rawValue))
+                                .foregroundColor(.secondary)
+                        }
+                        .font(.caption)
+                        
+                        HStack {
+                            Text("Interest Earned")
+                                .padding(.leading)
+                            Spacer()
+                            Text(personalLoansInterest, format: .currency(code: currencySettings.selectedCurrency.rawValue))
+                                .foregroundColor(.green)
+                        }
+                        .font(.caption)
+                        
+                        HStack {
+                            Text("Total Amount")
+                                .padding(.leading)
+                            Spacer()
+                            Text(personalLoansGivenBalance, format: .currency(code: currencySettings.selectedCurrency.rawValue))
                         }
                         .font(.caption)
                     }
@@ -317,6 +442,7 @@ private struct SummaryRow: View {
 private struct AddAccountMenu: View {
     @Binding var showingAddAccount: Bool
     @Binding var showingAddMutualFund: Bool
+    @Binding var showingAddPersonalLoan: Bool
     @State private var selectedAccountType: AccountType?
     
     var body: some View {
@@ -346,6 +472,13 @@ private struct AddAccountMenu: View {
             
             Button(action: { showingAddMutualFund = true }) {
                 Label("Add Mutual Fund", systemImage: "chart.line.uptrend.xyaxis")
+            }
+            
+            Button(action: { 
+                selectedAccountType = .personalLoanGiven
+                showingAddPersonalLoan = true 
+            }) {
+                Label("Personal Loan Given", systemImage: "person.text.rectangle")
             }
         } label: {
             Image(systemName: "plus")

@@ -47,6 +47,37 @@ struct AccountRow: View {
                     }
                     .font(.caption)
                 }
+            } else if account.accountType == AccountType.personalLoanGiven.rawValue {
+                let principal = account.creditLimit
+                let currentAmount = account.balance
+                let interestEarned = currentAmount - principal
+                let metadata = account.metadata ?? [:]
+                
+                VStack(alignment: .leading, spacing: 2) {
+                    if let borrowerName = metadata["borrowerName"] {
+                        Text("Borrower: \(borrowerName)")
+                            .font(.caption)
+                    }
+                    
+                    HStack {
+                        Text("Principal Amount:")
+                        Text(principal, format: .currency(code: currencySettings.selectedCurrency.rawValue))
+                            .foregroundColor(.secondary)
+                    }
+                    .font(.caption)
+                    
+                    HStack {
+                        Text("Interest Earned:")
+                        Text(interestEarned, format: .currency(code: currencySettings.selectedCurrency.rawValue))
+                            .foregroundColor(.green)
+                    }
+                    .font(.caption)
+                    
+                    if let rate = metadata["interestRate"] {
+                        Text("Interest Rate: \(rate)% per year")
+                            .font(.caption)
+                    }
+                }
             }
         }
         .padding(.vertical, 4)

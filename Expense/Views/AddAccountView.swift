@@ -9,6 +9,7 @@ struct AddAccountView: View {
     @State private var accountType: AccountType
     @State private var balance = ""
     @State private var creditLimit = ""
+    @State private var interestRate = ""
     @State private var showingError = false
     
     init(viewModel: ExpenseViewModel, initialAccountType: AccountType = .bankAccount) {
@@ -72,6 +73,14 @@ struct AddAccountView: View {
                             }
                             .labelsHidden()
                         }
+                        
+                        if accountType == .loan {
+                            HStack {
+                                TextField("Interest Rate (%)", text: $interestRate)
+                                    .keyboardType(.decimalPad)
+                                Text("% per year")
+                            }
+                        }
                     } else {
                         HStack {
                             TextField("Current Balance", text: $balance)
@@ -111,12 +120,25 @@ struct AddAccountView: View {
         }
         
         let creditLimitValue = Double(creditLimit) ?? 0.0
+        var metadata: [String: String]?
+        
+        if accountType == .loan {
+            guard let rate = Double(interestRate) else {
+                showingError = true
+                return
+            }
+            metadata = [
+                "interestRate": interestRate,
+                "lastInterestDate": Date().ISO8601Format()
+            ]
+        }
         
         viewModel.addAccount(
             name: accountName,
             type: accountType,
             balance: balanceValue,
-            creditLimit: !accountType.isAsset || accountType == .mutualFund ? creditLimitValue : nil
+            creditLimit: !accountType.isAsset || accountType == .mutualFund ? creditLimitValue : nil,
+            metadata: metadata
         )
         
         dismiss()

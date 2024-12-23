@@ -10,10 +10,15 @@ import SwiftUI
 @main
 struct ExpenseApp: App {
     let persistenceController = PersistenceController.shared
+    @StateObject private var authManager = AuthenticationManager.shared
     
     var body: some Scene {
         WindowGroup {
-            MainTabView(context: persistenceController.container.viewContext)
+            if authManager.isAuthenticated {
+                MainTabView(context: persistenceController.container.viewContext)
+            } else {
+                LoginView()
+            }
         }
     }
 }

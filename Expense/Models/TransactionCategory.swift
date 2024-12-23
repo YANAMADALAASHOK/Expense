@@ -2,46 +2,80 @@ import Foundation
 
 enum TransactionCategory: Hashable {
     case food
-    case transport
-    case utilities
-    case entertainment
+    case transportation
     case shopping
-    case health
+    case entertainment
+    case utilities
+    case healthcare
     case education
+    case rent
+    case salary
+    case investment
+    case interest
+    case emiPayment
+    case creditCardPayment
     case other
     case custom(String)
     
-    var rawValue: String {
+    var displayName: String {
         switch self {
         case .food: return "Food"
-        case .transport: return "Transport"
-        case .utilities: return "Utilities"
-        case .entertainment: return "Entertainment"
+        case .transportation: return "Transportation"
         case .shopping: return "Shopping"
-        case .health: return "Health"
+        case .entertainment: return "Entertainment"
+        case .utilities: return "Utilities"
+        case .healthcare: return "Healthcare"
         case .education: return "Education"
+        case .rent: return "Rent"
+        case .salary: return "Salary"
+        case .investment: return "Investment"
+        case .interest: return "Interest"
+        case .emiPayment: return "EMI Payment"
+        case .creditCardPayment: return "Credit Card Payment"
         case .other: return "Other"
         case .custom(let name): return name
         }
     }
     
-    var displayName: String {
-        return rawValue
+    var rawValue: String {
+        switch self {
+        case .food: return "Food"
+        case .transportation: return "Transportation"
+        case .shopping: return "Shopping"
+        case .entertainment: return "Entertainment"
+        case .utilities: return "Utilities"
+        case .healthcare: return "Healthcare"
+        case .education: return "Education"
+        case .rent: return "Rent"
+        case .salary: return "Salary"
+        case .investment: return "Investment"
+        case .interest: return "Interest"
+        case .emiPayment: return "EMI Payment"
+        case .creditCardPayment: return "Credit Card Payment"
+        case .other: return "Other"
+        case .custom(let name): return name
+        }
     }
     
     static var allCases: [TransactionCategory] {
-        [.food, .transport, .utilities, .entertainment, .shopping, .health, .education, .other]
+        [.food, .transportation, .shopping, .entertainment, .utilities, .healthcare, .education, .rent, .salary, .investment, .interest, .emiPayment, .creditCardPayment, .other]
     }
     
     init(rawValue: String) {
         switch rawValue {
         case "Food": self = .food
-        case "Transport": self = .transport
-        case "Utilities": self = .utilities
-        case "Entertainment": self = .entertainment
+        case "Transportation": self = .transportation
         case "Shopping": self = .shopping
-        case "Health": self = .health
+        case "Entertainment": self = .entertainment
+        case "Utilities": self = .utilities
+        case "Healthcare": self = .healthcare
         case "Education": self = .education
+        case "Rent": self = .rent
+        case "Salary": self = .salary
+        case "Investment": self = .investment
+        case "Interest": self = .interest
+        case "EMI Payment": self = .emiPayment
+        case "Credit Card Payment": self = .creditCardPayment
         case "Other": self = .other
         default: self = .custom(rawValue)
         }
@@ -55,6 +89,7 @@ enum AccountType: String, CaseIterable {
     case investment = "Investment"
     case mutualFund = "Mutual Fund"
     case savings = "Savings"
+    case personalLoanGiven = "Personal Loan (Given)"
     
     // Liabilities
     case creditCard = "Credit Card"
@@ -63,7 +98,7 @@ enum AccountType: String, CaseIterable {
     
     var isAsset: Bool {
         switch self {
-        case .bankAccount, .cash, .investment, .mutualFund, .savings:
+        case .bankAccount, .cash, .investment, .mutualFund, .savings, .personalLoanGiven:
             return true
         case .creditCard, .loan, .mortgage:
             return false
