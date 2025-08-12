@@ -10,6 +10,7 @@ struct AddAccountView: View {
     @State private var balance = ""
     @State private var creditLimit = ""
     @State private var interestRate = ""
+    @State private var loanDate = Date()
     @State private var showingError = false
     
     init(viewModel: ExpenseViewModel, initialAccountType: AccountType = .bankAccount) {
@@ -80,6 +81,8 @@ struct AddAccountView: View {
                                     .keyboardType(.decimalPad)
                                 Text("% per year")
                             }
+                            
+                            DatePicker("Loan Date", selection: $loanDate, in: ...Date(), displayedComponents: [.date])
                         }
                     } else {
                         HStack {
@@ -123,13 +126,16 @@ struct AddAccountView: View {
         var metadata: [String: String]?
         
         if accountType == .loan {
-            guard let rate = Double(interestRate) else {
+            guard let rate = Double(interestRate),
+                  let principal = Double(creditLimit) else {
                 showingError = true
                 return
             }
             metadata = [
-                "interestRate": interestRate,
-                "lastInterestDate": Date().ISO8601Format()
+                "principalAmount": String(principal),
+                "interestRate": String(rate),
+                "loanDate": ISO8601DateFormatter().string(from: loanDate),
+                "lastInterestCalculationDate": ISO8601DateFormatter().string(from: loanDate)
             ]
         }
         

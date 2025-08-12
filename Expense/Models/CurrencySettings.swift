@@ -1,35 +1,62 @@
+import SwiftUI
+import FirebaseFirestore
 import Foundation
 
 enum Currency: String, CaseIterable {
-    case usd = "USD"
     case inr = "INR"
+    case usd = "USD"
+    case eur = "EUR"
+    case gbp = "GBP"
     
     var symbol: String {
         switch self {
-        case .usd: return "$"
         case .inr: return "₹"
-        }
-    }
-    
-    var exchangeRate: Double {
-        switch self {
-        case .usd: return 1.0
-        case .inr: return 83.0 // You can update this with real-time rates
+        case .usd: return "$"
+        case .eur: return "€"
+        case .gbp: return "£"
         }
     }
 }
 
 class CurrencySettings: ObservableObject {
     static let shared = CurrencySettings()
+    private let db = Firestore.firestore()
     
+    @AppStorage("selectedCurrency") var storedCurrency = Currency.inr.rawValue
     @Published var selectedCurrency: Currency {
         didSet {
-            UserDefaults.standard.set(selectedCurrency.rawValue, forKey: "SelectedCurrency")
+            storedCurrency = selectedCurrency.rawValue
+            syncToCloud()
         }
     }
     
     private init() {
-        let savedCurrency = UserDefaults.standard.string(forKey: "SelectedCurrency") ?? Currency.usd.rawValue
-        selectedCurrency = Currency(rawValue: savedCurrency) ?? .usd
+        self.selectedCurrency = Currency(rawValue: UserDefaults.standard.string(forKey: "selectedCurrency") ?? Currency.inr.rawValue) ?? .inr
+    }
+    
+    func syncToCloud() {
+        guard let userId = AuthenticationManager.shared.currentUser?.id else { return }
+        
+        db.collection("settings").document(userId).setData([
+            "currency": selectedCurrency.rawValue
+        ], merge: true) { error in
+            if let error = error {
+                print("Error syncing currency settings: \(error)")
+            }
+        }
+    }
+    
+    func loadFromCloud() {
+        guard let userId = AuthenticationManager.shared.currentUser?.id else { return }
+        
+        db.collection("settings").document(userId).getDocument { [weak self] document, error in
+            if let document = document, document.exists,
+               let currencyString = document.data()?["currency"] as? String,
+               let currency = Currency(rawValue: currencyString) {
+                DispatchQueue.main.async {
+                    self?.selectedCurrency = currency
+                }
+            }
+        }
     }
 } 

@@ -11,6 +11,7 @@ struct EditTransactionView: View {
     @State private var isCredit: Bool
     @State private var notes: String
     @State private var showingError = false
+    @State private var excludeFromDashboard = false
     
     init(viewModel: ExpenseViewModel, transaction: CDTransaction) {
         self.viewModel = viewModel
@@ -20,6 +21,7 @@ struct EditTransactionView: View {
         _category = State(initialValue: TransactionCategory(rawValue: transaction.wrappedCategory) ?? .other)
         _isCredit = State(initialValue: transaction.isCredit)
         _notes = State(initialValue: transaction.wrappedNotes)
+        _excludeFromDashboard = State(initialValue: viewModel.isTransactionExcluded(transaction))
     }
     
     var allCategories: [TransactionCategory] {
@@ -58,6 +60,10 @@ struct EditTransactionView: View {
                 Section("Notes") {
                     TextField("Notes (Optional)", text: $notes)
                 }
+
+                Section("Dashboard") {
+                    Toggle("Exclude from Dashboard", isOn: $excludeFromDashboard)
+                }
                 
                 if let account = transaction.account {
                     Section("Account") {
@@ -89,13 +95,17 @@ struct EditTransactionView: View {
             return
         }
         
+        // Only update rules if category actually changed
+        let originalCategory = TransactionCategory(rawValue: transaction.wrappedCategory) ?? .other
         viewModel.updateTransaction(
             transaction,
             amount: amountValue,
             category: category,
             isCredit: isCredit,
-            notes: notes.isEmpty ? nil : notes
+            notes: notes.isEmpty ? nil : notes,
+            updateRules: category != originalCategory
         )
+        viewModel.setExcluded(for: transaction, excluded: excludeFromDashboard)
         
         dismiss()
     }

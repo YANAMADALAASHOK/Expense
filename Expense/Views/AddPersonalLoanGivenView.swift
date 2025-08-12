@@ -18,12 +18,10 @@ struct AddPersonalLoanGivenView: View {
               let rate = Double(interestRate) else { return 0 }
         
         let days = Double(Calendar.current.dateComponents([.day], from: loanDate, to: Date()).day ?? 0)
-        let months = days / 30.0  // Convert days to months
+        let years = days / 365.0  // Convert days to years for annual rate
         
-        // Calculate interest based on rate per 100 rupees per month
-        // For example: if rate is 1.5, it means 1.5 rupees per 100 rupees per month
-        let interestPer100PerMonth = rate
-        let interest = (principal / 100.0) * interestPer100PerMonth * months
+        // Calculate interest based on annual rate
+        let interest = principal * (rate / 100.0) * years
         
         return principal + interest
     }
@@ -116,15 +114,17 @@ struct AddPersonalLoanGivenView: View {
         // Store loan details in metadata
         let metadata: [String: String] = [
             "borrowerName": borrowerName,
+            "principalAmount": String(principal),
             "interestRate": interestRate,
-            "loanDate": loanDate.ISO8601Format(),
+            "loanDate": ISO8601DateFormatter().string(from: loanDate),
+            "lastInterestCalculationDate": ISO8601DateFormatter().string(from: loanDate),
             "notes": notes
         ]
         
         viewModel.addAccount(
             name: "Loan to \(borrowerName)",
             type: .personalLoanGiven,
-            balance: calculatedAmount,
+            balance: principal,  // Start with principal amount
             creditLimit: principal,  // Store principal amount in creditLimit
             metadata: metadata
         )

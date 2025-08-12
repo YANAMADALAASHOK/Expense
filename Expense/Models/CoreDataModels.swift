@@ -9,7 +9,12 @@ public class CDAccount: NSManagedObject, Identifiable {
     @NSManaged public var balance: Double
     @NSManaged public var creditLimit: Double
     @NSManaged public var transactions: Set<CDTransaction>?
-    @NSManaged public var metadata: [String: String]?
+    @NSManaged public var metadata: Data?
+    
+    // Ensure ID is always available for Identifiable conformance
+    public var identifier: UUID {
+        id ?? UUID()
+    }
 }
 
 // MARK: - Account Extensions
@@ -25,6 +30,16 @@ extension CDAccount {
     var transactionsArray: [CDTransaction] {
         let set = transactions ?? []
         return set.sorted { $0.date ?? Date() > $1.date ?? Date() }
+    }
+    
+    var metadataDictionary: [String: String] {
+        get {
+            guard let data = metadata else { return [:] }
+            return (try? JSONSerialization.jsonObject(with: data) as? [String: String]) ?? [:]
+        }
+        set {
+            metadata = try? JSONSerialization.data(withJSONObject: newValue)
+        }
     }
     
     // Generated accessors for transactions
@@ -50,6 +65,11 @@ public class CDTransaction: NSManagedObject, Identifiable {
     @NSManaged public var isCredit: Bool
     @NSManaged public var notes: String?
     @NSManaged public var account: CDAccount?
+    
+    // Ensure ID is always available for Identifiable conformance
+    public var identifier: UUID {
+        id ?? UUID()
+    }
 }
 
 // MARK: - Transaction Extensions

@@ -1,8 +1,11 @@
 import SwiftUI
-import AuthenticationServices
+import FirebaseAuth
 
 struct LoginView: View {
     @StateObject private var authManager = AuthenticationManager.shared
+    @State private var email = ""
+    @State private var password = ""
+    @State private var isSignUp = false
     @State private var showingError = false
     @State private var errorMessage = ""
     
@@ -25,26 +28,44 @@ struct LoginView: View {
             Spacer()
             
             VStack(spacing: 15) {
-                SignInWithAppleButton { request in
-                    request.requestedScopes = [.email, .fullName]
-                } onCompletion: { result in
-                    switch result {
-                    case .success(let authorization):
-                        Task {
-                            do {
-                                try await authManager.signInWithApple()
-                            } catch {
-                                showingError = true
-                                errorMessage = error.localizedDescription
+                TextField("Email", text: $email)
+                    .textFieldStyle(RoundedBorderTextFieldStyle())
+                    .textContentType(.emailAddress)
+                    .autocapitalization(.none)
+                    .keyboardType(.emailAddress)
+                
+                SecureField("Password", text: $password)
+                    .textFieldStyle(RoundedBorderTextFieldStyle())
+                    .textContentType(.password)
+                
+                Button(action: {
+                    Task {
+                        do {
+                            if isSignUp {
+                                try await authManager.createAccount(email: email, password: password)
+                            } else {
+                                try await authManager.signIn(email: email, password: password)
                             }
+                        } catch {
+                            showingError = true
+                            errorMessage = error.localizedDescription
                         }
-                    case .failure(let error):
-                        showingError = true
-                        errorMessage = error.localizedDescription
                     }
+                }) {
+                    Text(isSignUp ? "Sign Up" : "Sign In")
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 50)
+                        .foregroundColor(.white)
+                        .background(Color.blue)
+                        .cornerRadius(10)
                 }
-                .signInWithAppleButtonStyle(.black)
-                .frame(height: 50)
+                
+                Button(action: {
+                    isSignUp.toggle()
+                }) {
+                    Text(isSignUp ? "Already have an account? Sign In" : "Don't have an account? Sign Up")
+                        .foregroundColor(.blue)
+                }
                 
                 Button(action: {
                     authManager.signInAsGuest()
@@ -65,7 +86,7 @@ struct LoginView: View {
                 .foregroundColor(.secondary)
         }
         .padding()
-        .alert("Sign In Failed", isPresented: $showingError) {
+        .alert("Error", isPresented: $showingError) {
             Button("OK", role: .cancel) { }
         } message: {
             Text(errorMessage)

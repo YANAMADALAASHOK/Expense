@@ -24,6 +24,20 @@ struct AddTransactionView: View {
     init(viewModel: ExpenseViewModel, transactionType: TransactionType = .expense) {
         self.viewModel = viewModel
         self.transactionType = transactionType
+        
+        // Set initial account selection
+        let accounts = viewModel.accounts.filter { account in
+            switch transactionType {
+            case .loanPayment:
+                return account.accountType == AccountType.loan.rawValue
+            case .creditCardPayment:
+                return account.accountType == AccountType.creditCard.rawValue
+            case .expense, .income:
+                return account.accountType == AccountType.bankAccount.rawValue ||
+                       account.accountType == AccountType.creditCard.rawValue
+            }
+        }
+        _selectedAccount = State(initialValue: accounts.first)
     }
     
     private var transactionAccounts: [CDAccount] {
@@ -78,7 +92,7 @@ struct AddTransactionView: View {
                 Section("Account") {
                     Picker("Account", selection: $selectedAccount) {
                         Text("Select Account").tag(nil as CDAccount?)
-                        ForEach(transactionAccounts, id: \.id) { account in
+                        ForEach(transactionAccounts) { account in
                             Text(account.wrappedAccountName).tag(account as CDAccount?)
                         }
                     }

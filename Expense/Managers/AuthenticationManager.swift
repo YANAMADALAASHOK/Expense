@@ -1,19 +1,14 @@
-import SwiftUI
-import AuthenticationServices
+import Foundation
+import FirebaseAuth
+import FirebaseFirestore
 
 class AuthenticationManager: ObservableObject {
     static let shared = AuthenticationManager()
+    private let db = Firestore.firestore()
     
     @Published var isAuthenticated = false
     @Published var currentUser: User?
-    @AppStorage("userId") private var userId: String?
-    @AppStorage("userEmail") private var userEmail: String?
-    @AppStorage("userName") private var userName: String?
-    @AppStorage("isGuestMode") private var isGuestMode: Bool = false
-    
-    init() {
-        checkAuthenticationState()
-    }
+    private var authStateHandle: AuthStateDidChangeListenerHandle?
     
     struct User {
         let id: String
@@ -22,107 +17,110 @@ class AuthenticationManager: ObservableObject {
         let isGuest: Bool
     }
     
-    func signInAsGuest() {
-        let guestId = UUID().uuidString
-        self.userId = guestId
-        self.userName = "Guest"
-        self.isGuestMode = true
-        self.currentUser = User(id: guestId, email: nil, name: "Guest", isGuest: true)
-        self.isAuthenticated = true
+    private init() {
+        // Check if user is already signed in
+        if let user = Auth.auth().currentUser {
+            self.isAuthenticated = true
+            self.currentUser = User(
+                id: user.uid,
+                email: user.email,
+                name: user.displayName,
+                isGuest: false
+            )
+        }
+        
+        // Listen for auth state changes
+        authStateHandle = Auth.auth().addStateDidChangeListener { [weak self] (_, user) in
+            DispatchQueue.main.async {
+                if let firebaseUser = user {
+                    self?.isAuthenticated = true
+                    self?.currentUser = User(
+                        id: firebaseUser.uid,
+                        email: firebaseUser.email,
+                        name: firebaseUser.displayName,
+                        isGuest: false
+                    )
+                } else {
+                    self?.isAuthenticated = false
+                    self?.currentUser = nil
+                }
+            }
+        }
     }
     
-    func signInWithApple() async throws {
-        print("Starting Apple Sign In...")
-        let request = ASAuthorizationAppleIDProvider().createRequest()
-        request.requestedScopes = [.email, .fullName]
-        
-        print("Creating authorization controller...")
-        let result = try await withCheckedThrowingContinuation { continuation in
-            let controller = ASAuthorizationController(authorizationRequests: [request])
-            let delegate = SignInDelegate(continuation: continuation)
-            controller.delegate = delegate
-            controller.presentationContextProvider = delegate
-            print("Performing authorization request...")
-            controller.performRequests()
+    func signIn(email: String, password: String) async throws {
+        do {
+            let result = try await Auth.auth().signIn(withEmail: email, password: password)
+            DispatchQueue.main.async {
+                self.isAuthenticated = true
+                self.currentUser = User(
+                    id: result.user.uid,
+                    email: result.user.email,
+                    name: result.user.displayName,
+                    isGuest: false
+                )
+            }
+        } catch {
+            throw error
         }
-        
-        print("Authorization completed, processing credential...")
-        guard let appleIDCredential = result.credential as? ASAuthorizationAppleIDCredential else {
-            print("Invalid credential received")
-            throw AuthError.invalidCredential
+    }
+    
+    func createAccount(email: String, password: String) async throws {
+        do {
+            let result = try await Auth.auth().createUser(withEmail: email, password: password)
+            DispatchQueue.main.async {
+                self.isAuthenticated = true
+                self.currentUser = User(
+                    id: result.user.uid,
+                    email: result.user.email,
+                    name: result.user.displayName,
+                    isGuest: false
+                )
+            }
+        } catch {
+            throw error
         }
-        
-        print("Processing user data...")
-        let userId = appleIDCredential.user
-        let email = appleIDCredential.email ?? userEmail
-        let name = [
-            appleIDCredential.fullName?.givenName,
-            appleIDCredential.fullName?.familyName
-        ].compactMap { $0 }.joined(separator: " ")
-        
-        print("Saving user data...")
-        self.userId = userId
-        self.userEmail = email
-        self.userName = name.isEmpty ? userName : name
-        
-        self.currentUser = User(id: userId, email: email, name: self.userName, isGuest: false)
-        self.isAuthenticated = true
-        
-        print("Sign in completed successfully")
-        PersistenceController.shared.backupData()
     }
     
     func signOut() {
-        PersistenceController.shared.backupData()
+        // Sync data before signing out
+        if let userId = currentUser?.id, !currentUser!.isGuest {
+            NotificationCenter.default.post(name: .syncDataToCloud, object: nil)
+        }
         
-        userId = nil
-        userEmail = nil
-        userName = nil
-        isGuestMode = false
-        currentUser = nil
-        isAuthenticated = false
+        do {
+            try Auth.auth().signOut()
+            DispatchQueue.main.async {
+                self.isAuthenticated = false
+                self.currentUser = nil
+                // Clear local data after sign out
+                PersistenceController.shared.clearAllData()
+            }
+        } catch {
+            print("Error signing out: \(error)")
+        }
     }
     
-    func checkAuthenticationState() {
-        if isGuestMode, let userId = userId {
-            currentUser = User(id: userId, email: nil, name: "Guest", isGuest: true)
-            isAuthenticated = true
-        } else if let userId = userId {
-            currentUser = User(id: userId, email: userEmail, name: userName, isGuest: false)
-            isAuthenticated = true
-        } else {
-            isAuthenticated = false
+    func signInAsGuest() {
+        DispatchQueue.main.async {
+            self.isAuthenticated = true
+            self.currentUser = User(
+                id: UUID().uuidString,
+                email: nil,
+                name: "Guest",
+                isGuest: true
+            )
+        }
+    }
+    
+    deinit {
+        if let handle = authStateHandle {
+            Auth.auth().removeStateDidChangeListener(handle)
         }
     }
 }
 
-// MARK: - Supporting Types
-enum AuthError: Error {
-    case invalidCredential
-    case signInFailed
-    case noUserData
-}
-
-private class SignInDelegate: NSObject, ASAuthorizationControllerDelegate, ASAuthorizationControllerPresentationContextProviding {
-    let continuation: CheckedContinuation<ASAuthorization, Error>
-    
-    init(continuation: CheckedContinuation<ASAuthorization, Error>) {
-        self.continuation = continuation
-    }
-    
-    func presentationAnchor(for controller: ASAuthorizationController) -> ASPresentationAnchor {
-        guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-              let window = scene.windows.first else {
-            fatalError("No window found")
-        }
-        return window
-    }
-    
-    func authorizationController(controller: ASAuthorizationController, didCompleteWithAuthorization authorization: ASAuthorization) {
-        continuation.resume(returning: authorization)
-    }
-    
-    func authorizationController(controller: ASAuthorizationController, didCompleteWithError error: Error) {
-        continuation.resume(throwing: error)
-    }
+extension Notification.Name {
+    static let syncDataToCloud = Notification.Name("syncDataToCloud")
+    static let loadDataFromCloud = Notification.Name("loadDataFromCloud")
 } 

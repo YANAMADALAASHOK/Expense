@@ -10,6 +10,10 @@ struct AddMutualFundView: View {
     @State private var currentValue = ""
     @State private var showingError = false
     @State private var errorMessage = ""
+    @State private var amfiSchemeCode: String = ""
+    @State private var fundSearchText: String = ""
+    @State private var showFundSuggestions: Bool = false
+    @State private var isFundListLoading: Bool = false
     
     private var profit: Double {
         (Double(currentValue) ?? 0) - (Double(investedAmount) ?? 0)
@@ -24,7 +28,73 @@ struct AddMutualFundView: View {
         NavigationView {
             Form {
                 Section("Mutual Fund Details") {
-                    TextField("Scheme Name", text: $schemeName)
+                    VStack(alignment: .leading) {
+                        TextField("Scheme Name", text: $schemeName)
+                        VStack(alignment: .leading) {
+                            TextField("Search Mutual Fund Name or Code", text: $fundSearchText, onEditingChanged: { editing in
+                                showFundSuggestions = editing
+                                if editing && viewModel.amfiFundList.isEmpty && !isFundListLoading {
+                                    isFundListLoading = true
+                                    viewModel.fetchAMFIFundList {
+                                        isFundListLoading = false
+                                    }
+                                }
+                            })
+                            .autocapitalization(.none)
+                            .disableAutocorrection(true)
+                            .onChange(of: fundSearchText) { _ in showFundSuggestions = true }
+                            .onSubmit { showFundSuggestions = false }
+                            .textInputAutocapitalization(.never)
+                            .keyboardType(.default)
+                            .onAppear {
+                                if viewModel.amfiFundList.isEmpty && !isFundListLoading {
+                                    isFundListLoading = true
+                                    viewModel.fetchAMFIFundList {
+                                        isFundListLoading = false
+                                    }
+                                }
+                            }
+                            if isFundListLoading {
+                                ProgressView("Loading fund list...")
+                                    .padding(.vertical, 8)
+                            } else if showFundSuggestions && !fundSearchText.isEmpty {
+                                let suggestions = viewModel.amfiFundList.filter {
+                                    $0.name.localizedCaseInsensitiveContains(fundSearchText.trimmingCharacters(in: .whitespacesAndNewlines)) ||
+                                    $0.code.contains(fundSearchText.trimmingCharacters(in: .whitespacesAndNewlines))
+                                }.prefix(10)
+                                if !suggestions.isEmpty {
+                                    ScrollView {
+                                        VStack(alignment: .leading, spacing: 0) {
+                                            ForEach(Array(suggestions), id: \.code) { fund in
+                                                Button(action: {
+                                                    schemeName = fund.name
+                                                    amfiSchemeCode = fund.code
+                                                    fundSearchText = fund.name
+                                                    showFundSuggestions = false
+                                                }) {
+                                                    VStack(alignment: .leading) {
+                                                        Text(fund.name).font(.body)
+                                                        Text("Code: \(fund.code)").font(.caption).foregroundColor(.secondary)
+                                                    }
+                                                    .padding(.vertical, 6)
+                                                    .padding(.horizontal, 8)
+                                                }
+                                                .background(Color(.systemBackground))
+                                            }
+                                        }
+                                    }
+                                    .frame(maxHeight: 200)
+                                    .background(Color(.systemGray6))
+                                    .cornerRadius(8)
+                                    .shadow(radius: 2)
+                                } else {
+                                    Text("No matching funds found.")
+                                        .foregroundColor(.secondary)
+                                        .padding(.vertical, 8)
+                                }
+                            }
+                        }
+                    }
                 }
                 
                 Section("Investment Details") {
@@ -108,14 +178,17 @@ struct AddMutualFundView: View {
             showingError = true
             return
         }
-        
+        var metadata: [String: String]? = nil
+        if !amfiSchemeCode.isEmpty {
+            metadata = ["amfiSchemeCode": amfiSchemeCode]
+        }
         viewModel.addAccount(
             name: schemeName,
             type: .mutualFund,
             balance: currentMarketValue,
-            creditLimit: investedValue  // Using creditLimit to store invested amount
+            creditLimit: investedValue,  // Using creditLimit to store invested amount
+            metadata: metadata
         )
-        
         dismiss()
     }
 } 

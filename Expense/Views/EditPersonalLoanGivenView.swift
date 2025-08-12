@@ -18,7 +18,7 @@ struct EditPersonalLoanGivenView: View {
         self.viewModel = viewModel
         self.account = account
         
-        let metadata = account.metadata ?? [:]
+        let metadata = account.metadataDictionary
         _borrowerName = State(initialValue: metadata["borrowerName"] ?? "")
         _principalAmount = State(initialValue: String(account.creditLimit))
         _interestRate = State(initialValue: metadata["interestRate"] ?? "")
@@ -37,11 +37,10 @@ struct EditPersonalLoanGivenView: View {
               let rate = Double(interestRate) else { return 0 }
         
         let days = Double(Calendar.current.dateComponents([.day], from: loanDate, to: Date()).day ?? 0)
-        let months = days / 30.0  // Convert days to months
+        let years = days / 365.0  // Convert days to years for annual rate
         
-        // Calculate interest based on rate per 100 rupees per month
-        let interestPer100PerMonth = rate
-        let interest = (principal / 100.0) * interestPer100PerMonth * months
+        // Calculate interest based on annual rate
+        let interest = principal * (rate / 100.0) * years
         
         return principal + interest
     }
@@ -134,18 +133,23 @@ struct EditPersonalLoanGivenView: View {
         // Store loan details in metadata
         let metadata: [String: String] = [
             "borrowerName": borrowerName,
+            "principalAmount": String(principal),
             "interestRate": interestRate,
-            "loanDate": loanDate.ISO8601Format(),
+            "loanDate": ISO8601DateFormatter().string(from: loanDate),
+            "lastInterestCalculationDate": ISO8601DateFormatter().string(from: loanDate),
             "notes": notes
         ]
         
-        // Update the account
-        account.accountName = "Loan to \(borrowerName)"
-        account.balance = calculatedAmount
-        account.creditLimit = principal
-        account.metadata = metadata
+        // Update the account using the ViewModel's updateAccount method
+        viewModel.updateAccount(
+            account,
+            name: "Loan to \(borrowerName)",
+            balance: principal,  // Reset to principal amount
+            creditLimit: principal,
+            metadata: metadata
+        )
         
-        viewModel.saveContext()
+        print("Loan updated: \(borrowerName), Amount: \(calculatedAmount), Principal: \(principal)")
         dismiss()
     }
 } 

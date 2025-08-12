@@ -1,6 +1,82 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+struct CurrencyPickerView: View {
+    @Environment(\.dismiss) var dismiss
+    @StateObject private var currencySettings = CurrencySettings.shared
+    
+    var body: some View {
+        NavigationView {
+            List {
+                ForEach(Currency.allCases, id: \.self) { currency in
+                    Button(action: {
+                        currencySettings.selectedCurrency = currency
+                        dismiss()
+                    }) {
+                        HStack {
+                            Text("\(currency.symbol) (\(currency.rawValue))")
+                            Spacer()
+                            if currency == currencySettings.selectedCurrency {
+                                Image(systemName: "checkmark")
+                                    .foregroundColor(.blue)
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Select Currency")
+            .navigationBarItems(trailing: Button("Done") {
+                dismiss()
+            })
+        }
+    }
+}
+
+struct CustomCategoryView: View {
+    @Environment(\.dismiss) var dismiss
+    @EnvironmentObject var expenseViewModel: ExpenseViewModel
+    @State private var newCategory = ""
+    
+    var body: some View {
+        NavigationView {
+            List {
+                Section(header: Text("Add New Category")) {
+                    HStack {
+                        TextField("Category Name", text: $newCategory)
+                        Button(action: addCategory) {
+                            Image(systemName: "plus.circle.fill")
+                        }
+                        .disabled(newCategory.isEmpty)
+                    }
+                }
+                
+                Section(header: Text("Custom Categories")) {
+                    ForEach(expenseViewModel.customCategories, id: \.self) { category in
+                        Text(category)
+                    }
+                    .onDelete(perform: deleteCategory)
+                }
+            }
+            .navigationTitle("Custom Categories")
+            .navigationBarItems(trailing: Button("Done") {
+                dismiss()
+            })
+        }
+    }
+    
+    private func addCategory() {
+        guard !newCategory.isEmpty else { return }
+        expenseViewModel.addCustomCategory(newCategory)
+        newCategory = ""
+    }
+    
+    private func deleteCategory(at offsets: IndexSet) {
+        offsets.forEach { index in
+            expenseViewModel.removeCustomCategory(at: index)
+        }
+    }
+}
+
 struct ManageCategoriesView: View {
     @ObservedObject var viewModel: ExpenseViewModel
     
@@ -21,39 +97,86 @@ struct ManageCategoriesView: View {
 }
 
 struct SettingsView: View {
-    @ObservedObject var viewModel: ExpenseViewModel
-    @StateObject private var currencySettings = CurrencySettings.shared
+    @EnvironmentObject var authManager: AuthenticationManager
+    @EnvironmentObject var expenseViewModel: ExpenseViewModel
+    @State private var showingCurrencyPicker = false
+    @State private var showingCustomCategorySheet = false
     @State private var showingExportSheet = false
     @State private var showingImportPicker = false
+    @State private var showingGrowwImportPicker = false
+    @State private var isImportingGroww = false
+    @State private var showingAxisImportPicker = false
+    @State private var isImportingAxis = false
+    @State private var showingAxisAccountPicker = false
+    @State private var pendingAxisURL: URL?
+    @State private var isUpdatingNAVs = false
+    @State private var newCategory = ""
+    @State private var cloudSyncStatus = "Checking..."
+    @State private var lastSyncTime: Date?
+    @State private var isCheckingStatus = false
     @State private var showingError = false
     @State private var errorMessage = ""
-    @State private var showingAddCategory = false
-    @State private var newCategory = ""
+    @State private var showingDeleteConfirmation = false
+    @State private var isDeletingData = false
     
     var body: some View {
         NavigationView {
-            List {
-                Section("Currency") {
-                    Picker("Currency", selection: $currencySettings.selectedCurrency) {
-                        ForEach(Currency.allCases, id: \.self) { currency in
-                            Text("\(currency.symbol) (\(currency.rawValue))").tag(currency)
+            Form {
+                Section(header: Text("Account")) {
+                    if let user = authManager.currentUser {
+                        if user.isGuest {
+                            Text("Signed in as Guest")
+                        } else {
+                            Text("Email: \(user.email)")
+                        }
+                        Button("Sign Out") {
+                            authManager.signOut()
                         }
                     }
                 }
                 
-                Section("Categories") {
-                    NavigationLink(destination: ManageCategoriesView(viewModel: viewModel)) {
-                        Label("Manage Categories", systemImage: "list.bullet")
+                Section(header: Text("Cloud Sync")) {
+                    VStack(alignment: .leading) {
+                        Text("Status: \(cloudSyncStatus)")
+                        if let lastSync = lastSyncTime {
+                            Text("Last synced: \(lastSync.formatted())")
+                        }
                     }
                     
-                    Button(action: {
-                        showingAddCategory = true
-                    }) {
-                        Label("Add Category", systemImage: "plus.circle")
+                    if let user = authManager.currentUser, !user.isGuest {
+                        Button(action: {
+                            expenseViewModel.syncToCloud()
+                            checkCloudStatus()
+                        }) {
+                            Text("Sync Now")
+                        }
+                        
+                        Button(action: {
+                            expenseViewModel.loadFromCloud { success in
+                                if success {
+                                    checkCloudStatus()
+                                }
+                            }
+                        }) {
+                            Text("Load from Cloud")
+                        }
                     }
                 }
                 
-                Section("Data Management") {
+                Section(header: Text("Data Management")) {
+                    Button(action: {
+                        isUpdatingNAVs = true
+                        expenseViewModel.updateMutualFundNAVs { _ in
+                            isUpdatingNAVs = false
+                        }
+                    }) {
+                        HStack {
+                            Image(systemName: isUpdatingNAVs ? "arrow.triangle.2.circlepath.circle.fill" : "arrow.triangle.2.circlepath")
+                            Text(isUpdatingNAVs ? "Updating NAVs..." : "Refresh Mutual Fund NAVs")
+                        }
+                    }
+                    .disabled(isUpdatingNAVs)
+
                     Button(action: {
                         showingExportSheet = true
                     }) {
@@ -65,28 +188,67 @@ struct SettingsView: View {
                     }) {
                         Label("Import Data", systemImage: "square.and.arrow.down")
                     }
-                }
-                
-                Section("About") {
-                    HStack {
-                        Text("Version")
-                        Spacer()
-                        Text(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0")
-                            .foregroundColor(.secondary)
+                    
+                    Button(action: {
+                        showingGrowwImportPicker = true
+                    }) {
+                        HStack {
+                            Label("Import from Groww CSV", systemImage: "doc.text")
+                            if isImportingGroww { Spacer(); ProgressView() }
+                        }
+                    }
+                    Button(action: {
+                        showingAxisImportPicker = true
+                    }) {
+                        HStack {
+                            Label("Import Axis Bank Statement (CSV)", systemImage: "doc.text")
+                            if isImportingAxis { Spacer(); ProgressView() }
+                        }
                     }
                     
-                    HStack {
-                        Text("Build")
-                        Spacer()
-                        Text(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1")
-                            .foregroundColor(.secondary)
+                    Link(destination: URL(string: "https://groww.in/p/portfolio")!) {
+                        Label("Get Groww Statement", systemImage: "link")
+                    }
+                }
+                
+                Section(header: Text("Danger Zone")) {
+                    Button(action: {
+                        showingDeleteConfirmation = true
+                    }) {
+                        HStack {
+                            Image(systemName: isDeletingData ? "trash.circle.fill" : "trash")
+                            Text(isDeletingData ? "Deleting..." : "Delete All Data")
+                        }
+                        .foregroundColor(.red)
+                    }
+                    .disabled(isDeletingData)
+                }
+                
+                Section(header: Text("Categories")) {
+                    Button("Manage Custom Categories") {
+                        showingCustomCategorySheet = true
+                    }
+                    NavigationLink(destination: CategorizationRulesView()) {
+                        Label("Teach Auto-Categorization Rules", systemImage: "text.badge.plus")
+                    }
+                }
+                
+                Section(header: Text("Currency")) {
+                    Button("Change Currency") {
+                        showingCurrencyPicker = true
                     }
                 }
             }
             .navigationTitle("Settings")
+            .sheet(isPresented: $showingCurrencyPicker) {
+                CurrencyPickerView()
+            }
+            .sheet(isPresented: $showingCustomCategorySheet) {
+                CustomCategoryView()
+            }
             .fileExporter(
                 isPresented: $showingExportSheet,
-                document: ExpenseDataDocument(viewModel: viewModel),
+                document: ExpenseDataDocument(viewModel: expenseViewModel),
                 contentType: .json,
                 defaultFilename: "ExpenseData.json"
             ) { result in
@@ -123,7 +285,7 @@ struct SettingsView: View {
                     
                     do {
                         let data = try Data(contentsOf: url)
-                        try viewModel.importData(from: data)
+                        try expenseViewModel.importData(from: data)
                         print("Data imported successfully")
                     } catch {
                         errorMessage = "Import failed: \(error.localizedDescription)"
@@ -135,26 +297,154 @@ struct SettingsView: View {
                     showingError = true
                 }
             }
+            .fileImporter(
+                isPresented: $showingGrowwImportPicker,
+                allowedContentTypes: [.item],
+                allowsMultipleSelection: false
+            ) { result in
+                switch result {
+                case .success(let urls):
+                    guard let url = urls.first else {
+                        errorMessage = "No file selected for Groww import"
+                        showingError = true
+                        return
+                    }
+                    isImportingGroww = true
+                    // Copy to a temp URL to avoid sandbox access issues
+                    let tmpURL = FileManager.default.temporaryDirectory.appendingPathComponent("groww_\(UUID().uuidString).csv")
+                    do {
+                        if FileManager.default.fileExists(atPath: tmpURL.path) { try? FileManager.default.removeItem(at: tmpURL) }
+                        try FileManager.default.copyItem(at: url, to: tmpURL)
+                        expenseViewModel.importGrowwCSV(from: tmpURL) { result in
+                            DispatchQueue.main.async { isImportingGroww = false }
+                            switch result {
+                            case .success(let count):
+                                errorMessage = "Successfully imported \(count) mutual funds."
+                                showingError = true // Re-using error alert for success message
+                            case .failure(let error):
+                                errorMessage = "Groww Import failed: \(error.localizedDescription)"
+                                showingError = true
+                            }
+                        }
+                    } catch {
+                        isImportingGroww = false
+                        errorMessage = "Groww Import failed: \(error.localizedDescription)"
+                        showingError = true
+                    }
+                case .failure(let error):
+                    errorMessage = "Groww Import failed: \(error.localizedDescription)"
+                    showingError = true
+                }
+            }
+            .fileImporter(
+                isPresented: $showingAxisImportPicker,
+                allowedContentTypes: [.commaSeparatedText],
+                allowsMultipleSelection: false
+            ) { result in
+                switch result {
+                case .success(let urls):
+                    guard let url = urls.first else {
+                        errorMessage = "No file selected for Axis import"
+                        showingError = true
+                        return
+                    }
+                    pendingAxisURL = url
+                    showingAxisAccountPicker = true
+                case .failure(let error):
+                    errorMessage = "Axis Import failed: \(error.localizedDescription)"
+                    showingError = true
+                }
+            }
+            .sheet(isPresented: $showingAxisAccountPicker) {
+                if let url = pendingAxisURL {
+                    NavigationView {
+                        AxisAccountPickerView(viewModel: expenseViewModel) { account in
+                            isImportingAxis = true
+                            expenseViewModel.importAxisBankCSV(from: url, into: account) { result in
+                                DispatchQueue.main.async {
+                                    isImportingAxis = false
+                                    showingAxisAccountPicker = false
+                                    pendingAxisURL = nil
+                                }
+                                switch result {
+                                case .success(let count):
+                                    errorMessage = "Successfully imported \(count) Axis transactions."
+                                    showingError = true
+                                case .failure(let error):
+                                    errorMessage = "Axis Import failed: \(error.localizedDescription)"
+                                    showingError = true
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             .alert("Error", isPresented: $showingError) {
                 Button("OK", role: .cancel) { }
             } message: {
                 Text(errorMessage)
             }
-            .alert("Add Category", isPresented: $showingAddCategory) {
-                TextField("Category Name", text: $newCategory)
-                Button("Cancel", role: .cancel) {
-                    newCategory = ""
+            .confirmationDialog(
+                "Delete All Data",
+                isPresented: $showingDeleteConfirmation,
+                titleVisibility: .visible
+            ) {
+                Button("Delete All Data", role: .destructive) {
+                    deleteAllData()
                 }
-                Button("Add") {
-                    if !newCategory.isEmpty {
-                        viewModel.customCategories.append(newCategory)
-                        UserDefaults.standard.set(viewModel.customCategories, forKey: "CustomCategories")
-                        newCategory = ""
-                    }
-                }
+                Button("Cancel", role: .cancel) { }
             } message: {
-                Text("Enter a name for the new category")
+                Text("This will permanently delete all your data from both the device and Firebase. This action cannot be undone. Are you sure you want to continue?")
             }
+            .onAppear {
+                checkCloudStatus()
+            }
+        }
+    }
+    
+    private func checkCloudStatus() {
+        guard !isCheckingStatus else { return }
+        isCheckingStatus = true
+        
+        guard let user = authManager.currentUser, !user.isGuest else {
+            cloudSyncStatus = "Not available (Guest Mode)"
+            isCheckingStatus = false
+            return
+        }
+        
+        expenseViewModel.checkCloudDataStatus { exists, lastSync in
+            DispatchQueue.main.async {
+                cloudSyncStatus = exists ? "Synced" : "Not synced"
+                lastSyncTime = lastSync
+                isCheckingStatus = false
+            }
+        }
+    }
+    
+    private func deleteAllData() {
+        isDeletingData = true
+        
+        // Delete from Firebase first
+        if let user = authManager.currentUser, !user.isGuest {
+            expenseViewModel.deleteAllDataFromFirebase { success in
+                DispatchQueue.main.async {
+                    if success {
+                        // Then clear local data
+                        expenseViewModel.clearAllData()
+                        errorMessage = "All data has been successfully deleted from both Firebase and device."
+                    } else {
+                        errorMessage = "Failed to delete data from Firebase. Please try again."
+                    }
+                    showingError = true
+                    isDeletingData = false
+                }
+            }
+        } else {
+            // Just clear local data for guest users
+            expenseViewModel.clearAllData()
+            errorMessage = "All local data has been successfully deleted."
+            showingError = true
+            isDeletingData = false
         }
     }
 }

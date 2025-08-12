@@ -7,9 +7,13 @@ struct AccountsView: View {
     @State private var showingAddAccount = false
     @State private var showingAddMutualFund = false
     @State private var showingAddPersonalLoan = false
+    @State private var showingLoanPayment = false
+    @State private var showingAccountTransactions = false
     @State private var selectedAccount: CDAccount?
+    @State private var selectedAccountForTransactions: CDAccount?
     @State private var isRefreshing = false
     @State private var selectedAccountType: AccountType?
+    @State private var isUpdatingNAVs = false
     
     private var assetAccounts: [CDAccount] {
         viewModel.accounts.filter { $0.wrappedAccountType.isAsset }
@@ -18,10 +22,12 @@ struct AccountsView: View {
     private var bankAccounts: [CDAccount] {
         assetAccounts.filter { $0.accountType == AccountType.bankAccount.rawValue }
     }
+    private var bankAccountsTotal: Double { bankAccounts.reduce(0) { $0 + $1.balance } }
     
     private var mutualFunds: [CDAccount] {
         assetAccounts.filter { $0.accountType == AccountType.mutualFund.rawValue }
     }
+    private var mutualFundsTotal: Double { mutualFunds.reduce(0) { $0 + $1.balance } }
     
     private var liabilityAccounts: [CDAccount] {
         viewModel.accounts.filter { !$0.wrappedAccountType.isAsset }
@@ -30,47 +36,101 @@ struct AccountsView: View {
     private var loans: [CDAccount] {
         liabilityAccounts.filter { $0.accountType == AccountType.loan.rawValue }
     }
+    private var loansOutstanding: Double { loans.reduce(0) { $0 + $1.balance } }
     
     private var creditCards: [CDAccount] {
         liabilityAccounts.filter { $0.accountType == AccountType.creditCard.rawValue }
     }
+    private var creditCardsOutstanding: Double { creditCards.reduce(0) { $0 + $1.balance } }
     
     private var personalLoansGiven: [CDAccount] {
         assetAccounts.filter { $0.accountType == AccountType.personalLoanGiven.rawValue }
     }
+    private var personalLoansOutstanding: Double { personalLoansGiven.reduce(0) { $0 + $1.balance } }
     
     var body: some View {
         NavigationView {
             List {
-                BalanceSummarySection(accounts: viewModel.accounts)
+                Section {
+                    BalanceSummarySection(accounts: viewModel.accounts)
+                }
                 
                 Section("Assets") {
-                    DisclosureGroup("Bank Accounts") {
-                        ForEach(bankAccounts) { account in
-                            AccountRow(account: account)
-                                .contentShape(Rectangle())
-                                .onTapGesture {
-                                    selectedAccount = account
-                                }
+                    DisclosureGroup(
+                        content: {
+                            ForEach(bankAccounts) { account in
+                                AccountRow(account: account)
+                                    .onTapGesture { 
+                                        selectedAccountForTransactions = account
+                                        showingAccountTransactions = true
+                                    }
+                                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                        Button {
+                                            selectedAccountForTransactions = account
+                                            showingAccountTransactions = true
+                                        } label: {
+                                            Label("Transactions", systemImage: "list.bullet")
+                                        }
+                                        .tint(.blue)
+                                        
+                                        Button(role: .destructive) {
+                                            viewModel.deleteAccount(account)
+                                        } label: {
+                                            Label("Delete", systemImage: "trash")
+                                        }
+                                    }
+                            }
+                        },
+                        label: {
+                            HStack {
+                                Text("Bank Accounts")
+                                Spacer()
+                                Text(bankAccountsTotal, format: .currency(code: currencySettings.selectedCurrency.rawValue))
+                                    .foregroundColor(.secondary)
+                            }
                         }
-                    }
+                    )
                     
-                    DisclosureGroup("Mutual Funds") {
-                        ForEach(mutualFunds) { account in
-                            MutualFundRow(account: account)
-                                .contentShape(Rectangle())
-                                .onTapGesture {
-                                    selectedAccount = account
-                                }
+                    DisclosureGroup(
+                        content: {
+                            ForEach(mutualFunds) { account in
+                                MutualFundRow(account: account)
+                                    .onTapGesture { 
+                                        selectedAccountForTransactions = account
+                                        showingAccountTransactions = true
+                                    }
+                                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                        Button {
+                                            selectedAccountForTransactions = account
+                                            showingAccountTransactions = true
+                                        } label: {
+                                            Label("Transactions", systemImage: "list.bullet")
+                                        }
+                                        .tint(.blue)
+                                        
+                                        Button(role: .destructive) {
+                                            viewModel.deleteAccount(account)
+                                        } label: {
+                                            Label("Delete", systemImage: "trash")
+                                        }
+                                    }
+                            }
+                        },
+                        label: {
+                            HStack {
+                                Text("Mutual Funds")
+                                Spacer()
+                                Text(mutualFundsTotal, format: .currency(code: currencySettings.selectedCurrency.rawValue))
+                                    .foregroundColor(.secondary)
+                            }
                         }
-                    }
+                    )
                     
-                    DisclosureGroup("Personal Loans Given") {
-                        ForEach(personalLoansGiven) { account in
-                            AccountRow(account: account)
-                                .contentShape(Rectangle())
-                                .onTapGesture {
-                                    selectedAccount = account
+                    DisclosureGroup(
+                        content: {
+                            ForEach(personalLoansGiven) { account in
+                                NavigationLink(destination: LoanDetailsView(viewModel: viewModel, account: account)) {
+                                    AccountRow(account: account)
                                 }
                                 .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                                     Button(role: .destructive) {
@@ -78,61 +138,91 @@ struct AccountsView: View {
                                     } label: {
                                         Label("Delete", systemImage: "trash")
                                     }
-                                    
-                                    Button {
-                                        selectedAccount = account
-                                    } label: {
-                                        Label("Edit", systemImage: "pencil")
-                                    }
-                                    .tint(.blue)
                                 }
+                            }
+                        },
+                        label: {
+                            HStack {
+                                Text("Personal Loans Given")
+                                Spacer()
+                                Text(personalLoansOutstanding, format: .currency(code: currencySettings.selectedCurrency.rawValue))
+                                    .foregroundColor(.secondary)
+                            }
                         }
-                    }
+                    )
                 }
                 
                 Section("Liabilities") {
-                    DisclosureGroup("Credit Cards") {
-                        ForEach(creditCards) { account in
-                            AccountRow(account: account)
-                                .contentShape(Rectangle())
-                                .onTapGesture {
-                                    selectedAccount = account
-                                }
+                    DisclosureGroup(
+                        content: {
+                            ForEach(creditCards) { account in
+                                AccountRow(account: account)
+                                    .onTapGesture { 
+                                        selectedAccountForTransactions = account
+                                        showingAccountTransactions = true
+                                    }
+                                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                        Button {
+                                            selectedAccountForTransactions = account
+                                            showingAccountTransactions = true
+                                        } label: {
+                                            Label("Transactions", systemImage: "list.bullet")
+                                        }
+                                        .tint(.blue)
+                                        
+                                        Button(role: .destructive) {
+                                            viewModel.deleteAccount(account)
+                                        } label: {
+                                            Label("Delete", systemImage: "trash")
+                                        }
+                                    }
+                            }
+                        },
+                        label: {
+                            HStack {
+                                Text("Credit Cards")
+                                Spacer()
+                                Text(creditCardsOutstanding, format: .currency(code: currencySettings.selectedCurrency.rawValue))
+                                    .foregroundColor(.secondary)
+                            }
                         }
-                    }
+                    )
                     
-                    DisclosureGroup("Loans") {
-                        ForEach(loans) { account in
-                            AccountRow(account: account)
-                                .contentShape(Rectangle())
-                                .onTapGesture {
-                                    selectedAccount = account
+                    DisclosureGroup(
+                        content: {
+                            ForEach(loans) { account in
+                                NavigationLink(destination: LoanDetailsView(viewModel: viewModel, account: account)) {
+                                    AccountRow(account: account)
                                 }
                                 .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                    Button {
+                                        selectedAccount = account
+                                        showingLoanPayment = true
+                                    } label: {
+                                        Label("Pay Loan", systemImage: "indianrupeesign.circle")
+                                    }
+                                    .tint(.green)
+                                    
                                     Button(role: .destructive) {
                                         viewModel.deleteAccount(account)
                                     } label: {
                                         Label("Delete", systemImage: "trash")
                                     }
-                                    
-                                    Button {
-                                        recordLoanInterest(for: account)
-                                    } label: {
-                                        Label("Add Interest", systemImage: "percent")
-                                    }
-                                    .tint(.orange)
-                                    
-                                    Button {
-                                        selectedAccount = account
-                                    } label: {
-                                        Label("Edit", systemImage: "pencil")
-                                    }
-                                    .tint(.blue)
                                 }
+                            }
+                        },
+                        label: {
+                            HStack {
+                                Text("Loans")
+                                Spacer()
+                                Text(loansOutstanding, format: .currency(code: currencySettings.selectedCurrency.rawValue))
+                                    .foregroundColor(.secondary)
+                            }
                         }
-                    }
+                    )
                 }
             }
+            .background(Color(.systemGroupedBackground))
             .navigationTitle("Accounts")
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
@@ -169,6 +259,14 @@ struct AccountsView: View {
                     EditAccountView(viewModel: viewModel, account: account)
                 }
             }
+            .sheet(isPresented: $showingLoanPayment) {
+                LoanPaymentView(viewModel: viewModel, preSelectedLoan: selectedAccount)
+            }
+            .sheet(isPresented: $showingAccountTransactions) {
+                if let account = selectedAccountForTransactions {
+                    AccountTransactionsView(viewModel: viewModel, account: account)
+                }
+            }
         }
     }
     
@@ -181,8 +279,8 @@ struct AccountsView: View {
     }
     
     private func recordLoanInterest(for account: CDAccount) {
-        guard let metadata = account.metadata,
-              let rateString = metadata["interestRate"],
+        let metadata = account.metadataDictionary
+        guard let rateString = metadata["interestRate"],
               let rate = Double(rateString) else {
             return
         }

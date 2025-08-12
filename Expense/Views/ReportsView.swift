@@ -100,6 +100,19 @@ struct ReportsView: View {
                     }
                 }
                 
+                Section("Portfolio Value") {
+                    Chart {
+                        ForEach(filteredTransactions.sorted(by: { $0.wrappedDate < $1.wrappedDate })) { transaction in
+                            LineMark(
+                                x: .value("Date", transaction.wrappedDate),
+                                y: .value("Value", transaction.account?.balance ?? 0)
+                            )
+                            .foregroundStyle(by: .value("Account", transaction.account?.wrappedAccountName ?? "N/A"))
+                        }
+                    }
+                    .frame(height: 250)
+                }
+
                 Section("Summary") {
                     HStack {
                         Text("Total Income")
@@ -124,6 +137,18 @@ struct ReportsView: View {
                 }
                 
                 Section("Category Breakdown") {
+                    Chart(categoryTotals, id: \.category) { item in
+                        SectorMark(
+                            angle: .value("Amount", abs(item.amount)),
+                            innerRadius: .ratio(0.618),
+                            angularInset: 1.5
+                        )
+                        .foregroundStyle(by: .value("Category", item.category))
+                        .cornerRadius(5)
+                    }
+                    .frame(height: 300)
+                    .chartLegend(position: .bottom, alignment: .center)
+                    
                     ForEach(categoryTotals, id: \.category) { item in
                         HStack {
                             Text(item.category)

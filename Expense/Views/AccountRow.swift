@@ -5,82 +5,27 @@ struct AccountRow: View {
     @StateObject private var currencySettings = CurrencySettings.shared
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text(account.wrappedAccountName)
                     .font(.headline)
                 Spacer()
                 Text(account.balance, format: .currency(code: currencySettings.selectedCurrency.rawValue))
-                    .foregroundColor(account.wrappedAccountType.isAsset ? .primary : .red)
+                    .font(.headline)
+                    .fontWeight(.bold)
+                    .foregroundColor(account.wrappedAccountType.isAsset ? .green : .red)
             }
             
-            if account.accountType == AccountType.creditCard.rawValue {
-                let utilization = account.creditLimit > 0 ? (account.balance / account.creditLimit) * 100 : 0
-                Text("Credit Utilization: \(String(format: "%.1f", utilization))%")
+            if let type = account.accountType {
+                Text(type)
                     .font(.caption)
-                    .foregroundColor(utilization < 30 ? .green : utilization < 70 ? .yellow : .red)
-            } else if account.accountType == AccountType.loan.rawValue {
-                let originalAmount = account.creditLimit
-                let remainingAmount = account.balance
-                let repaidAmount = originalAmount - remainingAmount
-                let repaidPercentage = originalAmount > 0 ? (repaidAmount / originalAmount) * 100 : 0
-                
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack {
-                        Text("Original Amount:")
-                        Text(originalAmount, format: .currency(code: currencySettings.selectedCurrency.rawValue))
-                            .foregroundColor(.secondary)
-                    }
-                    .font(.caption)
-                    
-                    HStack {
-                        Text("Repaid Amount:")
-                        Text(repaidAmount, format: .currency(code: currencySettings.selectedCurrency.rawValue))
-                            .foregroundColor(.green)
-                    }
-                    .font(.caption)
-                    
-                    HStack {
-                        Text("Repaid:")
-                        Text("\(String(format: "%.1f", repaidPercentage))%")
-                            .foregroundColor(.green)
-                    }
-                    .font(.caption)
-                }
-            } else if account.accountType == AccountType.personalLoanGiven.rawValue {
-                let principal = account.creditLimit
-                let currentAmount = account.balance
-                let interestEarned = currentAmount - principal
-                let metadata = account.metadata ?? [:]
-                
-                VStack(alignment: .leading, spacing: 2) {
-                    if let borrowerName = metadata["borrowerName"] {
-                        Text("Borrower: \(borrowerName)")
-                            .font(.caption)
-                    }
-                    
-                    HStack {
-                        Text("Principal Amount:")
-                        Text(principal, format: .currency(code: currencySettings.selectedCurrency.rawValue))
-                            .foregroundColor(.secondary)
-                    }
-                    .font(.caption)
-                    
-                    HStack {
-                        Text("Interest Earned:")
-                        Text(interestEarned, format: .currency(code: currencySettings.selectedCurrency.rawValue))
-                            .foregroundColor(.green)
-                    }
-                    .font(.caption)
-                    
-                    if let rate = metadata["interestRate"] {
-                        Text("Interest Rate: \(rate)% per year")
-                            .font(.caption)
-                    }
-                }
+                    .foregroundColor(.secondary)
             }
         }
-        .padding(.vertical, 4)
+        .padding()
+        .background(Color(.secondarySystemGroupedBackground))
+        .cornerRadius(12)
+        .shadow(color: .black.opacity(0.05), radius: 5, x: 0, y: 5)
     }
 }
 

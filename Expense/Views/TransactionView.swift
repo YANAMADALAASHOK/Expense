@@ -4,16 +4,30 @@ import CoreData
 struct TransactionView: View {
     @ObservedObject var viewModel: ExpenseViewModel
     @State private var showingAddTransaction = false
+    @State private var showingLoanPayment = false
     @State private var selectedTransaction: CDTransaction?
     @State private var isRefreshing = false
     @State private var selectedTransactionType: TransactionType?
+    @State private var selectedCategoryFilter: String? = nil
     
     var body: some View {
         NavigationView {
             List {
-                ForEach(viewModel.recentTransactions.grouped(by: \.wrappedDate), id: \.key) { date, transactions in
+                // Category filter
+                Section {
+                    Picker("Category", selection: Binding(
+                        get: { selectedCategoryFilter ?? "All" },
+                        set: { selectedCategoryFilter = $0 == "All" ? nil : $0 }
+                    )) {
+                        Text("All").tag("All")
+                        ForEach(viewModel.allCategories, id: \.self) { cat in
+                            Text(cat).tag(cat)
+                        }
+                    }
+                }
+                ForEach(filteredTransactions.grouped(by: \.wrappedDate), id: \.key) { date, transactions in
                     Section(header: Text(date.formatted(date: .abbreviated, time: .omitted))) {
-                        ForEach(transactions) { transaction in
+                        ForEach(transactions, id: \.id) { transaction in
                             TransactionRow(transaction: transaction)
                                 .contentShape(Rectangle())
                                 .onTapGesture {
@@ -67,8 +81,7 @@ struct TransactionView: View {
                         }
                         
                         Button(action: { 
-                            showingAddTransaction = true
-                            selectedTransactionType = .loanPayment
+                            showingLoanPayment = true
                         }) {
                             Label("Loan Payment", systemImage: "indianrupeesign.circle")
                         }
@@ -92,12 +105,20 @@ struct TransactionView: View {
                     AddTransactionView(viewModel: viewModel, transactionType: type)
                 }
             }
+            .sheet(isPresented: $showingLoanPayment) {
+                LoanPaymentView(viewModel: viewModel)
+            }
             .sheet(item: $selectedTransaction) { transaction in
                 EditTransactionView(viewModel: viewModel, transaction: transaction)
             }
         }
     }
     
+    private var filteredTransactions: [CDTransaction] {
+        guard let filter = selectedCategoryFilter else { return viewModel.recentTransactions }
+        return viewModel.recentTransactions.filter { $0.wrappedCategory == filter }
+    }
+
     private func refreshData() {
         isRefreshing = true
         viewModel.refreshData()
