@@ -437,7 +437,7 @@ class ExpenseViewModel: ObservableObject {
         date: Date = Date()
     ) {
         viewContext.performAndWait {
-            // 1. Create debit transaction from funding account (bank/cash)
+            // Create ONE debit transaction from funding account, and directly adjust the card balance
             let debitTxn = CDTransaction(context: viewContext)
             debitTxn.id = UUID()
             debitTxn.amount = amount
@@ -447,17 +447,7 @@ class ExpenseViewModel: ObservableObject {
             debitTxn.notes = "Credit Card Payment to \(toCreditCardAccount.wrappedAccountName) - \(notes)"
             debitTxn.date = date
 
-            // 2. Create credit transaction to credit card account (reduces liability)
-            let creditTxn = CDTransaction(context: viewContext)
-            creditTxn.id = UUID()
-            creditTxn.amount = amount
-            creditTxn.category = TransactionCategory.creditCardPayment.rawValue
-            creditTxn.isCredit = true // credit to credit card reduces card balance per app logic
-            creditTxn.account = toCreditCardAccount
-            creditTxn.notes = "Payment from \(fromAccount.wrappedAccountName) - \(notes)"
-            creditTxn.date = date
-
-            // 3. Update balances
+            // Update balances
             fromAccount.balance -= amount
             toCreditCardAccount.balance -= amount
 
@@ -500,7 +490,7 @@ class ExpenseViewModel: ObservableObject {
             // Remove original transaction
             viewContext.delete(transaction)
 
-            // Create new paired transactions
+            // Create ONE debit transaction on funding account and adjust card outstanding directly
             let debitTxn = CDTransaction(context: viewContext)
             debitTxn.id = UUID()
             debitTxn.amount = amount
@@ -509,15 +499,6 @@ class ExpenseViewModel: ObservableObject {
             debitTxn.account = fundingAccount
             debitTxn.notes = "Credit Card Payment to \(paidCard.wrappedAccountName) - \(notes)"
             debitTxn.date = date
-
-            let creditTxn = CDTransaction(context: viewContext)
-            creditTxn.id = UUID()
-            creditTxn.amount = amount
-            creditTxn.category = TransactionCategory.creditCardPayment.rawValue
-            creditTxn.isCredit = true
-            creditTxn.account = paidCard
-            creditTxn.notes = "Payment from \(fundingAccount.wrappedAccountName) - \(notes)"
-            creditTxn.date = date
 
             // Update balances
             fundingAccount.balance -= amount
