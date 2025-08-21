@@ -13,12 +13,20 @@ class ExpenseViewModel: ObservableObject {
     @Published var lastSyncTime: Date?
     @Published var budgets: [Budget] = []
     @Published var amfiFundList: [(code: String, name: String)] = []
+    @Published var pendingTransactions: [PendingTransactionItem] = []
+    @Published private(set) var processedEmailMessageIds: Set<String> = []
+    @Published var lastEmailReceivedAt: Date?
+    @Published var fetchedEmails: [OutlookMessage] = []
     @Published private(set) var excludedTransactionIds: Set<UUID> = []
+    @Published var subcategoriesByParent: [String: [String]] = [:]
     
     init(context: NSManagedObjectContext) {
         self.viewContext = context
         loadCustomCategories()
+        loadSubcategories()
         loadExcludedTransactions()
+        loadPendingTransactions()
+        loadEmailIngestionState()
         
         // Load last sync time from UserDefaults
         if let savedDate = UserDefaults.standard.object(forKey: "lastSyncTime") as? Date {
@@ -176,6 +184,17 @@ class ExpenseViewModel: ObservableObject {
             customCategories = savedCategories
         }
     }
+    private func loadSubcategories() {
+        if let data = UserDefaults.standard.data(forKey: "SubcategoriesByParent"),
+           let dict = try? JSONDecoder().decode([String: [String]].self, from: data) {
+            subcategoriesByParent = dict
+        }
+    }
+    private func saveSubcategories() {
+        if let data = try? JSONEncoder().encode(subcategoriesByParent) {
+            UserDefaults.standard.set(data, forKey: "SubcategoriesByParent")
+        }
+    }
     
     func addCustomCategory(_ category: String) {
         customCategories.append(category)
@@ -186,6 +205,21 @@ class ExpenseViewModel: ObservableObject {
     func removeCustomCategory(at index: Int) {
         customCategories.remove(at: index)
         UserDefaults.standard.set(customCategories, forKey: "CustomCategories")
+        objectWillChange.send()
+    }
+    
+    func subcategories(for parent: String) -> [String] {
+        let unique = Array(Set(subcategoriesByParent[parent] ?? [])).sorted()
+        return unique
+    }
+    
+    func addSubcategory(parent: String, subcategory: String) {
+        guard !parent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !subcategory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        var list = subcategoriesByParent[parent] ?? []
+        list.append(subcategory)
+        subcategoriesByParent[parent] = Array(Set(list)).sorted()
+        saveSubcategories()
         objectWillChange.send()
     }
     
@@ -685,12 +719,12 @@ class ExpenseViewModel: ObservableObject {
             if text.contains("groww") || text.contains("bse") || text.contains("nse") || text.contains("amc") || text.contains("mf") || text.contains("redeem") || text.contains("payout") {
                 return TransactionCategory.investment.rawValue
             }
-            if text.contains("cred") { return TransactionCategory.creditCardPayment.rawValue }
+            if text.range(of: "\\b(cred|credit card|cc bill|card payment)\\b", options: .regularExpression) != nil { return TransactionCategory.creditCardPayment.rawValue }
             if text.contains("amazon") || text.contains("flipkart") { return TransactionCategory.shopping.rawValue }
             // Otherwise leave as Other or use AI for non-income credit signals
             return TransactionCategory.other.rawValue
         } else {
-            if text.contains("cred") || text.contains("credit card") || text.contains("cc bill") {
+            if text.range(of: "\\b(cred|credit card|cc bill|card payment)\\b", options: .regularExpression) != nil {
                 return TransactionCategory.creditCardPayment.rawValue
             }
             if text.contains("groww") || text.contains("bse") || text.contains("nse") || text.contains("mf") || text.contains("sip") {
@@ -793,6 +827,107 @@ class ExpenseViewModel: ObservableObject {
         fetchAccounts()
         fetchRecentTransactions()
         objectWillChange.send()
+    }
+    
+    // MARK: - Email Ingestion State
+    private func loadEmailIngestionState() {
+        if let arr = UserDefaults.standard.array(forKey: "ProcessedEmailMessageIds") as? [String] {
+            processedEmailMessageIds = Set(arr)
+        }
+        if let ts = UserDefaults.standard.object(forKey: "LastEmailReceivedAt") as? Date {
+            lastEmailReceivedAt = ts
+        }
+    }
+    func persistEmailIngestionState() {
+        UserDefaults.standard.set(Array(processedEmailMessageIds), forKey: "ProcessedEmailMessageIds")
+        if let ts = lastEmailReceivedAt {
+            UserDefaults.standard.set(ts, forKey: "LastEmailReceivedAt")
+        }
+    }
+    func markEmailProcessed(messageId: String, receivedAt: Date) {
+        processedEmailMessageIds.insert(messageId)
+        if let last = lastEmailReceivedAt {
+            if receivedAt > last { lastEmailReceivedAt = receivedAt }
+        } else {
+            lastEmailReceivedAt = receivedAt
+        }
+        persistEmailIngestionState()
+    }
+
+    func fetchAllOutlookEmails(sender: String? = nil, completion: @escaping (Result<Int, Error>) -> Void) {
+        OutlookService.shared.fetchRecentMessages(since: lastEmailReceivedAt, sender: sender) { [weak self] result in
+            DispatchQueue.main.async {
+                switch result {
+                case .success(let msgs):
+                    self?.fetchedEmails = msgs
+                    completion(.success(msgs.count))
+                case .failure(let err):
+                    completion(.failure(err))
+                }
+            }
+        }
+    }
+
+    func fetchOutlookEmails(since: Date?, sender: String? = nil, completion: @escaping (Result<Int, Error>) -> Void) {
+        OutlookService.shared.fetchRecentMessages(since: since, sender: sender) { [weak self] result in
+            DispatchQueue.main.async {
+                switch result {
+                case .success(let msgs):
+                    self?.fetchedEmails = msgs
+                    completion(.success(msgs.count))
+                case .failure(let err):
+                    completion(.failure(err))
+                }
+            }
+        }
+    }
+
+    // MARK: - Pending Transactions
+    private func loadPendingTransactions() {
+        if let data = UserDefaults.standard.data(forKey: "PendingTransactions"),
+           let items = try? JSONDecoder().decode([PendingTransactionItem].self, from: data) {
+            pendingTransactions = items
+        }
+    }
+    private func savePendingTransactions() {
+        if let data = try? JSONEncoder().encode(pendingTransactions) {
+            UserDefaults.standard.set(data, forKey: "PendingTransactions")
+        }
+    }
+    func addPendingTransaction(_ item: PendingTransactionItem) {
+        pendingTransactions.insert(item, at: 0)
+        savePendingTransactions()
+        objectWillChange.send()
+    }
+    func removePendingTransaction(id: UUID) {
+        pendingTransactions.removeAll { $0.id == id }
+        savePendingTransactions()
+        objectWillChange.send()
+    }
+    func updatePendingTransactionCategory(id: UUID, to category: TransactionCategory) {
+        guard let idx = pendingTransactions.firstIndex(where: { $0.id == id }) else { return }
+        pendingTransactions[idx].suggestedCategory = category.rawValue
+        savePendingTransactions()
+        objectWillChange.send()
+    }
+    func approvePendingTransaction(id: UUID, toAccount: CDAccount?) {
+        guard let idx = pendingTransactions.firstIndex(where: { $0.id == id }), let account = toAccount ?? accounts.first else { return }
+        let item = pendingTransactions[idx]
+        let notes = item.notes ?? item.subject
+        // Use AI/user rules categorization at approval time using item details
+        var finalCategory = TransactionCategory(rawValue: item.suggestedCategory)
+        if finalCategory == .other {
+            let aiSuggested = AICategorizationManager.shared.categorizeTransaction(
+                title: item.subject,
+                amount: item.amount,
+                isCredit: item.isCredit,
+                notes: notes
+            )
+            finalCategory = TransactionCategory(rawValue: aiSuggested)
+        }
+        addTransaction(amount: item.amount, category: finalCategory, isCredit: item.isCredit, account: account, notes: notes, date: item.date)
+        pendingTransactions.remove(at: idx)
+        savePendingTransactions()
     }
 
     // Re-apply user category rules to ALL transactions in Core Data
@@ -1190,6 +1325,7 @@ class ExpenseViewModel: ObservableObject {
                 fileContent = try String(contentsOf: url) // system default
             }
             let lines = fileContent.components(separatedBy: .newlines)
+            print("[Groww] Read file with \(lines.count) lines")
             
             var fundsImported = 0
             var holdingsStarted = false
@@ -1199,10 +1335,11 @@ class ExpenseViewModel: ObservableObject {
             for line in lines {
                 let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
                 if trimmed.isEmpty { continue }
-                if trimmed.contains("HOLDINGS AS ON") { holdingsStarted = true; continue }
+                if trimmed.contains("HOLDINGS AS ON") { holdingsStarted = true; print("[Groww] Found holdings section"); continue }
                 if !holdingsStarted { continue }
 
                 let columns = parseCSVLine(line)
+                print("[Groww] Row columns: \(columns)")
                 if !headerParsed {
                     // Parse header to get column positions
                     if columns.contains(where: { $0.caseInsensitiveCompare("Scheme Name") == .orderedSame || $0.caseInsensitiveCompare("Scheme") == .orderedSame }) {
@@ -1213,6 +1350,9 @@ class ExpenseViewModel: ObservableObject {
                         if let n = nameIdx, let u = unitsIdx, let i = investedIdx, let c = currentIdx {
                             headerIndexes = (n,u,i,c)
                             headerParsed = true
+                            print("[Groww] Header indexes -> name: \(n), units: \(u), invested: \(i), current: \(c)")
+                        } else {
+                            print("[Groww] Could not find expected header columns in: \(columns)")
                         }
                     }
                     continue
@@ -1244,7 +1384,10 @@ class ExpenseViewModel: ObservableObject {
                 fundsImported += 1
             }
             
-            if fundsImported > 0 {
+            if !holdingsStarted || !headerParsed {
+                print("[Groww] Invalid format: holdingsStarted=\(holdingsStarted), headerParsed=\(headerParsed)")
+                completion(.failure(GrowwImportError.invalidFormat))
+            } else if fundsImported > 0 {
                 saveContext()
                 completion(.success(fundsImported))
             } else {
@@ -1430,11 +1573,13 @@ class ExpenseViewModel: ObservableObject {
 enum GrowwImportError: Error, LocalizedError {
     case permissionDenied
     case noFundsFound
+    case invalidFormat
     
     var errorDescription: String? {
         switch self {
         case .permissionDenied: return "Permission denied to access the selected file."
         case .noFundsFound: return "No mutual fund holdings could be found in this statement."
+        case .invalidFormat: return "Could not detect Groww holdings header (Scheme Name/Units/Invested Value/Current Value). Please export the 'Holdings' CSV and try again."
         }
     }
 } 
