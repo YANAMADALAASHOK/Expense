@@ -198,11 +198,12 @@ struct AddTransactionView: View {
         switch transactionType {
         case .loanPayment:
             // For loan payments, always set as credit (reducing the loan balance)
+            guard let loanAccount = selectedAccount else { showingError = true; return }
             viewModel.addTransaction(
                 amount: amountValue,
                 category: .emiPayment,
                 isCredit: true,  // Credit for loan account means reducing the balance
-                account: account,
+                account: loanAccount,
                 notes: notes.isEmpty ? "EMI Payment" : notes,
                 date: transactionDate
             )
@@ -219,6 +220,7 @@ struct AddTransactionView: View {
                 date: transactionDate
             )
         case .expense:
+            guard let expenseAccount = selectedAccount else { showingError = true; return }
             let parent = category.displayName
             let manualSub = subcategoryInput.trimmingCharacters(in: .whitespacesAndNewlines)
             let chosenSub = manualSub.isEmpty ? (selectedSuggestedSubcategory ?? "") : manualSub
@@ -228,11 +230,12 @@ struct AddTransactionView: View {
                 amount: amountValue,
                 category: finalCategory,
                 isCredit: false,
-                account: selectedAccount!,
+                account: expenseAccount,
                 notes: notes.isEmpty ? nil : notes,
                 date: transactionDate
             )
         case .income:
+            guard let incomeAccount = selectedAccount else { showingError = true; return }
             let parent = category.displayName
             let manualSub = subcategoryInput.trimmingCharacters(in: .whitespacesAndNewlines)
             let chosenSub = manualSub.isEmpty ? (selectedSuggestedSubcategory ?? "") : manualSub
@@ -242,7 +245,7 @@ struct AddTransactionView: View {
                 amount: amountValue,
                 category: finalCategory,
                 isCredit: true,
-                account: selectedAccount!,
+                account: incomeAccount,
                 notes: notes.isEmpty ? nil : notes,
                 date: transactionDate
             )
