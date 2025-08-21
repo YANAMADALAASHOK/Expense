@@ -474,6 +474,67 @@ class ExpenseViewModel: ObservableObject {
             }
         }
     }
+
+    func convertToCreditCardPayment(
+        transaction: CDTransaction,
+        amount: Double,
+        paidCard: CDAccount,
+        fundingAccount: CDAccount,
+        notes: String,
+        date: Date
+    ) {
+        viewContext.performAndWait {
+            // Revert original balance effect
+            if let originalAccount = transaction.account {
+                if transaction.isCredit {
+                    originalAccount.balance -= transaction.amount
+                } else {
+                    if originalAccount.accountType == AccountType.creditCard.rawValue {
+                        originalAccount.balance -= transaction.amount
+                    } else {
+                        originalAccount.balance += transaction.amount
+                    }
+                }
+            }
+
+            // Remove original transaction
+            viewContext.delete(transaction)
+
+            // Create new paired transactions
+            let debitTxn = CDTransaction(context: viewContext)
+            debitTxn.id = UUID()
+            debitTxn.amount = amount
+            debitTxn.category = TransactionCategory.creditCardPayment.rawValue
+            debitTxn.isCredit = false
+            debitTxn.account = fundingAccount
+            debitTxn.notes = "Credit Card Payment to \(paidCard.wrappedAccountName) - \(notes)"
+            debitTxn.date = date
+
+            let creditTxn = CDTransaction(context: viewContext)
+            creditTxn.id = UUID()
+            creditTxn.amount = amount
+            creditTxn.category = TransactionCategory.creditCardPayment.rawValue
+            creditTxn.isCredit = true
+            creditTxn.account = paidCard
+            creditTxn.notes = "Payment from \(fundingAccount.wrappedAccountName) - \(notes)"
+            creditTxn.date = date
+
+            // Update balances
+            fundingAccount.balance -= amount
+            paidCard.balance -= amount
+
+            do {
+                try viewContext.save()
+                DispatchQueue.main.async { [weak self] in
+                    self?.fetchAccounts()
+                    self?.fetchRecentTransactions()
+                    self?.objectWillChange.send()
+                }
+            } catch {
+                print("Error converting to credit card payment: \(error)")
+            }
+        }
+    }
     
     func deleteTransaction(_ transaction: CDTransaction) {
         viewContext.performAndWait {
