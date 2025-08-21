@@ -16,8 +16,8 @@ struct AddTransactionView: View {
     @State private var amount = ""
     @State private var category = TransactionCategory.other
     @State private var selectedAccount: CDAccount?
-    @State private var ccSourceAccount: CDAccount?
-    @State private var ccTargetCard: CDAccount?
+    @State private var selectedCreditCardAccount: CDAccount?
+    @State private var selectedFundingAccount: CDAccount?
     @State private var notes = ""
     @State private var showingError = false
     @State private var showingCategoryManagement = false
@@ -43,9 +43,14 @@ struct AddTransactionView: View {
         }
         _selectedAccount = State(initialValue: accounts.first)
         if transactionType == .creditCardPayment {
-            let sources = viewModel.accounts.filter { $0.accountType == AccountType.bankAccount.rawValue }
-            _ccSourceAccount = State(initialValue: sources.first)
-            _ccTargetCard = State(initialValue: accounts.first)
+            let cc = viewModel.accounts.first { $0.accountType == AccountType.creditCard.rawValue }
+            let funding = viewModel.accounts.first { acct in
+                acct.accountType == AccountType.bankAccount.rawValue ||
+                acct.accountType == AccountType.savings.rawValue ||
+                acct.accountType == AccountType.cash.rawValue
+            }
+            _selectedCreditCardAccount = State(initialValue: cc)
+            _selectedFundingAccount = State(initialValue: funding)
         }
     }
     
@@ -60,6 +65,18 @@ struct AddTransactionView: View {
                 return account.accountType == AccountType.bankAccount.rawValue ||
                        account.accountType == AccountType.creditCard.rawValue
             }
+        }
+    }
+
+    private var creditCardAccounts: [CDAccount] {
+        viewModel.accounts.filter { $0.accountType == AccountType.creditCard.rawValue }
+    }
+
+    private var fundingAccounts: [CDAccount] {
+        viewModel.accounts.filter { acct in
+            acct.accountType == AccountType.bankAccount.rawValue ||
+            acct.accountType == AccountType.savings.rawValue ||
+            acct.accountType == AccountType.cash.rawValue
         }
     }
     
@@ -113,18 +130,16 @@ struct AddTransactionView: View {
                 }
                 
                 if transactionType == .creditCardPayment {
-                    Section("Payment From") {
-                        Picker("Source Account", selection: $ccSourceAccount) {
-                            Text("Select Account").tag(nil as CDAccount?)
-                            ForEach(viewModel.accounts.filter { $0.accountType == AccountType.bankAccount.rawValue }) { account in
+                    Section("Payment Accounts") {
+                        Picker("Paid Card", selection: $selectedCreditCardAccount) {
+                            Text("Select Card").tag(nil as CDAccount?)
+                            ForEach(creditCardAccounts) { account in
                                 Text(account.wrappedAccountName).tag(account as CDAccount?)
                             }
                         }
-                    }
-                    Section("Credit Card") {
-                        Picker("Target Card", selection: $ccTargetCard) {
-                            Text("Select Card").tag(nil as CDAccount?)
-                            ForEach(viewModel.accounts.filter { $0.accountType == AccountType.creditCard.rawValue }) { account in
+                        Picker("Paid From", selection: $selectedFundingAccount) {
+                            Text("Select Funding Account").tag(nil as CDAccount?)
+                            ForEach(fundingAccounts) { account in
                                 Text(account.wrappedAccountName).tag(account as CDAccount?)
                             }
                         }
@@ -192,14 +207,14 @@ struct AddTransactionView: View {
                 date: transactionDate
             )
         case .creditCardPayment:
-            guard let from = ccSourceAccount, let to = ccTargetCard else {
+            guard let toCard = selectedCreditCardAccount, let from = selectedFundingAccount else {
                 showingError = true
                 return
             }
             viewModel.processCreditCardPayment(
                 amount: amountValue,
                 fromAccount: from,
-                toCreditCardAccount: to,
+                toCreditCardAccount: toCard,
                 notes: notes.isEmpty ? "Credit Card Payment" : notes,
                 date: transactionDate
             )
@@ -213,7 +228,7 @@ struct AddTransactionView: View {
                 amount: amountValue,
                 category: finalCategory,
                 isCredit: false,
-                account: account,
+                account: selectedAccount!,
                 notes: notes.isEmpty ? nil : notes,
                 date: transactionDate
             )
@@ -227,7 +242,7 @@ struct AddTransactionView: View {
                 amount: amountValue,
                 category: finalCategory,
                 isCredit: true,
-                account: account,
+                account: selectedAccount!,
                 notes: notes.isEmpty ? nil : notes,
                 date: transactionDate
             )
