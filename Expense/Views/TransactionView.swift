@@ -13,7 +13,7 @@ struct TransactionView: View {
     var body: some View {
         NavigationView {
             List {
-                // Category filter
+                // Category filter (supports parent categories; subcategories collapse under parent)
                 Section {
                     Picker("Category", selection: Binding(
                         get: { selectedCategoryFilter ?? "All" },
@@ -46,6 +46,16 @@ struct TransactionView: View {
                                         Label("Edit", systemImage: "pencil")
                                     }
                                     .tint(.blue)
+
+                                    if TransactionCategory(rawValue: transaction.wrappedCategory) == .creditCardPayment {
+                                        Button {
+                                            // Open edit sheet to convert into paired payment quickly
+                                            selectedTransaction = transaction
+                                        } label: {
+                                            Label("Convert to Payment", systemImage: "arrow.triangle.2.circlepath")
+                                        }
+                                        .tint(.green)
+                                    }
                                 }
                         }
                         .onDelete { indexSet in
@@ -116,7 +126,10 @@ struct TransactionView: View {
     
     private var filteredTransactions: [CDTransaction] {
         guard let filter = selectedCategoryFilter else { return viewModel.recentTransactions }
-        return viewModel.recentTransactions.filter { $0.wrappedCategory == filter }
+        return viewModel.recentTransactions.filter { txn in
+            let raw = txn.wrappedCategory
+            return raw == filter || raw.hasPrefix(filter + "::")
+        }
     }
 
     private func refreshData() {
