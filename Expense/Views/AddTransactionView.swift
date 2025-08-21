@@ -16,10 +16,14 @@ struct AddTransactionView: View {
     @State private var amount = ""
     @State private var category = TransactionCategory.other
     @State private var selectedAccount: CDAccount?
+    @State private var ccSourceAccount: CDAccount?
+    @State private var ccTargetCard: CDAccount?
     @State private var notes = ""
     @State private var showingError = false
     @State private var showingCategoryManagement = false
     @State private var transactionDate = Date()
+    @State private var subcategoryInput: String = ""
+    @State private var selectedSuggestedSubcategory: String? = nil
     
     init(viewModel: ExpenseViewModel, transactionType: TransactionType = .expense) {
         self.viewModel = viewModel
@@ -38,6 +42,11 @@ struct AddTransactionView: View {
             }
         }
         _selectedAccount = State(initialValue: accounts.first)
+        if transactionType == .creditCardPayment {
+            let sources = viewModel.accounts.filter { $0.accountType == AccountType.bankAccount.rawValue }
+            _ccSourceAccount = State(initialValue: sources.first)
+            _ccTargetCard = State(initialValue: accounts.first)
+        }
     }
     
     private var transactionAccounts: [CDAccount] {
@@ -86,14 +95,47 @@ struct AddTransactionView: View {
                                 Text(category.displayName).tag(category)
                             }
                         }
+                        // Subcategory (optional)
+                        let suggestions = viewModel.subcategories(for: category.displayName)
+                        if !suggestions.isEmpty {
+                            Picker("Subcategory", selection: Binding<String?>(
+                                get: { selectedSuggestedSubcategory },
+                                set: { selectedSuggestedSubcategory = $0 }
+                            )) {
+                                Text("None").tag(nil as String?)
+                                ForEach(suggestions, id: \.self) { sub in
+                                    Text(sub).tag(sub as String?)
+                                }
+                            }
+                        }
+                        TextField("Subcategory (Optional)", text: $subcategoryInput)
                     }
                 }
                 
-                Section("Account") {
-                    Picker("Account", selection: $selectedAccount) {
-                        Text("Select Account").tag(nil as CDAccount?)
-                        ForEach(transactionAccounts) { account in
-                            Text(account.wrappedAccountName).tag(account as CDAccount?)
+                if transactionType == .creditCardPayment {
+                    Section("Payment From") {
+                        Picker("Source Account", selection: $ccSourceAccount) {
+                            Text("Select Account").tag(nil as CDAccount?)
+                            ForEach(viewModel.accounts.filter { $0.accountType == AccountType.bankAccount.rawValue }) { account in
+                                Text(account.wrappedAccountName).tag(account as CDAccount?)
+                            }
+                        }
+                    }
+                    Section("Credit Card") {
+                        Picker("Target Card", selection: $ccTargetCard) {
+                            Text("Select Card").tag(nil as CDAccount?)
+                            ForEach(viewModel.accounts.filter { $0.accountType == AccountType.creditCard.rawValue }) { account in
+                                Text(account.wrappedAccountName).tag(account as CDAccount?)
+                            }
+                        }
+                    }
+                } else {
+                    Section("Account") {
+                        Picker("Account", selection: $selectedAccount) {
+                            Text("Select Account").tag(nil as CDAccount?)
+                            ForEach(transactionAccounts) { account in
+                                Text(account.wrappedAccountName).tag(account as CDAccount?)
+                            }
                         }
                     }
                 }
@@ -133,8 +175,7 @@ struct AddTransactionView: View {
     }
     
     private func saveTransaction() {
-        guard let amountValue = Double(amount),
-              let account = selectedAccount else {
+        guard let amountValue = Double(amount) else {
             showingError = true
             return
         }
@@ -151,28 +192,40 @@ struct AddTransactionView: View {
                 date: transactionDate
             )
         case .creditCardPayment:
-            // For credit card payments, set as credit (reducing the card balance)
-            viewModel.addTransaction(
+            guard let from = ccSourceAccount, let to = ccTargetCard else {
+                showingError = true
+                return
+            }
+            viewModel.processCreditCardPayment(
                 amount: amountValue,
-                category: .creditCardPayment,
-                isCredit: true,  // Credit for credit card means reducing the balance
-                account: account,
+                fromAccount: from,
+                toCreditCardAccount: to,
                 notes: notes.isEmpty ? "Credit Card Payment" : notes,
                 date: transactionDate
             )
         case .expense:
+            let parent = category.displayName
+            let manualSub = subcategoryInput.trimmingCharacters(in: .whitespacesAndNewlines)
+            let chosenSub = manualSub.isEmpty ? (selectedSuggestedSubcategory ?? "") : manualSub
+            let finalCategory: TransactionCategory = chosenSub.isEmpty ? category : .custom("\(parent)::\(chosenSub)")
+            if !chosenSub.isEmpty { viewModel.addSubcategory(parent: parent, subcategory: chosenSub) }
             viewModel.addTransaction(
                 amount: amountValue,
-                category: category,
+                category: finalCategory,
                 isCredit: false,
                 account: account,
                 notes: notes.isEmpty ? nil : notes,
                 date: transactionDate
             )
         case .income:
+            let parent = category.displayName
+            let manualSub = subcategoryInput.trimmingCharacters(in: .whitespacesAndNewlines)
+            let chosenSub = manualSub.isEmpty ? (selectedSuggestedSubcategory ?? "") : manualSub
+            let finalCategory: TransactionCategory = chosenSub.isEmpty ? category : .custom("\(parent)::\(chosenSub)")
+            if !chosenSub.isEmpty { viewModel.addSubcategory(parent: parent, subcategory: chosenSub) }
             viewModel.addTransaction(
                 amount: amountValue,
-                category: category,
+                category: finalCategory,
                 isCredit: true,
                 account: account,
                 notes: notes.isEmpty ? nil : notes,

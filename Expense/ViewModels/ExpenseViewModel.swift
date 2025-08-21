@@ -428,6 +428,57 @@ class ExpenseViewModel: ObservableObject {
             }
         }
     }
+
+    func processCreditCardPayment(
+        amount: Double,
+        fromAccount: CDAccount,
+        toCreditCardAccount: CDAccount,
+        notes: String,
+        date: Date = Date()
+    ) {
+        viewContext.performAndWait {
+            do {
+                // 1. Create debit transaction from source account (bank/cash)
+                let sourceTxn = CDTransaction(context: viewContext)
+                sourceTxn.id = UUID()
+                sourceTxn.amount = amount
+                sourceTxn.category = TransactionCategory.creditCardPayment.rawValue
+                sourceTxn.isCredit = false
+                sourceTxn.account = fromAccount
+                sourceTxn.notes = "Credit Card Payment to \(toCreditCardAccount.wrappedAccountName) - \(notes)"
+                sourceTxn.date = date
+
+                // 2. Create credit transaction to credit card account (reduces card balance)
+                let cardTxn = CDTransaction(context: viewContext)
+                cardTxn.id = UUID()
+                cardTxn.amount = amount
+                cardTxn.category = TransactionCategory.creditCardPayment.rawValue
+                cardTxn.isCredit = true
+                cardTxn.account = toCreditCardAccount
+                cardTxn.notes = "Payment from \(fromAccount.wrappedAccountName) - \(notes)"
+                cardTxn.date = date
+
+                // 3. Update balances
+                fromAccount.balance -= amount
+                toCreditCardAccount.balance -= amount
+
+                try viewContext.save()
+
+                // Refresh UI
+                DispatchQueue.main.async { [weak self] in
+                    self?.fetchAccounts()
+                    self?.fetchRecentTransactions()
+                    self?.objectWillChange.send()
+                }
+            } catch {
+                print("Error processing credit card payment: \(error)")
+                viewContext.rollback()
+                DispatchQueue.main.async { [weak self] in
+                    self?.refreshData()
+                }
+            }
+        }
+    }
     
     func deleteTransaction(_ transaction: CDTransaction) {
         viewContext.performAndWait {
@@ -926,6 +977,21 @@ class ExpenseViewModel: ObservableObject {
             finalCategory = TransactionCategory(rawValue: aiSuggested)
         }
         addTransaction(amount: item.amount, category: finalCategory, isCredit: item.isCredit, account: account, notes: notes, date: item.date)
+        pendingTransactions.remove(at: idx)
+        savePendingTransactions()
+    }
+
+    func approvePendingCreditCardPayment(id: UUID, fromAccount: CDAccount, toCreditCard: CDAccount) {
+        guard let idx = pendingTransactions.firstIndex(where: { $0.id == id }) else { return }
+        let item = pendingTransactions[idx]
+        let notes = item.notes ?? item.subject
+        processCreditCardPayment(
+            amount: item.amount,
+            fromAccount: fromAccount,
+            toCreditCardAccount: toCreditCard,
+            notes: notes,
+            date: item.date
+        )
         pendingTransactions.remove(at: idx)
         savePendingTransactions()
     }
