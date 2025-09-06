@@ -547,7 +547,7 @@ class ExpenseViewModel: ObservableObject {
         }
     }
     
-    func updateTransaction(_ transaction: CDTransaction, amount: Double, category: TransactionCategory, isCredit: Bool, notes: String?, updateRules: Bool = true) {
+    func updateTransaction(_ transaction: CDTransaction, amount: Double, category: TransactionCategory, isCredit: Bool, notes: String?, updateRules: Bool = false) {
         viewContext.performAndWait {
             // First revert the old balance change
             if let account = transaction.account {
@@ -580,13 +580,6 @@ class ExpenseViewModel: ObservableObject {
             
             do {
                 try viewContext.save()
-                if updateRules {
-                    // Learn a user rule from this edit (use notes or category text as pattern)
-                    let patternSource = (notes?.isEmpty == false ? notes! : transaction.wrappedNotes)
-                    if !patternSource.isEmpty {
-                        AICategorizationManager.shared.addOrUpdateRule(pattern: patternSource, category: category.rawValue)
-                    }
-                }
                 DispatchQueue.main.async { [weak self] in
                     self?.fetchAccounts()
                     self?.fetchRecentTransactions()

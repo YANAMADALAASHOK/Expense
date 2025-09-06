@@ -151,15 +151,12 @@ struct EditTransactionView: View {
             return
         }
         
-        let originalRaw = transaction.wrappedCategory
         let parent = category.displayName
         let manualSub = subcategoryInput.trimmingCharacters(in: .whitespacesAndNewlines)
         let chosenSub = manualSub.isEmpty ? (selectedSuggestedSubcategory ?? "") : manualSub
         let finalCategory: TransactionCategory = chosenSub.isEmpty ? category : .custom("\(parent)::\(chosenSub)")
         if !chosenSub.isEmpty { viewModel.addSubcategory(parent: parent, subcategory: chosenSub) }
-        
-        let originalCategory = TransactionCategory(rawValue: originalRaw) ?? .other
-        let updateRules = finalCategory.rawValue != originalRaw
+
         if finalCategory == .creditCardPayment, let card = ccPaidCard, let funding = ccFundingAccount {
             viewModel.convertToCreditCardPayment(
                 transaction: transaction,
@@ -176,7 +173,7 @@ struct EditTransactionView: View {
                 category: finalCategory,
                 isCredit: isCredit,
                 notes: notes.isEmpty ? nil : notes,
-                updateRules: updateRules
+                updateRules: false
             )
         }
         viewModel.setExcluded(for: transaction, excluded: excludeFromDashboard)
