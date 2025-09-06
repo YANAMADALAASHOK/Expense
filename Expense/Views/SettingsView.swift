@@ -163,6 +163,63 @@ struct SettingsView: View {
                     }
                 }
                 
+                Section(header: Text("Outlook Email")) {
+                    Button("Connect Outlook (Mail.Read)") {
+                        MicrosoftOAuthManager.shared.signIn { result in
+                            switch result {
+                            case .success:
+                                errorMessage = "Outlook connected."
+                                showingError = true
+                            case .failure(let error):
+                                errorMessage = "Outlook sign-in failed: \(error.localizedDescription)"
+                                showingError = true
+                            }
+                        }
+                    }
+                    NavigationLink(destination: EmailInboxView(viewModel: expenseViewModel, initialSender: "alerts@axisbank.com")) {
+                        Label("Fetch Axis Alerts", systemImage: "envelope.badge")
+                    }
+                    Button("Fetch All (Newer Only)") {
+                        OutlookService.shared.fetchRecentMessages(since: expenseViewModel.lastEmailReceivedAt, sender: nil) { result in
+                            switch result {
+                            case .success(let messages):
+                                var created = 0
+                                for m in messages {
+                                    let msgId = m.id
+                                    guard !expenseViewModel.processedEmailMessageIds.contains(msgId) else { continue }
+                                    let received = ISO8601DateFormatter().date(from: m.receivedDateTime) ?? Date()
+                                    do {
+                                        let parsed = try EmailParser.parse(subject: m.subject, body: m.body?.content ?? m.bodyPreview)
+                                        let pending = PendingTransactionItem(
+                                            subject: parsed.subject,
+                                            body: parsed.body,
+                                            amount: parsed.amount,
+                                            date: parsed.date,
+                                            isCredit: parsed.isCredit,
+                                            suggestedCategory: parsed.suggestedCategory,
+                                            notes: parsed.description
+                                        )
+                                        expenseViewModel.addPendingTransaction(pending)
+                                        expenseViewModel.markEmailProcessed(messageId: msgId, receivedAt: received)
+                                        created += 1
+                                    } catch { }
+                                }
+                                errorMessage = "Fetched \(messages.count); queued \(created) pending."
+                                showingError = true
+                            case .failure(let error):
+                                errorMessage = "Outlook fetch failed: \(error.localizedDescription)"
+                                showingError = true
+                            }
+                        }
+                    }
+                    NavigationLink(destination: PendingTransactionsView(viewModel: expenseViewModel)) {
+                        Label("Review Pending Transactions", systemImage: "doc.plaintext")
+                    }
+                    NavigationLink(destination: EmailInboxView(viewModel: expenseViewModel)) {
+                        Label("Browse Inbox (manual)", systemImage: "envelope")
+                    }
+                }
+
                 Section(header: Text("Data Management")) {
                     Button(action: {
                         isUpdatingNAVs = true
@@ -297,22 +354,16 @@ struct SettingsView: View {
                     showingError = true
                 }
             }
-            .fileImporter(
-                isPresented: $showingGrowwImportPicker,
-                allowedContentTypes: [.item],
-                allowsMultipleSelection: false
-            ) { result in
-                switch result {
-                case .success(let urls):
-                    guard let url = urls.first else {
-                        errorMessage = "No file selected for Groww import"
-                        showingError = true
-                        return
-                    }
+            .sheet(isPresented: $showingGrowwImportPicker) {
+                GrowwDocumentPicker(onPick: { url in
+                    // Dismiss picker sheet immediately
+                    showingGrowwImportPicker = false
                     isImportingGroww = true
-                    // Copy to a temp URL to avoid sandbox access issues
                     let tmpURL = FileManager.default.temporaryDirectory.appendingPathComponent("groww_\(UUID().uuidString).csv")
                     do {
+                        // Request security access to the picked URL before copying
+                        let granted = url.startAccessingSecurityScopedResource()
+                        defer { if granted { url.stopAccessingSecurityScopedResource() } }
                         if FileManager.default.fileExists(atPath: tmpURL.path) { try? FileManager.default.removeItem(at: tmpURL) }
                         try FileManager.default.copyItem(at: url, to: tmpURL)
                         expenseViewModel.importGrowwCSV(from: tmpURL) { result in
@@ -320,7 +371,7 @@ struct SettingsView: View {
                             switch result {
                             case .success(let count):
                                 errorMessage = "Successfully imported \(count) mutual funds."
-                                showingError = true // Re-using error alert for success message
+                                showingError = true
                             case .failure(let error):
                                 errorMessage = "Groww Import failed: \(error.localizedDescription)"
                                 showingError = true
@@ -331,10 +382,9 @@ struct SettingsView: View {
                         errorMessage = "Groww Import failed: \(error.localizedDescription)"
                         showingError = true
                     }
-                case .failure(let error):
-                    errorMessage = "Groww Import failed: \(error.localizedDescription)"
-                    showingError = true
-                }
+                }, onCancel: {
+                    showingGrowwImportPicker = false
+                })
             }
             .fileImporter(
                 isPresented: $showingAxisImportPicker,

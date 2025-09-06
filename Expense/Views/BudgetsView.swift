@@ -61,11 +61,11 @@ struct BudgetRow: View {
             .filter { transaction in
                 guard let budgetCategory = budget.category, let transactionCategory = transaction.category else { return false }
                 guard let budgetMonth = budget.month, let transactionDate = transaction.date else { return false }
-                
                 let budgetComponents = Calendar.current.dateComponents([.year, .month], from: budgetMonth)
                 let transactionComponents = Calendar.current.dateComponents([.year, .month], from: transactionDate)
-                
-                return budgetCategory == transactionCategory &&
+                // Match exact category or any subcategory of the form Parent::Sub
+                let isSameOrSub = transactionCategory == budgetCategory || transactionCategory.hasPrefix(budgetCategory + "::")
+                return isSameOrSub &&
                        budgetComponents.year == transactionComponents.year &&
                        budgetComponents.month == transactionComponents.month &&
                        !transaction.isCredit

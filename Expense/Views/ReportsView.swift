@@ -53,21 +53,28 @@ struct ReportsView: View {
     
     var filteredTransactions: [CDTransaction] {
         let interval = dateInterval
-        return viewModel.recentTransactions.filter { transaction in
+        return viewModel.dashboardTransactions.filter { transaction in
             guard let date = transaction.date else { return false }
             return interval.contains(date)
         }
     }
     
     var categoryTotals: [(category: String, amount: Double)] {
-        Dictionary(grouping: filteredTransactions) { $0.wrappedCategory }
-            .map { (category, transactions) in
-                let total = transactions.reduce(0) { sum, transaction in
-                    sum + (transaction.isCredit ? transaction.amount : -transaction.amount)
-                }
-                return (category: category, amount: total)
+        // Group by parent category (before ::)
+        Dictionary(grouping: filteredTransactions) { txn in
+            let raw = txn.wrappedCategory
+            if let range = raw.range(of: "::"), !raw.hasPrefix("::"), !raw.hasSuffix("::") {
+                return String(raw[..<range.lowerBound])
             }
-            .sorted { abs($0.amount) > abs($1.amount) }
+            return raw
+        }
+        .map { (category, transactions) in
+            let total = transactions.reduce(0) { sum, transaction in
+                sum + (transaction.isCredit ? transaction.amount : -transaction.amount)
+            }
+            return (category: category, amount: total)
+        }
+        .sorted { abs($0.amount) > abs($1.amount) }
     }
     
     var totalIncome: Double {
@@ -80,8 +87,15 @@ struct ReportsView: View {
     
     var categoryTransactions: [CDTransaction] {
         guard let category = selectedCategory else { return [] }
-        return filteredTransactions.filter { $0.wrappedCategory == category }
-            .sorted { $0.wrappedDate > $1.wrappedDate }
+        return filteredTransactions.filter { txn in
+            let raw = txn.wrappedCategory
+            if let range = raw.range(of: "::"), !raw.hasPrefix("::"), !raw.hasSuffix("::") {
+                let parent = String(raw[..<range.lowerBound])
+                return parent == category
+            }
+            return raw == category
+        }
+        .sorted { $0.wrappedDate > $1.wrappedDate }
     }
     
     var body: some View {
