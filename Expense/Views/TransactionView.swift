@@ -31,7 +31,9 @@ struct TransactionView: View {
                             TransactionRow(transaction: transaction)
                                 .contentShape(Rectangle())
                                 .onTapGesture {
-                                    selectedTransaction = transaction
+                                    DispatchQueue.main.async {
+                                        selectedTransaction = transaction
+                                    }
                                 }
                                 .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                                     Button(role: .destructive) {
@@ -41,7 +43,9 @@ struct TransactionView: View {
                                     }
                                     
                                     Button {
-                                        selectedTransaction = transaction
+                                        DispatchQueue.main.async {
+                                            selectedTransaction = transaction
+                                        }
                                     } label: {
                                         Label("Edit", systemImage: "pencil")
                                     }
@@ -50,7 +54,9 @@ struct TransactionView: View {
                                     if TransactionCategory(rawValue: transaction.wrappedCategory) == .creditCardPayment {
                                         Button {
                                             // Open edit sheet to convert into paired payment quickly
-                                            selectedTransaction = transaction
+                                            DispatchQueue.main.async {
+                                                selectedTransaction = transaction
+                                            }
                                         } label: {
                                             Label("Convert to Payment", systemImage: "arrow.triangle.2.circlepath")
                                         }
@@ -77,28 +83,36 @@ struct TransactionView: View {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Menu {
                         Button(action: { 
-                            showingAddTransaction = true
                             selectedTransactionType = .expense
+                            DispatchQueue.main.async {
+                                showingAddTransaction = true
+                            }
                         }) {
                             Label("Add Expense", systemImage: "arrow.down.circle")
                         }
                         
                         Button(action: { 
-                            showingAddTransaction = true
                             selectedTransactionType = .income
+                            DispatchQueue.main.async {
+                                showingAddTransaction = true
+                            }
                         }) {
                             Label("Add Income", systemImage: "arrow.up.circle")
                         }
                         
                         Button(action: { 
-                            showingLoanPayment = true
+                            DispatchQueue.main.async {
+                                showingLoanPayment = true
+                            }
                         }) {
                             Label("Loan Payment", systemImage: "indianrupeesign.circle")
                         }
                         
                         Button(action: { 
-                            showingAddTransaction = true
                             selectedTransactionType = .creditCardPayment
+                            DispatchQueue.main.async {
+                                showingAddTransaction = true
+                            }
                         }) {
                             Label("Credit Card Payment", systemImage: "creditcard.circle")
                         }
@@ -113,6 +127,9 @@ struct TransactionView: View {
             .sheet(isPresented: $showingAddTransaction) {
                 if let type = selectedTransactionType {
                     AddTransactionView(viewModel: viewModel, transactionType: type)
+                        .onDisappear {
+                            selectedTransactionType = nil
+                        }
                 }
             }
             .sheet(isPresented: $showingLoanPayment) {

@@ -55,6 +55,8 @@ struct ReportsView: View {
         let interval = dateInterval
         return viewModel.dashboardTransactions.filter { transaction in
             guard let date = transaction.date else { return false }
+            // Exclude self transfers from charts and totals
+            if TransactionCategory(rawValue: transaction.wrappedCategory) == .selfTransfer { return false }
             return interval.contains(date)
         }
     }

@@ -16,6 +16,8 @@ struct AddTransactionView: View {
     @State private var amount = ""
     @State private var category = TransactionCategory.other
     @State private var selectedAccount: CDAccount?
+    @State private var transferFromAccount: CDAccount?
+    @State private var transferToAccount: CDAccount?
     @State private var selectedCreditCardAccount: CDAccount?
     @State private var selectedFundingAccount: CDAccount?
     @State private var notes = ""
@@ -129,7 +131,22 @@ struct AddTransactionView: View {
                     }
                 }
                 
-                if transactionType == .creditCardPayment {
+                if category == .selfTransfer {
+                    Section("Transfer Accounts") {
+                        Picker("From", selection: $transferFromAccount) {
+                            Text("Select Source").tag(nil as CDAccount?)
+                            ForEach(viewModel.accounts) { account in
+                                Text(account.wrappedAccountName).tag(account as CDAccount?)
+                            }
+                        }
+                        Picker("To", selection: $transferToAccount) {
+                            Text("Select Destination").tag(nil as CDAccount?)
+                            ForEach(viewModel.accounts) { account in
+                                Text(account.wrappedAccountName).tag(account as CDAccount?)
+                            }
+                        }
+                    }
+                } else if transactionType == .creditCardPayment {
                     Section("Payment Accounts") {
                         Picker("Paid Card", selection: $selectedCreditCardAccount) {
                             Text("Select Card").tag(nil as CDAccount?)
@@ -177,6 +194,8 @@ struct AddTransactionView: View {
     }
     
     private var navigationTitle: String {
+        if category == .selfTransfer { return "Self Transfer" }
+
         switch transactionType {
         case .expense:
             return "Add Expense"

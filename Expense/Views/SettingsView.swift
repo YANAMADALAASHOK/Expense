@@ -118,6 +118,10 @@ struct SettingsView: View {
     @State private var errorMessage = ""
     @State private var showingDeleteConfirmation = false
     @State private var isDeletingData = false
+    @State private var showGmailTokenSheet = false
+    @State private var gmailTokenInput = ""
+    @State private var gmailClientId: String = GmailOAuthManager.shared.clientId ?? ""
+    @State private var gmailRedirectUri: String = GmailOAuthManager.shared.redirectUri ?? ""
     
     var body: some View {
         NavigationView {
@@ -164,59 +168,99 @@ struct SettingsView: View {
                 }
                 
                 Section(header: Text("Outlook Email")) {
-                    Button("Connect Outlook (Mail.Read)") {
-                        MicrosoftOAuthManager.shared.signIn { result in
-                            switch result {
-                            case .success:
-                                errorMessage = "Outlook connected."
-                                showingError = true
-                            case .failure(let error):
-                                errorMessage = "Outlook sign-in failed: \(error.localizedDescription)"
-                                showingError = true
-                            }
-                        }
+                    NavigationLink(destination: MailLoginsView(viewModel: expenseViewModel)) {
+                        Label("Mail Logins (Outlook & Gmail)", systemImage: "envelope")
                     }
+                }
+
+                Section(header: Text("Inboxes & Pending")) {
                     NavigationLink(destination: EmailInboxView(viewModel: expenseViewModel, initialSender: "alerts@axisbank.com")) {
-                        Label("Fetch Axis Alerts", systemImage: "envelope.badge")
+                        Label("Axis Alerts (Outlook)", systemImage: "envelope.badge")
                     }
-                    Button("Fetch All (Newer Only)") {
-                        OutlookService.shared.fetchRecentMessages(since: expenseViewModel.lastEmailReceivedAt, sender: nil) { result in
-                            switch result {
-                            case .success(let messages):
-                                var created = 0
-                                for m in messages {
-                                    let msgId = m.id
-                                    guard !expenseViewModel.processedEmailMessageIds.contains(msgId) else { continue }
-                                    let received = ISO8601DateFormatter().date(from: m.receivedDateTime) ?? Date()
-                                    do {
-                                        let parsed = try EmailParser.parse(subject: m.subject, body: m.body?.content ?? m.bodyPreview)
-                                        let pending = PendingTransactionItem(
-                                            subject: parsed.subject,
-                                            body: parsed.body,
-                                            amount: parsed.amount,
-                                            date: parsed.date,
-                                            isCredit: parsed.isCredit,
-                                            suggestedCategory: parsed.suggestedCategory,
-                                            notes: parsed.description
-                                        )
-                                        expenseViewModel.addPendingTransaction(pending)
-                                        expenseViewModel.markEmailProcessed(messageId: msgId, receivedAt: received)
-                                        created += 1
-                                    } catch { }
-                                }
-                                errorMessage = "Fetched \(messages.count); queued \(created) pending."
-                                showingError = true
-                            case .failure(let error):
-                                errorMessage = "Outlook fetch failed: \(error.localizedDescription)"
-                                showingError = true
-                            }
-                        }
+                    NavigationLink(destination: GmailInboxView(viewModel: expenseViewModel)) {
+                        Label("ICICI Gmail", systemImage: "tray.full")
                     }
                     NavigationLink(destination: PendingTransactionsView(viewModel: expenseViewModel)) {
                         Label("Review Pending Transactions", systemImage: "doc.plaintext")
                     }
-                    NavigationLink(destination: EmailInboxView(viewModel: expenseViewModel)) {
-                        Label("Browse Inbox (manual)", systemImage: "envelope")
+                }
+
+                Section(header: Text("Gmail Email")) {
+                    HStack {
+                        Text("Status: ")
+                        Text(GmailService.shared.isSignedIn ? "Signed In" : "Not Signed In")
+                            .foregroundColor(GmailService.shared.isSignedIn ? .green : .secondary)
+                    }
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("OAuth Configuration")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                        TextField("Gmail Client ID", text: $gmailClientId)
+                            .textInputAutocapitalization(.never)
+                            .disableAutocorrection(true)
+                        TextField("Redirect URI (e.g., com.googleusercontent.apps.<CLIENT_ID>:/oauth2redirect)", text: $gmailRedirectUri)
+                            .textInputAutocapitalization(.never)
+                            .disableAutocorrection(true)
+                        HStack {
+                            Button("Save OAuth Settings") {
+                                GmailOAuthManager.shared.clientId = gmailClientId.trimmingCharacters(in: .whitespacesAndNewlines)
+                                GmailOAuthManager.shared.redirectUri = gmailRedirectUri.trimmingCharacters(in: .whitespacesAndNewlines)
+                                errorMessage = "Saved Gmail OAuth settings"
+                                showingError = true
+                            }
+                            .disabled(gmailClientId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || gmailRedirectUri.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        }
+                    }
+                    if GmailService.shared.isSignedIn {
+                        Button("Fetch ICICI from Gmail (30d)") {
+                            let since = Calendar.current.date(byAdding: .day, value: -30, to: Date())
+                            GmailService.shared.fetchICICIMessages(since: since) { result in
+                                DispatchQueue.main.async {
+                                    switch result {
+                                    case .failure(let err):
+                                        errorMessage = "Gmail fetch failed: \(err.localizedDescription)"
+                                        showingError = true
+                                    case .success(let msgs):
+                                        var queued = 0
+                                        for (subject, body, _) in msgs {
+                                            do {
+                                                let parsed = try EmailParser.parse(subject: subject, body: body)
+                                                let pending = PendingTransactionItem(
+                                                    subject: parsed.subject,
+                                                    body: parsed.body,
+                                                    amount: parsed.amount,
+                                                    date: parsed.date,
+                                                    isCredit: parsed.isCredit,
+                                                    suggestedCategory: parsed.suggestedCategory,
+                                                    notes: parsed.description
+                                                )
+                                                expenseViewModel.addPendingTransaction(pending)
+                                                queued += 1
+                                            } catch { }
+                                        }
+                                        errorMessage = "Queued \(queued) pending from Gmail"
+                                        showingError = true
+                                    }
+                                }
+                            }
+                        }
+                        Button("Sign Out of Gmail") {
+                            GmailService.shared.signOut()
+                            errorMessage = "Signed out of Gmail"
+                            showingError = true
+                        }
+                    } else {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Client ID and Redirect URI (from Google Cloud)")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            Button("Sign in to Gmail") {
+                                GmailOAuthManager.shared.signIn { success, message in
+                                    errorMessage = success ? "Gmail connected." : (message ?? "Gmail sign-in failed")
+                                    showingError = true
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -450,6 +494,7 @@ struct SettingsView: View {
                 checkCloudStatus()
             }
         }
+        
     }
     
     private func checkCloudStatus() {

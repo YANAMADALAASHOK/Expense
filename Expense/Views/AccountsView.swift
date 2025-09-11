@@ -61,17 +61,37 @@ struct AccountsView: View {
                             ForEach(bankAccounts) { account in
                                 AccountRow(account: account)
                                     .onTapGesture { 
+                                        // Open transactions for tap
+                                        selectedAccount = nil
+                                        showingAddAccount = false
+                                        showingAddMutualFund = false
+                                        showingAddPersonalLoan = false
+                                        showingLoanPayment = false
                                         selectedAccountForTransactions = account
-                                        showingAccountTransactions = true
+                                        DispatchQueue.main.async {
+                                            showingAccountTransactions = true
+                                        }
                                     }
                                     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                                         Button {
+                                            selectedAccount = nil
                                             selectedAccountForTransactions = account
-                                            showingAccountTransactions = true
+                                            DispatchQueue.main.async {
+                                                showingAccountTransactions = true
+                                            }
                                         } label: {
                                             Label("Transactions", systemImage: "list.bullet")
                                         }
                                         .tint(.blue)
+                                        Button {
+                                            // Edit account
+                                            selectedAccountForTransactions = nil
+                                            showingAccountTransactions = false
+                                            selectedAccount = account
+                                        } label: {
+                                            Label("Edit", systemImage: "pencil")
+                                        }
+                                        .tint(.orange)
                                         
                                         Button(role: .destructive) {
                                             viewModel.deleteAccount(account)
@@ -96,17 +116,33 @@ struct AccountsView: View {
                             ForEach(mutualFunds) { account in
                                 MutualFundRow(account: account)
                                     .onTapGesture { 
-                                        selectedAccountForTransactions = account
-                                        showingAccountTransactions = true
+                                        // For mutual funds, tap to edit to make code/units easy to set
+                                        selectedAccountForTransactions = nil
+                                        showingAccountTransactions = false
+                                        DispatchQueue.main.async {
+                                            selectedAccount = account
+                                        }
                                     }
                                     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                                         Button {
                                             selectedAccountForTransactions = account
-                                            showingAccountTransactions = true
+                                            DispatchQueue.main.async {
+                                                showingAccountTransactions = true
+                                            }
                                         } label: {
                                             Label("Transactions", systemImage: "list.bullet")
                                         }
                                         .tint(.blue)
+                                        Button {
+                                            selectedAccountForTransactions = nil
+                                            showingAccountTransactions = false
+                                            DispatchQueue.main.async {
+                                                selectedAccount = account
+                                            }
+                                        } label: {
+                                            Label("Edit", systemImage: "pencil")
+                                        }
+                                        .tint(.orange)
                                         
                                         Button(role: .destructive) {
                                             viewModel.deleteAccount(account)
@@ -133,6 +169,12 @@ struct AccountsView: View {
                                     AccountRow(account: account)
                                 }
                                 .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                    Button {
+                                        selectedAccount = account
+                                    } label: {
+                                        Label("Edit", systemImage: "pencil")
+                                    }
+                                    .tint(.orange)
                                     Button(role: .destructive) {
                                         viewModel.deleteAccount(account)
                                     } label: {
@@ -159,16 +201,28 @@ struct AccountsView: View {
                                 AccountRow(account: account)
                                     .onTapGesture { 
                                         selectedAccountForTransactions = account
-                                        showingAccountTransactions = true
+                                        DispatchQueue.main.async {
+                                            showingAccountTransactions = true
+                                        }
                                     }
                                     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                                         Button {
                                             selectedAccountForTransactions = account
-                                            showingAccountTransactions = true
+                                            DispatchQueue.main.async {
+                                                showingAccountTransactions = true
+                                            }
                                         } label: {
                                             Label("Transactions", systemImage: "list.bullet")
                                         }
                                         .tint(.blue)
+                                        Button {
+                                            DispatchQueue.main.async {
+                                                selectedAccount = account
+                                            }
+                                        } label: {
+                                            Label("Edit", systemImage: "pencil")
+                                        }
+                                        .tint(.orange)
                                         
                                         Button(role: .destructive) {
                                             viewModel.deleteAccount(account)
@@ -245,12 +299,18 @@ struct AccountsView: View {
             }
             .sheet(isPresented: $showingAddAccount) {
                 AddAccountView(viewModel: viewModel)
+                    .onDisappear {
+                        selectedAccountType = nil
+                    }
             }
             .sheet(isPresented: $showingAddMutualFund) {
                 AddMutualFundView(viewModel: viewModel)
             }
             .sheet(isPresented: $showingAddPersonalLoan) {
                 AddPersonalLoanGivenView(viewModel: viewModel)
+                    .onDisappear {
+                        selectedAccountType = nil
+                    }
             }
             .sheet(item: $selectedAccount) { account in
                 if account.accountType == AccountType.personalLoanGiven.rawValue {
@@ -548,33 +608,45 @@ private struct AddAccountMenu: View {
             Menu("Add Account") {
                 Button(action: { 
                     selectedAccountType = .bankAccount
-                    showingAddAccount = true 
+                    DispatchQueue.main.async {
+                        showingAddAccount = true 
+                    }
                 }) {
                     Label("Bank Account", systemImage: "banknote")
                 }
                 
                 Button(action: { 
                     selectedAccountType = .creditCard
-                    showingAddAccount = true 
+                    DispatchQueue.main.async {
+                        showingAddAccount = true 
+                    }
                 }) {
                     Label("Credit Card", systemImage: "creditcard")
                 }
                 
                 Button(action: { 
                     selectedAccountType = .loan
-                    showingAddAccount = true 
+                    DispatchQueue.main.async {
+                        showingAddAccount = true 
+                    }
                 }) {
                     Label("Loan", systemImage: "indianrupeesign")
                 }
             }
             
-            Button(action: { showingAddMutualFund = true }) {
+            Button(action: { 
+                DispatchQueue.main.async {
+                    showingAddMutualFund = true 
+                }
+            }) {
                 Label("Add Mutual Fund", systemImage: "chart.line.uptrend.xyaxis")
             }
             
             Button(action: { 
                 selectedAccountType = .personalLoanGiven
-                showingAddPersonalLoan = true 
+                DispatchQueue.main.async {
+                    showingAddPersonalLoan = true 
+                }
             }) {
                 Label("Personal Loan Given", systemImage: "person.text.rectangle")
             }

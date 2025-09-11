@@ -19,6 +19,7 @@ class ExpenseViewModel: ObservableObject {
     @Published var fetchedEmails: [OutlookMessage] = []
     @Published private(set) var excludedTransactionIds: Set<UUID> = []
     @Published var subcategoriesByParent: [String: [String]] = [:]
+    @Published var lastNAVUpdateAt: Date? = UserDefaults.standard.object(forKey: "LastNAVUpdateAt") as? Date
     
     init(context: NSManagedObjectContext) {
         self.viewContext = context
@@ -326,6 +327,11 @@ class ExpenseViewModel: ObservableObject {
         notes: String?,
         date: Date = Date()
     ) {
+        // Self transfers should be handled via transfer API, guard here to avoid mis-posting
+        if category == .selfTransfer {
+            print("[ExpenseViewModel] addTransaction called with selfTransfer - ignoring. Use transferBetweenAccounts().")
+            return
+        }
         let transaction = CDTransaction(context: viewContext)
         transaction.id = UUID()
         transaction.amount = amount
@@ -368,6 +374,51 @@ class ExpenseViewModel: ObservableObject {
         // Ensure UI updates
         DispatchQueue.main.async { [weak self] in
             self?.objectWillChange.send()
+        }
+    }
+
+    /// Transfer funds between two of user's accounts without affecting income/expense totals.
+    /// Creates two transactions: debit on source (Self Transfer) and credit on destination (Self Transfer).
+    func transferBetweenAccounts(amount: Double, from: CDAccount, to: CDAccount, notes: String?, date: Date = Date()) {
+        viewContext.performAndWait {
+            // 1) Source debit
+            let debit = CDTransaction(context: viewContext)
+            debit.id = UUID()
+            debit.amount = amount
+            debit.category = TransactionCategory.selfTransfer.rawValue
+            debit.isCredit = false
+            debit.account = from
+            debit.notes = notes
+            debit.date = date
+
+            // 2) Destination credit
+            let credit = CDTransaction(context: viewContext)
+            credit.id = UUID()
+            credit.amount = amount
+            credit.category = TransactionCategory.selfTransfer.rawValue
+            credit.isCredit = true
+            credit.account = to
+            credit.notes = notes
+            credit.date = date
+
+            // Update balances according to account types
+            // For credit cards: credit reduces balance; debit increases balance
+            if from.accountType == AccountType.creditCard.rawValue {
+                from.balance += amount // debit to CC increases due amount
+            } else {
+                from.balance -= amount
+            }
+            if to.accountType == AccountType.creditCard.rawValue {
+                to.balance -= amount // credit to CC reduces due amount
+            } else {
+                to.balance += amount
+            }
+
+            saveContext()
+            fetchRecentTransactions()
+            DispatchQueue.main.async { [weak self] in
+                self?.objectWillChange.send()
+            }
         }
     }
     
@@ -1358,35 +1409,76 @@ class ExpenseViewModel: ObservableObject {
 
     /// Fetches latest NAVs from AMFI and updates mutual fund balances
     func updateMutualFundNAVs(completion: ((Bool) -> Void)? = nil) {
-        let url = URL(string: "https://www.amfiindia.com/spages/NAVAll.txt")!
+        // Use timestamped URL to bypass caching
+        let url = URL(string: "https://www.amfiindia.com/spages/NAVAll.txt?t=07092025064309")!
         let task = URLSession.shared.dataTask(with: url) { [weak self] data, response, error in
             guard let self = self, let data = data, let text = String(data: data, encoding: .utf8) else {
                 DispatchQueue.main.async { completion?(false) }
                 return
             }
-            // Parse NAVs: [SchemeCode: NAV]
+            // Parse NAVs: [SchemeCode: NAV] and name index
             var navs: [String: Double] = [:]
+            var nameIndex: [String: (code: String, nav: Double, date: String)] = [:]
             let lines = text.components(separatedBy: .newlines)
             for line in lines {
                 let columns = line.components(separatedBy: ";")
                 if columns.count > 4, let nav = Double(columns[4]) {
                     let schemeCode = columns[0].trimmingCharacters(in: .whitespaces)
                     navs[schemeCode] = nav
+                    if columns.count > 3 {
+                        let schemeName = columns[3].trimmingCharacters(in: .whitespaces)
+                        let dateStr = columns.count > 5 ? columns[5].trimmingCharacters(in: .whitespaces) : ""
+                        if !schemeName.isEmpty { nameIndex[schemeName.lowercased()] = (schemeCode, nav, dateStr) }
+                    }
                 }
             }
             // Update mutual funds
             var updated = false
             for account in self.accounts where account.accountType == AccountType.mutualFund.rawValue {
-                let metadata = account.metadataDictionary
-                if let code = metadata["amfiSchemeCode"], let nav = navs[code], let units = account.creditLimit as Double? {
+                var metadata = account.metadataDictionary
+                // Units can be stored in metadata["units"] if available; else fall back to creditLimit
+                let units: Double = {
+                    if let uStr = metadata["units"], let u = Double(uStr) { return u }
+                    return account.creditLimit
+                }()
+                // Resolve scheme code and NAV
+                var resolvedCode: String? = metadata["amfiSchemeCode"]
+                var nav: Double? = nil
+                var navDate: String = ""
+                if let code = resolvedCode, let found = navs[code] {
+                    nav = found
+                } else {
+                    let key = account.wrappedAccountName.lowercased()
+                    if let tuple = nameIndex[key] {
+                        resolvedCode = tuple.code
+                        nav = tuple.nav
+                        navDate = tuple.date
+                    } else if let match = nameIndex.first(where: { key.contains($0.key) || $0.key.contains(key) }) {
+                        resolvedCode = match.value.code
+                        nav = match.value.nav
+                        navDate = match.value.date
+                    }
+                }
+                // Apply updates and persist metadata so UI can show code and timestamps
+                if let nav = nav {
                     let newValue = nav * units
-                    if abs(account.balance - newValue) > 0.01 {
+                    if abs(account.balance - newValue) > 0.0001 { // lower threshold
                         account.balance = newValue
                         updated = true
                     }
+                    if let code = resolvedCode { metadata["amfiSchemeCode"] = code }
+                    metadata["lastNAV"] = String(nav)
+                    if !navDate.isEmpty { metadata["lastNAVDate"] = navDate }
+                    metadata["lastNAVUpdateAt"] = ISO8601DateFormatter().string(from: Date())
+                    account.metadataDictionary = metadata
                 }
             }
-            if updated { self.saveContext() }
+            if updated {
+                self.saveContext()
+                let now = Date()
+                self.lastNAVUpdateAt = now
+                UserDefaults.standard.set(now, forKey: "LastNAVUpdateAt")
+            }
             DispatchQueue.main.async { completion?(updated) }
         }
         task.resume()
@@ -1411,7 +1503,7 @@ class ExpenseViewModel: ObservableObject {
             var fundsImported = 0
             var holdingsStarted = false
             var headerParsed = false
-            var headerIndexes: (name: Int, units: Int, invested: Int, current: Int)? = nil
+            var headerIndexes: (name: Int, units: Int, invested: Int, current: Int, folio: Int?)? = nil
             
             for line in lines {
                 let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1428,10 +1520,12 @@ class ExpenseViewModel: ObservableObject {
                         let unitsIdx = columns.firstIndex(where: { $0.caseInsensitiveCompare("Units") == .orderedSame || $0.caseInsensitiveCompare("Unit") == .orderedSame })
                         let investedIdx = columns.firstIndex(where: { $0.caseInsensitiveCompare("Invested Value") == .orderedSame || $0.caseInsensitiveCompare("Invested") == .orderedSame })
                         let currentIdx = columns.firstIndex(where: { $0.caseInsensitiveCompare("Current Value") == .orderedSame || $0.caseInsensitiveCompare("Current") == .orderedSame })
+                        // Optional folio column (commonly at 5th position)
+                        let folioIdx = columns.firstIndex(where: { $0.lowercased().contains("folio") })
                         if let n = nameIdx, let u = unitsIdx, let i = investedIdx, let c = currentIdx {
-                            headerIndexes = (n,u,i,c)
+                            headerIndexes = (n,u,i,c,folioIdx)
                             headerParsed = true
-                            print("[Groww] Header indexes -> name: \(n), units: \(u), invested: \(i), current: \(c)")
+                            print("[Groww] Header indexes -> name: \(n), units: \(u), invested: \(i), current: \(c), folio: \(String(describing: folioIdx))")
                         } else {
                             print("[Groww] Could not find expected header columns in: \(columns)")
                         }
@@ -1445,6 +1539,13 @@ class ExpenseViewModel: ObservableObject {
                 let units = Double(columns[idx.units].replacingOccurrences(of: ",", with: "")) ?? 0
                 let investedValue = Double(columns[idx.invested].replacingOccurrences(of: ",", with: "").replacingOccurrences(of: "₹", with: "")) ?? 0
                 let currentValue = Double(columns[idx.current].replacingOccurrences(of: ",", with: "").replacingOccurrences(of: "₹", with: "")) ?? 0
+                let folio: String? = {
+                    if let fIdx = idx.folio, columns.indices.contains(fIdx) {
+                        let val = columns[fIdx].trimmingCharacters(in: .whitespacesAndNewlines)
+                        return val.isEmpty ? nil : val
+                    }
+                    return nil
+                }()
 
                 // Update existing account if present; else create
                 if let existing = self.accounts.first(where: { $0.wrappedAccountName.caseInsensitiveCompare(schemeName) == .orderedSame && $0.accountType == AccountType.mutualFund.rawValue }) {
@@ -1452,6 +1553,7 @@ class ExpenseViewModel: ObservableObject {
                     existing.creditLimit = investedValue
                     var md = existing.metadataDictionary
                     md["units"] = String(format: "%.4f", units)
+                    if let folio = folio { md["folio"] = folio }
                     existing.metadataDictionary = md
                 } else {
                     addAccount(
@@ -1459,7 +1561,11 @@ class ExpenseViewModel: ObservableObject {
                         type: .mutualFund,
                         balance: currentValue,
                         creditLimit: investedValue,
-                        metadata: ["units": String(format: "%.4f", units)]
+                        metadata: {
+                            var m: [String:String] = ["units": String(format: "%.4f", units)]
+                            if let folio = folio { m["folio"] = folio }
+                            return m
+                        }()
                     )
                 }
                 fundsImported += 1
@@ -1679,3 +1785,4 @@ enum AxisImportError: Error, LocalizedError {
         }
     }
 }
+

@@ -1,6 +1,7 @@
 import Foundation
 
 enum TransactionCategory: Hashable {
+    case selfTransfer
     case food
     case transportation
     case shopping
@@ -19,6 +20,7 @@ enum TransactionCategory: Hashable {
     
     var displayName: String {
         switch self {
+        case .selfTransfer: return "Self Transfer"
         case .food: return "Food"
         case .transportation: return "Transportation"
         case .shopping: return "Shopping"
@@ -39,6 +41,7 @@ enum TransactionCategory: Hashable {
     
     var rawValue: String {
         switch self {
+        case .selfTransfer: return "Self Transfer"
         case .food: return "Food"
         case .transportation: return "Transportation"
         case .shopping: return "Shopping"
@@ -58,11 +61,12 @@ enum TransactionCategory: Hashable {
     }
     
     static var allCases: [TransactionCategory] {
-        [.food, .transportation, .shopping, .entertainment, .utilities, .healthcare, .education, .rent, .salary, .investment, .interest, .emiPayment, .creditCardPayment, .other]
+        [.selfTransfer, .food, .transportation, .shopping, .entertainment, .utilities, .healthcare, .education, .rent, .salary, .investment, .interest, .emiPayment, .creditCardPayment, .other]
     }
     
     init(rawValue: String) {
         switch rawValue {
+        case "Self Transfer": self = .selfTransfer
         case "Food": self = .food
         case "Transportation": self = .transportation
         case "Shopping": self = .shopping
