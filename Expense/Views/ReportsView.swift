@@ -116,18 +116,6 @@ struct ReportsView: View {
                     }
                 }
                 
-                Section("Portfolio Value") {
-                    Chart {
-                        ForEach(filteredTransactions.sorted(by: { $0.wrappedDate < $1.wrappedDate })) { transaction in
-                            LineMark(
-                                x: .value("Date", transaction.wrappedDate),
-                                y: .value("Value", transaction.account?.balance ?? 0)
-                            )
-                            .foregroundStyle(by: .value("Account", transaction.account?.wrappedAccountName ?? "N/A"))
-                        }
-                    }
-                    .frame(height: 250)
-                }
 
                 Section("Summary") {
                     HStack {
@@ -181,24 +169,12 @@ struct ReportsView: View {
             }
             .navigationTitle("Reports")
             .sheet(item: $selectedCategory) { category in
-                NavigationView {
-                    List {
-                        Section(header: Text("\(category) Transactions")) {
-                            ForEach(categoryTransactions) { transaction in
-                                TransactionRow(transaction: transaction)
-                            }
-                        }
-                    }
-                    .navigationTitle(category)
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar {
-                        ToolbarItem(placement: .confirmationAction) {
-                            Button("Done") {
-                                selectedCategory = nil
-                            }
-                        }
-                    }
-                }
+                CategoryDetailView(
+                    category: category,
+                    transactions: categoryTransactions,
+                    currencyCode: currencySettings.selectedCurrency.rawValue,
+                    onDismiss: { selectedCategory = nil }
+                )
             }
         }
     }
@@ -215,6 +191,157 @@ extension Calendar {
 
 extension String: Identifiable {
     public var id: String { self }
+}
+
+// MARK: - Category Detail View with Subcategory Filtering
+struct CategoryDetailView: View {
+    let category: String
+    let transactions: [CDTransaction]
+    let currencyCode: String
+    let onDismiss: () -> Void
+    
+    @State private var selectedSubcategory: String? = nil
+    @State private var showingFilter = false
+    
+    // Extract unique subcategories from transactions
+    private var subcategories: [String] {
+        let subcats = transactions.compactMap { transaction -> String? in
+            let raw = transaction.wrappedCategory
+            if let range = raw.range(of: "::"), !raw.hasPrefix("::"), !raw.hasSuffix("::") {
+                let subcategory = String(raw[range.upperBound...])
+                return subcategory.isEmpty ? nil : subcategory
+            }
+            return nil
+        }
+        return Array(Set(subcats)).sorted()
+    }
+    
+    // Filter transactions by selected subcategory
+    private var filteredTransactions: [CDTransaction] {
+        guard let selectedSubcategory = selectedSubcategory else { return transactions }
+        return transactions.filter { transaction in
+            let raw = transaction.wrappedCategory
+            if let range = raw.range(of: "::"), !raw.hasPrefix("::"), !raw.hasSuffix("::") {
+                let subcategory = String(raw[range.upperBound...])
+                return subcategory == selectedSubcategory
+            }
+            return false
+        }
+    }
+    
+    // Calculate total for filtered transactions
+    private var filteredTotal: Double {
+        filteredTransactions.reduce(0) { sum, transaction in
+            sum + (transaction.isCredit ? transaction.amount : -transaction.amount)
+        }
+    }
+    
+    private var totalCount: Int { filteredTransactions.count }
+    
+    var body: some View {
+        NavigationView {
+            VStack(spacing: 0) {
+                // Summary section
+                summarySection
+                
+                // Transaction list
+                transactionsList
+            }
+            .navigationTitle(category)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    if !subcategories.isEmpty {
+                        Button {
+                            showingFilter = true
+                        } label: {
+                            Image(systemName: "line.3.horizontal.decrease.circle")
+                        }
+                    }
+                }
+                
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Done") {
+                        onDismiss()
+                    }
+                }
+            }
+        }
+        .confirmationDialog("Filter by Subcategory", isPresented: $showingFilter) {
+            Button("All Subcategories") {
+                selectedSubcategory = nil
+            }
+            
+            ForEach(subcategories, id: \.self) { subcategory in
+                Button(subcategory) {
+                    selectedSubcategory = subcategory
+                }
+            }
+            
+            Button("Cancel", role: .cancel) { }
+        }
+    }
+    
+    @ViewBuilder
+    private var summarySection: some View {
+        VStack(spacing: 8) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Total Amount")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Text(filteredTotal, format: .currency(code: currencyCode))
+                        .font(.title2)
+                        .fontWeight(.semibold)
+                        .foregroundColor(filteredTotal >= 0 ? .green : .red)
+                }
+                
+                Spacer()
+                
+                VStack(alignment: .trailing, spacing: 4) {
+                    Text("Transactions")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Text("\(totalCount)")
+                        .font(.title2)
+                        .fontWeight(.semibold)
+                }
+            }
+            
+            if let selectedSubcategory = selectedSubcategory {
+                HStack {
+                    Text("Filtered by: \(selectedSubcategory)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Spacer()
+                    Button("Clear Filter") {
+                        self.selectedSubcategory = nil
+                    }
+                    .font(.caption)
+                    .foregroundColor(.blue)
+                }
+            }
+        }
+        .padding()
+        .background(Color(.systemGroupedBackground))
+    }
+    
+    @ViewBuilder
+    private var transactionsList: some View {
+        List {
+            if filteredTransactions.isEmpty {
+                ContentUnavailableView(
+                    "No Transactions",
+                    systemImage: "doc.text",
+                    description: Text(selectedSubcategory != nil ? "No transactions found for this subcategory" : "No transactions in this category")
+                )
+            } else {
+                ForEach(filteredTransactions) { transaction in
+                    TransactionRow(transaction: transaction)
+                }
+            }
+        }
+    }
 }
 
 #if DEBUG

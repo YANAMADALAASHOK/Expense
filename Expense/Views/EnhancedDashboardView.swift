@@ -7,7 +7,6 @@ struct EnhancedDashboardView: View {
     @StateObject private var currencySettings = CurrencySettings.shared
     @State private var selectedTimeRange: TimeRange = .month
     @State private var showingInsights = false
-    @State private var selectedCategoryForDetails: String?
     
     var body: some View {
         NavigationView {
@@ -25,14 +24,6 @@ struct EnhancedDashboardView: View {
                     // Spending Chart
                     SpendingChartView(transactions: viewModel.dashboardTransactions, timeRange: selectedTimeRange)
                     
-                    // Category Breakdown
-                    CategoryBreakdownView(
-                        transactions: viewModel.dashboardTransactions,
-                        timeRange: selectedTimeRange,
-                        onCategoryTap: { category in
-                            selectedCategoryForDetails = category
-                        }
-                    )
                     
                     // Recent Transactions
                     RecentTransactionsSection(transactions: viewModel.dashboardTransactions)
@@ -49,46 +40,9 @@ struct EnhancedDashboardView: View {
             .sheet(isPresented: $showingInsights) {
                 FinancialInsightsView(viewModel: viewModel)
             }
-            .sheet(item: $selectedCategoryForDetails) { category in
-                NavigationView {
-                    List {
-                        Section(header: Text("\(category) Transactions")) {
-                            ForEach(transactionsForCategory(category, in: selectedTimeRange)) { transaction in
-                                TransactionRow(transaction: transaction)
-                            }
-                        }
-                    }
-                    .navigationTitle(category)
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar {
-                        ToolbarItem(placement: .confirmationAction) {
-                            Button("Done") { selectedCategoryForDetails = nil }
-                        }
-                    }
-                }
-            }
         }
     }
 
-    private func transactionsForCategory(_ category: String, in timeRange: TimeRange) -> [CDTransaction] {
-        let calendar = Calendar.current
-        let now = Date()
-        let filteredByDate: [CDTransaction]
-        switch timeRange {
-        case .week:
-            let weekAgo = calendar.date(byAdding: .weekOfYear, value: -1, to: now) ?? now
-            filteredByDate = viewModel.recentTransactions.filter { ($0.date ?? now) >= weekAgo }
-        case .month:
-            let monthAgo = calendar.date(byAdding: .month, value: -1, to: now) ?? now
-            filteredByDate = viewModel.recentTransactions.filter { ($0.date ?? now) >= monthAgo }
-        case .year:
-            let yearAgo = calendar.date(byAdding: .year, value: -1, to: now) ?? now
-            filteredByDate = viewModel.recentTransactions.filter { ($0.date ?? now) >= yearAgo }
-        }
-        return filteredByDate
-            .filter { !$0.isCredit && $0.wrappedCategory == category }
-            .sorted { $0.wrappedDate > $1.wrappedDate }
-    }
 }
 
 // MARK: - Net Worth Card

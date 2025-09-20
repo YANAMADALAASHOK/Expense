@@ -17,7 +17,15 @@ struct TransactionView: View {
         NavigationView {
             List {
                 ForEach(filteredTransactions.grouped(by: \.wrappedDate), id: \.key) { date, transactions in
-                    Section(header: Text(date.formatted(date: .abbreviated, time: .omitted))) {
+                    Section(header: 
+                        HStack {
+                            Text(date.formatted(date: .abbreviated, time: .omitted))
+                            Spacer()
+                            Text("\(transactions.count) transactions")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    ) {
                         ForEach(transactions, id: \.id) { transaction in
                             TransactionRow(transaction: transaction)
                                 .contentShape(Rectangle())

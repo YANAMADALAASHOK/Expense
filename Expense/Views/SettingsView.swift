@@ -173,15 +173,13 @@ struct SettingsView: View {
                     }
                 }
 
-                Section(header: Text("Inboxes & Pending")) {
+                
+                Section(header: Text("Email Inboxes")) {
                     NavigationLink(destination: EmailInboxView(viewModel: expenseViewModel, initialSender: "alerts@axisbank.com")) {
                         Label("Axis Alerts (Outlook)", systemImage: "envelope.badge")
                     }
                     NavigationLink(destination: GmailInboxView(viewModel: expenseViewModel)) {
                         Label("ICICI Gmail", systemImage: "tray.full")
-                    }
-                    NavigationLink(destination: PendingTransactionsView(viewModel: expenseViewModel)) {
-                        Label("Review Pending Transactions", systemImage: "doc.plaintext")
                     }
                 }
 

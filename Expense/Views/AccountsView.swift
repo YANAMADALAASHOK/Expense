@@ -14,6 +14,9 @@ struct AccountsView: View {
     @State private var isRefreshing = false
     @State private var selectedAccountType: AccountType?
     @State private var isUpdatingNAVs = false
+    @State private var showingAddInsurance = false
+    @State private var editingInsurance: InsurancePolicy?
+    @State private var insurancePolicies: [InsurancePolicy] = []
     
     private var assetAccounts: [CDAccount] {
         viewModel.accounts.filter { $0.wrappedAccountType.isAsset }
@@ -54,6 +57,7 @@ struct AccountsView: View {
                 Section { BalanceSummarySection(accounts: viewModel.accounts) }
                 assetsSection
                 liabilitiesSection
+                insurancesSection
             }
             .background(Color(.systemGroupedBackground))
             .navigationTitle("Accounts")
@@ -75,6 +79,10 @@ struct AccountsView: View {
             }
             .refreshable {
                 await refreshData()
+            }
+            .onAppear {
+                loadInsurancePolicies()
+                processInsurancePremiums()
             }
             .sheet(isPresented: $showingAddAccount) {
                 AddAccountView(viewModel: viewModel)
@@ -105,6 +113,22 @@ struct AccountsView: View {
                 if let account = selectedAccountForTransactions {
                     AccountTransactionsView(viewModel: viewModel, account: account)
                 }
+            }
+            .sheet(isPresented: $showingAddInsurance) {
+                AddInsurancePolicyView(
+                    accounts: viewModel.accounts,
+                    initial: nil,
+                    onSave: addInsurancePolicy,
+                    onDelete: nil
+                )
+            }
+            .sheet(item: $editingInsurance) { policy in
+                AddInsurancePolicyView(
+                    accounts: viewModel.accounts,
+                    initial: policy,
+                    onSave: updateInsurancePolicy,
+                    onDelete: deleteInsurancePolicy
+                )
             }
         }
     }
@@ -279,6 +303,73 @@ extension AccountsView {
         selectedAccountForTransactions = nil
         showingAccountTransactions = false
         selectedAccount = account
+    }
+    
+    // Insurance management methods
+    private func loadInsurancePolicies() {
+        let insuranceManager = InsuranceManager.shared
+        insurancePolicies = insuranceManager.loadPolicies()
+    }
+    
+    private func processInsurancePremiums() {
+        let insuranceManager = InsuranceManager.shared
+        insuranceManager.processInsurancePremiums(context: viewModel.viewContext, accounts: viewModel.accounts)
+    }
+    
+    private func addInsurancePolicy(_ policy: InsurancePolicy) {
+        insurancePolicies.append(policy)
+        saveInsurancePolicies()
+    }
+    
+    private func updateInsurancePolicy(_ policy: InsurancePolicy) {
+        if let index = insurancePolicies.firstIndex(where: { $0.id == policy.id }) {
+            insurancePolicies[index] = policy
+            saveInsurancePolicies()
+        }
+    }
+    
+    private func deleteInsurancePolicy(_ policy: InsurancePolicy) {
+        insurancePolicies.removeAll { $0.id == policy.id }
+        saveInsurancePolicies()
+        
+        // Clean up the last processed date
+        let lastProcessedKey = "insurance_\(policy.id)_lastProcessed"
+        UserDefaults.standard.removeObject(forKey: lastProcessedKey)
+    }
+    
+    private func saveInsurancePolicies() {
+        let insuranceManager = InsuranceManager.shared
+        insuranceManager.savePolicies(insurancePolicies)
+    }
+    
+    @ViewBuilder
+    private var insurancesSection: some View {
+        Section("Insurance Policies") {
+            if insurancePolicies.isEmpty {
+                Text("No insurance policies added yet")
+                    .foregroundColor(.secondary)
+            } else {
+                ForEach(insurancePolicies) { policy in
+                    InsurancePolicyRowView(
+                        policy: policy,
+                        accounts: viewModel.accounts
+                    )
+                    .contentShape(Rectangle())
+                    .onTapGesture { editingInsurance = policy }
+                    .swipeActions(edge: .trailing) {
+                        Button("Edit") { editingInsurance = policy }
+                            .tint(.orange)
+                        Button("Delete", role: .destructive) { deleteInsurancePolicy(policy) }
+                    }
+                }
+            }
+            
+            Button {
+                showingAddInsurance = true
+            } label: {
+                Label("Add Insurance Policy", systemImage: "plus")
+            }
+        }
     }
     
 }
@@ -576,6 +667,74 @@ private struct AddAccountMenu: View {
     }
 }
 
+// Simple insurance policy row for AccountsView
+private struct InsurancePolicyRowView: View {
+    let policy: InsurancePolicy
+    let accounts: [CDAccount]
+    @StateObject private var currencySettings = CurrencySettings.shared
+    
+    private var accountName: String {
+        accounts.first(where: { $0.id == policy.accountId })?.wrappedAccountName ?? "Unknown Account"
+    }
+    
+    private var nextDueDate: String {
+        let calendar = Calendar.current
+        let now = Date()
+        let currentDay = calendar.component(.day, from: now)
+        let currentMonth = calendar.component(.month, from: now)
+        let currentYear = calendar.component(.year, from: now)
+        
+        var targetMonth = currentMonth
+        var targetYear = currentYear
+        
+        // If we've passed this month's due date, show next month
+        if currentDay > policy.dayOfMonth {
+            targetMonth += 1
+            if targetMonth > 12 {
+                targetMonth = 1
+                targetYear += 1
+            }
+        }
+        
+        let dateComponents = DateComponents(year: targetYear, month: targetMonth, day: policy.dayOfMonth)
+        if let nextDate = calendar.date(from: dateComponents) {
+            let formatter = DateFormatter()
+            formatter.dateStyle = .medium
+            return formatter.string(from: nextDate)
+        }
+        
+        return "Day \(policy.dayOfMonth)"
+    }
+    
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(policy.name)
+                    .font(.headline)
+                Text("Next due: \(nextDueDate)")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                if !policy.isActive {
+                    Text("Inactive")
+                        .font(.caption)
+                        .foregroundColor(.orange)
+                }
+            }
+            
+            Spacer()
+            
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(policy.premiumAmount, format: .currency(code: currencySettings.selectedCurrency.rawValue))
+                    .font(.headline)
+                    .foregroundColor(.red)
+                Text(accountName)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+}
 
 #if DEBUG
 struct AccountsView_Previews: PreviewProvider {

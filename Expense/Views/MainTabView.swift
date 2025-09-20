@@ -31,19 +31,24 @@ struct MainTabView: View {
                     Label("Accounts", systemImage: "banknote")
                 }
 
-            ReportsView(viewModel: viewModel)
-                .tabItem {
-                    Label("Reports", systemImage: "chart.pie")
-                }
-            
             TransactionView(viewModel: viewModel)
                 .tabItem {
                     Label("Transactions", systemImage: "list.bullet")
                 }
             
+            ReportsView(viewModel: viewModel)
+                .tabItem {
+                    Label("Reports", systemImage: "chart.pie")
+                }
+            
             BudgetsView(viewModel: viewModel)
                 .tabItem {
                     Label("Budgets", systemImage: "creditcard")
+                }
+            
+            PendingTransactionsView(viewModel: viewModel)
+                .tabItem {
+                    Label("Pending", systemImage: "doc.plaintext")
                 }
             
             SettingsView()
@@ -69,6 +74,10 @@ struct MainTabView: View {
             
             // Calculate interest for loans
             viewModel.calculateInterestForAllLoans()
+            
+            // Process due insurance premiums
+            let insuranceManager = InsuranceManager.shared
+            insuranceManager.processInsurancePremiums(context: context, accounts: viewModel.accounts)
             
             // Ingest emails into Pending (Outlook + Gmail) without duplicates
             viewModel.ingestEmailsToPending()
