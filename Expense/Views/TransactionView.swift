@@ -9,22 +9,13 @@ struct TransactionView: View {
     @State private var isRefreshing = false
     @State private var selectedTransactionType: TransactionType?
     @State private var selectedCategoryFilter: String? = nil
+    @State private var selectedSubcategoryFilter: String? = nil
+    @State private var showingFilter = false
+    @State private var searchKeywords: String = ""
     
     var body: some View {
         NavigationView {
             List {
-                // Category filter (supports parent categories; subcategories collapse under parent)
-                Section {
-                    Picker("Category", selection: Binding(
-                        get: { selectedCategoryFilter ?? "All" },
-                        set: { selectedCategoryFilter = $0 == "All" ? nil : $0 }
-                    )) {
-                        Text("All").tag("All")
-                        ForEach(viewModel.allCategories, id: \.self) { cat in
-                            Text(cat).tag(cat)
-                        }
-                    }
-                }
                 ForEach(filteredTransactions.grouped(by: \.wrappedDate), id: \.key) { date, transactions in
                     Section(header: Text(date.formatted(date: .abbreviated, time: .omitted))) {
                         ForEach(transactions, id: \.id) { transaction in
@@ -73,6 +64,12 @@ struct TransactionView: View {
             }
             .navigationTitle("Transactions")
             .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button(action: { showingFilter = true }) {
+                        Image(systemName: "line.3.horizontal.decrease.circle")
+                    }
+                    .accessibilityLabel("Filter")
+                }
                 ToolbarItem(placement: .navigationBarLeading) {
                     Button(action: refreshData) {
                         Image(systemName: "arrow.clockwise")
@@ -138,15 +135,77 @@ struct TransactionView: View {
             .sheet(item: $selectedTransaction) { transaction in
                 EditTransactionView(viewModel: viewModel, transaction: transaction)
             }
+            .sheet(isPresented: $showingFilter) {
+                NavigationView {
+                    Form {
+                        Section("Filter") {
+                            Picker("Category", selection: Binding(
+                                get: { selectedCategoryFilter ?? "All" },
+                                set: { selectedCategoryFilter = $0 == "All" ? nil : $0; selectedSubcategoryFilter = nil }
+                            )) {
+                                Text("All").tag("All")
+                                ForEach(viewModel.allCategories, id: \.self) { cat in
+                                    Text(cat).tag(cat)
+                                }
+                            }
+                            if let parent = selectedCategoryFilter {
+                                let subs = viewModel.subcategories(for: parent)
+                                if !subs.isEmpty {
+                                    Picker("Subcategory", selection: Binding<String?>(
+                                        get: { selectedSubcategoryFilter },
+                                        set: { selectedSubcategoryFilter = $0 }
+                                    )) {
+                                        Text("All").tag(nil as String?)
+                                        ForEach(subs, id: \.self) { s in
+                                            Text(s).tag(s as String?)
+                                        }
+                                    }
+                                }
+                            }
+                            TextField("Description contains…", text: $searchKeywords)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled(true)
+                        }
+                        if selectedCategoryFilter != nil || !searchKeywords.trimmingCharacters(in: .whitespaces).isEmpty {
+                            Section {
+                                Button("Clear Filters") {
+                                    selectedCategoryFilter = nil
+                                    selectedSubcategoryFilter = nil
+                                    searchKeywords = ""
+                                }
+                            }
+                        }
+                    }
+                    .navigationTitle("Filters")
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) { Button("Close") { showingFilter = false } }
+                        ToolbarItem(placement: .confirmationAction) { Button("Apply") { showingFilter = false } }
+                    }
+                }
+            }
         }
     }
     
     private var filteredTransactions: [CDTransaction] {
-        guard let filter = selectedCategoryFilter else { return viewModel.recentTransactions }
-        return viewModel.recentTransactions.filter { txn in
-            let raw = txn.wrappedCategory
-            return raw == filter || raw.hasPrefix(filter + "::")
+        var items = viewModel.recentTransactions
+        if let filter = selectedCategoryFilter {
+            items = items.filter { txn in
+                let raw = txn.wrappedCategory
+                if let sub = selectedSubcategoryFilter { return raw == "\(filter)::\(sub)" }
+                return raw == filter || raw.hasPrefix(filter + "::")
+            }
         }
+        let query = searchKeywords.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if !query.isEmpty {
+            let tokens = query.split(separator: " ")
+            items = items.filter { txn in
+                let hay = [txn.wrappedNotes, txn.account?.wrappedAccountName ?? "", txn.wrappedCategory]
+                    .joined(separator: " ")
+                    .lowercased()
+                return tokens.allSatisfy { hay.contains($0) }
+            }
+        }
+        return items
     }
 
     private func refreshData() {

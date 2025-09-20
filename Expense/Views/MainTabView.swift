@@ -69,6 +69,9 @@ struct MainTabView: View {
             
             // Calculate interest for loans
             viewModel.calculateInterestForAllLoans()
+            
+            // Ingest emails into Pending (Outlook + Gmail) without duplicates
+            viewModel.ingestEmailsToPending()
         }
     }
 }

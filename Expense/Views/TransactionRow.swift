@@ -18,12 +18,15 @@ struct TransactionRow: View {
             
             Spacer()
             
-            VStack(alignment: .trailing) {
+            VStack(alignment: .trailing, spacing: 2) {
                 Text(transaction.amount, format: .currency(code: currencySettings.selectedCurrency.rawValue))
                     .foregroundColor(transaction.isCredit ? .green : .red)
                 Text(transaction.wrappedDate, style: .date)
                     .font(.caption)
                     .foregroundColor(.secondary)
+                Text(transaction.wrappedDate, style: .time)
+                    .font(.caption2)
+                    .foregroundColor(.secondary.opacity(0.8))
             }
         }
         .padding(.vertical, 4)

@@ -106,7 +106,7 @@ struct AddTransactionView: View {
                         .labelsHidden()
                     }
                     
-                    DatePicker("Date", selection: $transactionDate, in: ...Date(), displayedComponents: [.date])
+                    DatePicker("Date & Time", selection: $transactionDate, in: ...Date(), displayedComponents: [.date, .hourAndMinute])
                     
                     if transactionType != .loanPayment {
                         Picker("Category", selection: $category) {

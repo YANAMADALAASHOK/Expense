@@ -35,6 +35,25 @@ final class EmailParser {
         let bodyText = (body ?? "")
         let plainBody = htmlToPlainText(bodyText)
         let full = (subj + "\n" + plainBody)
+        
+        // Try bank-specific parsers FIRST for better accuracy (no pre-filter)
+        if let axisTx = parseAxisBankTransaction(subject: subj, body: plainBody) {
+            return axisTx
+        }
+        if let iciciTx = parseICICIBankTransaction(subject: subj, body: plainBody) {
+            return iciciTx
+        }
+        
+        // Pre-filter: Only process emails that look like transaction notifications
+        // Be permissive, but still avoid obvious non-transactionals
+        if !isTransactionEmail(subject: subj, body: plainBody) {
+            if debugEnabled {
+                print("[EmailParser] Pre-filter rejected email:")
+                print("Subject: \(subj)")
+                print("Body preview: \(String(plainBody.prefix(200)))")
+            }
+            throw EmailParseError.notRecognized
+        }
 
         // Determine credit/debit (ICICI phrasing + generic)
         let containsCredited = full.range(of: "credited", options: .caseInsensitive) != nil ||
@@ -83,34 +102,79 @@ final class EmailParser {
         }
         // Date: dd-MM-yy or dd-MM-yyyy (optionally with time)
         let dateRegexes = [
+            // Specific pattern for "20-09-25, 14:23:24 IST" format
+            "(\\b[0-3]?[0-9]-[0-1]?[0-9]-[0-9]{2,4}),\\s*([0-2][0-9]:[0-5][0-9]:[0-5][0-9])\\s*(?:IST|GMT|UTC)?",
+            // General patterns
             "(\\b[0-3]?[0-9]-[0-1]?[0-9]-[0-9]{2,4}),?\\s*([0-2][0-9]:[0-5][0-9]:[0-5][0-9])?\\s*(?:IST|GMT|UTC)?",
-            "(\\b[0-3]?[0-9]/[0-1]?[0-9]/[0-9]{2,4}),?\\s*([0-2][0-9]:[0-5][0-9]:[0-5][0-9])?\\s*(?:IST|GMT|UTC)?"
+            "(\\b[0-3]?[0-9]/[0-1]?[0-9]/[0-9]{2,4}),?\\s*([0-2][0-9]:[0-5][0-9]:[0-5][0-9])?\\s*(?:IST|GMT|UTC)?",
+            // Additional patterns for common email formats
+            "(\\b[0-3]?[0-9]\\s+[A-Za-z]{3,9}\\s+[0-9]{4}),?\\s*([0-2][0-9]:[0-5][0-9]:[0-5][0-9])?\\s*(?:IST|GMT|UTC)?",
+            "(\\b[A-Za-z]{3,9}\\s+[0-3]?[0-9],?\\s+[0-9]{4}),?\\s*([0-2][0-9]:[0-5][0-9]:[0-5][0-9])?\\s*(?:IST|GMT|UTC)?"
         ]
         outer: for pattern in dateRegexes {
             let re = try! NSRegularExpression(pattern: pattern)
             if let m = re.firstMatch(in: full, options: [], range: NSRange(location: 0, length: full.utf16.count)) {
                 let dStr = (full as NSString).substring(with: m.range(at: 1))
                 let tStr = m.range(at: 2).location != NSNotFound ? (full as NSString).substring(with: m.range(at: 2)) : nil
+                
+                if debugEnabled {
+                    print("[EmailParser] Generic date extraction:")
+                    print("  Pattern: \(pattern)")
+                    print("  Date string: '\(dStr)'")
+                    print("  Time string: '\(tStr ?? "nil")'")
+                }
+                
                 let fmts = [
                     "dd-MM-yy HH:mm:ss",
                     "dd-MM-yyyy HH:mm:ss",
                     "dd/MM/yy HH:mm:ss",
                     "dd/MM/yyyy HH:mm:ss",
+                    "dd MMM yyyy HH:mm:ss",
+                    "d MMM yyyy HH:mm:ss",
+                    "MMM dd, yyyy HH:mm:ss",
+                    "MMM d, yyyy HH:mm:ss",
                     "dd-MM-yy",
                     "dd-MM-yyyy",
                     "dd/MM/yy",
-                    "dd/MM/yyyy"
+                    "dd/MM/yyyy",
+                    "dd MMM yyyy",
+                    "d MMM yyyy",
+                    "MMM dd, yyyy",
+                    "MMM d, yyyy"
                 ]
                 let df = DateFormatter()
                 df.locale = Locale(identifier: "en_IN")
                 for f in fmts {
                     df.dateFormat = f
-                    if let dt = df.date(from: [dStr, tStr].compactMap{$0}.joined(separator: " ")) { parsedDate = dt; break outer }
+                    let combined = [dStr, tStr].compactMap{$0}.joined(separator: " ")
+                    if let dt = df.date(from: combined) { 
+                        if debugEnabled {
+                            print("  Matched format '\(f)' with '\(combined)' -> \(dt)")
+                        }
+                        parsedDate = dt; break outer 
+                    }
+                }
+                if debugEnabled {
+                    print("  No format matched for: '\([dStr, tStr].compactMap{$0}.joined(separator: " "))'")
                 }
             }
         }
         // If date not found, fallback to now instead of failing the parse
         let date = parsedDate ?? Date()
+        
+        // Ensure we preserve the time component if it was parsed
+        if parsedDate == nil {
+            if debugEnabled {
+                print("[EmailParser] No date found in email, using current time: \(date)")
+            }
+        }
+        
+        if debugEnabled {
+            print("[EmailParser] Date parsing result:")
+            print("  Parsed date: \(parsedDate?.description ?? "nil")")
+            print("  Final date: \(date)")
+            print("  Date components: \(Calendar.current.dateComponents([.year, .month, .day, .hour, .minute, .second], from: date))")
+        }
 
         // Description
         var desc = extractTransactionInfo(from: full)
@@ -189,6 +253,12 @@ final class EmailParser {
             let cleaned = valueLine.replacingOccurrences(of: ",", with: " ")
                 .replacingOccurrences(of: "IST", with: "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
+            
+            if debugEnabled {
+                print("[EmailParser] Axis date extraction:")
+                print("  Raw value line: '\(valueLine)'")
+                print("  Cleaned: '\(cleaned)'")
+            }
             let fmts = [
                 "dd-MM-yy HH:mm:ss",
                 "dd-MM-yyyy HH:mm:ss",
@@ -201,9 +271,50 @@ final class EmailParser {
             ]
             let df = DateFormatter()
             df.locale = Locale(identifier: "en_IN")
+            df.timeZone = TimeZone(identifier: "Asia/Kolkata")
             for f in fmts {
                 df.dateFormat = f
-                if let dt = df.date(from: cleaned) { return dt }
+                if let dt = df.date(from: cleaned) { 
+                    if debugEnabled {
+                        print("  Matched format '\(f)' -> \(dt)")
+                    }
+                    return dt 
+                }
+            }
+            if debugEnabled {
+                print("  No format matched for: '\(cleaned)'")
+            }
+        }
+        return nil
+    }
+
+    // Generic dd-MM-yy(/yyyy) with optional time fallback, using IST timezone
+    private static func extractGenericINDate(from text: String) -> Date? {
+        let patterns = [
+            "(\\b[0-3]?[0-9]-[0-1]?[0-9]-[0-9]{2,4}),\\s*([0-2][0-9]:[0-5][0-9]:[0-5][0-9])\\s*(?:IST|GMT|UTC)?",
+            "(\\b[0-3]?[0-9]-[0-1]?[0-9]-[0-9]{2,4})",
+        ]
+        let df = DateFormatter()
+        df.locale = Locale(identifier: "en_IN")
+        df.timeZone = TimeZone(identifier: "Asia/Kolkata")
+        for p in patterns {
+            if let re = try? NSRegularExpression(pattern: p, options: []) {
+                let range = NSRange(location: 0, length: text.utf16.count)
+                if let m = re.firstMatch(in: text, options: [], range: range) {
+                    let dStr = (text as NSString).substring(with: m.range(at: 1))
+                    let tStr = m.numberOfRanges > 2 && m.range(at: 2).location != NSNotFound ? (text as NSString).substring(with: m.range(at: 2)) : nil
+                    let fmts: [String]
+                    if let t = tStr, !t.isEmpty {
+                        fmts = ["dd-MM-yy HH:mm:ss", "dd-MM-yyyy HH:mm:ss"]
+                    } else {
+                        fmts = ["dd-MM-yy", "dd-MM-yyyy"]
+                    }
+                    for f in fmts {
+                        df.dateFormat = f
+                        let composed = tStr != nil ? "\(dStr) \(tStr!)" : dStr
+                        if let dt = df.date(from: composed) { return dt }
+                    }
+                }
             }
         }
         return nil
@@ -220,10 +331,29 @@ final class EmailParser {
             let year = (text as NSString).substring(with: m.range(at: 3))
             let time = (text as NSString).substring(with: m.range(at: 4))
             let dateStr = "\(day) \(month) \(year) \(time)"
+            
+            if debugEnabled {
+                print("[EmailParser] ICICI date extraction:")
+                print("  Matched: month=\(month), day=\(day), year=\(year), time=\(time)")
+                print("  Date string: '\(dateStr)'")
+            }
+            
             let fmts = ["d MMM yyyy HH:mm:ss", "dd MMM yyyy HH:mm:ss", "d MMM yyyy HH:mm", "dd MMM yyyy HH:mm"]
             let df = DateFormatter()
             df.locale = Locale(identifier: "en_US_POSIX")
-            for f in fmts { df.dateFormat = f; if let dt = df.date(from: dateStr) { return dt } }
+            df.timeZone = TimeZone(identifier: "Asia/Kolkata")
+            for f in fmts { 
+                df.dateFormat = f
+                if let dt = df.date(from: dateStr) { 
+                    if debugEnabled {
+                        print("  Matched format '\(f)' -> \(dt)")
+                    }
+                    return dt 
+                }
+            }
+            if debugEnabled {
+                print("  No format matched for: '\(dateStr)'")
+            }
         }
         return nil
     }
@@ -268,6 +398,170 @@ final class EmailParser {
             return l
         }
         return ""
+    }
+    
+    /// Pre-filter to only process emails that look like transaction notifications
+    private static func isTransactionEmail(subject: String, body: String) -> Bool {
+        let content = (subject + "\n" + body).lowercased()
+        
+        // Enhanced bank detection for Axis and ICICI
+        let isAxisBank = content.contains("axis") || 
+                        subject.lowercased().contains("axis bank") ||
+                        content.contains("axisbank") ||
+                        content.contains("axis.co.in")
+        
+        let isICICIBank = content.contains("icici") || 
+                         subject.lowercased().contains("icici bank") ||
+                         content.contains("icicibank") ||
+                         content.contains("icici.com")
+        
+        // For Axis/ICICI emails, be more permissive but still filter out obvious non-transactions
+        if isAxisBank || isICICIBank {
+            // Specific transaction indicators for these banks
+            let bankTransactionKeywords = [
+                "transaction", "credited", "debited", "payment", "purchase",
+                "withdrawal", "deposit", "transfer", "upi", "imps", "neft",
+                "atm", "card", "amount", "rs.", "inr", "₹", "account",
+                "balance", "debit card", "credit card", "mobile banking"
+            ]
+            
+            let hasBankTransactionKeyword = bankTransactionKeywords.contains { keyword in
+                content.contains(keyword)
+            }
+            
+            // Must have amount pattern for bank emails too
+            let amountPattern = try! NSRegularExpression(pattern: "(?:inr|rs\\.?|₹)\\s*[0-9,]+(?:\\.[0-9]{1,2})?", options: .caseInsensitive)
+            let hasAmount = amountPattern.firstMatch(in: content, options: [], range: NSRange(location: 0, length: content.utf16.count)) != nil
+            
+            // Exclude obvious non-transaction bank emails
+            let bankExcludeKeywords = [
+                "newsletter", "welcome", "thank you for choosing", "promotional",
+                "offer", "discount", "cashback offer", "reward points",
+                "statement", "monthly statement", "quarterly statement"
+            ]
+            
+            let hasBankExcludeKeyword = bankExcludeKeywords.contains { keyword in
+                content.contains(keyword)
+            }
+            
+            return hasBankTransactionKeyword && hasAmount && !hasBankExcludeKeyword
+        }
+        
+        // For other emails, check for basic transaction indicators
+        let transactionKeywords = [
+            "transaction", "credited", "debited", "payment", "purchase", 
+            "withdrawal", "deposit", "transfer", "upi", "imps", "neft", 
+            "atm", "card", "amount", "rs.", "inr", "₹"
+        ]
+        
+        let hasTransactionKeyword = transactionKeywords.contains { keyword in
+            content.contains(keyword)
+        }
+        
+        // Must have amount pattern to be a real transaction
+        let amountPattern = try! NSRegularExpression(pattern: "(?:inr|rs\\.?|₹)\\s*[0-9,]+(?:\\.[0-9]{1,2})?", options: .caseInsensitive)
+        let hasAmount = amountPattern.firstMatch(in: content, options: [], range: NSRange(location: 0, length: content.utf16.count)) != nil
+        
+        // For non-bank emails, require both transaction keyword and amount
+        if !hasTransactionKeyword || !hasAmount {
+            return false
+        }
+        
+        // Exclude obvious promotional emails
+        let excludeKeywords = [
+            "offer", "promotion", "discount", "sale", "cashback", "reward",
+            "newsletter", "welcome", "thank you", "regards", "best regards"
+        ]
+        
+        let hasExcludeKeyword = excludeKeywords.contains { keyword in
+            content.contains(keyword)
+        }
+        
+        return !hasExcludeKeyword
+    }
+    
+    /// Enhanced bank-specific parsing for better accuracy
+    static func parseAxisBankTransaction(subject: String, body: String) -> ParsedEmailTransaction? {
+        let full = subject + "\n" + body
+        
+        // Axis Bank specific patterns
+        let axisPatterns = [
+            // Subject styles like: "INR 65.00 was debited from your A/c no. XX5739."
+            "(?:INR|Rs\\.?|₹)\\s*([0-9,]+(?:\\.[0-9]{1,2})?)\\s+was\\s+(debited|credited)\\b",
+            // Fallback without word-boundary (some subjects end with a dot/extra token)
+            "(?:INR|Rs\\.?|₹)\\s*([0-9,]+(?:\\.[0-9]{1,2})?)\\s+was\\s+(debited|credited)",
+            "Dear Customer, INR ([0-9,]+(?:\\.[0-9]{2})?) has been (debited|credited)",
+            "transaction of INR ([0-9,]+(?:\\.[0-9]{2})?) (debited|credited)",
+            "Amount: INR ([0-9,]+(?:\\.[0-9]{2})?) (Debited|Credited)"
+        ]
+        
+        for pattern in axisPatterns {
+            if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive),
+               let match = regex.firstMatch(in: full, options: [], range: NSRange(location: 0, length: full.utf16.count)) {
+                
+                let amountStr = (full as NSString).substring(with: match.range(at: 1)).replacingOccurrences(of: ",", with: "")
+                let typeStr = (full as NSString).substring(with: match.range(at: 2))
+                
+                if let amount = Double(amountStr) {
+                    let isCredit = typeStr.lowercased().contains("credit")
+                    
+                    // Try to extract date using Axis method, then generic fallback
+                    let date = extractAxisDate(from: full) ?? extractGenericINDate(from: full) ?? Date()
+                    
+                    return ParsedEmailTransaction(
+                        subject: subject,
+                        body: body,
+                        amount: amount,
+                        date: date,
+                        isCredit: isCredit,
+                        description: extractTransactionInfo(from: full),
+                        suggestedCategory: isCredit ? "income" : "expense"
+                    )
+                }
+            }
+        }
+        
+        return nil
+    }
+    
+    /// Enhanced ICICI bank parsing
+    static func parseICICIBankTransaction(subject: String, body: String) -> ParsedEmailTransaction? {
+        let full = subject + "\n" + body
+        
+        // ICICI Bank specific patterns
+        let iciciPatterns = [
+            "Rs\\.([0-9,]+(?:\\.[0-9]{2})?) (debited|credited)",
+            "INR ([0-9,]+(?:\\.[0-9]{2})?) has been (debited|credited)",
+            "Amount: Rs\\.([0-9,]+(?:\\.[0-9]{2})?) (Debited|Credited)"
+        ]
+        
+        for pattern in iciciPatterns {
+            if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive),
+               let match = regex.firstMatch(in: full, options: [], range: NSRange(location: 0, length: full.utf16.count)) {
+                
+                let amountStr = (full as NSString).substring(with: match.range(at: 1)).replacingOccurrences(of: ",", with: "")
+                let typeStr = (full as NSString).substring(with: match.range(at: 2))
+                
+                if let amount = Double(amountStr) {
+                    let isCredit = typeStr.lowercased().contains("credit")
+                    
+                    // Try to extract date using existing method
+                    let date = extractICICIGmailDate(from: full) ?? Date()
+                    
+                    return ParsedEmailTransaction(
+                        subject: subject,
+                        body: body,
+                        amount: amount,
+                        date: date,
+                        isCredit: isCredit,
+                        description: extractICICIInfo(from: full) ?? extractTransactionInfo(from: full),
+                        suggestedCategory: isCredit ? "income" : "expense"
+                    )
+                }
+            }
+        }
+        
+        return nil
     }
 }
 

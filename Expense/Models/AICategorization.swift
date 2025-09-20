@@ -125,6 +125,11 @@ class AICategorizationManager: ObservableObject {
         userRules = rules
         saveUserRules()
     }
+    func updateRule(at index: Int, to rule: UserRule) {
+        guard userRules.indices.contains(index) else { return }
+        userRules[index] = rule
+        saveUserRules()
+    }
     func removeRule(at index: Int) {
         guard userRules.indices.contains(index) else { return }
         userRules.remove(at: index)

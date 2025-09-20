@@ -16,6 +16,7 @@ struct EditTransactionView: View {
     @State private var selectedSuggestedSubcategory: String? = nil
     @State private var ccPaidCard: CDAccount? = nil
     @State private var ccFundingAccount: CDAccount? = nil
+    @State private var transactionDate: Date
     
     init(viewModel: ExpenseViewModel, transaction: CDTransaction) {
         self.viewModel = viewModel
@@ -33,6 +34,7 @@ struct EditTransactionView: View {
         _isCredit = State(initialValue: transaction.isCredit)
         _notes = State(initialValue: transaction.wrappedNotes)
         _excludeFromDashboard = State(initialValue: viewModel.isTransactionExcluded(transaction))
+        _transactionDate = State(initialValue: transaction.wrappedDate)
         if TransactionCategory(rawValue: transaction.wrappedCategory) == .creditCardPayment {
             // Preselect based on notes if possible (best-effort)
             let all = viewModel.accounts
@@ -70,6 +72,8 @@ struct EditTransactionView: View {
                         }
                         .labelsHidden()
                     }
+                    
+                    DatePicker("Date & Time", selection: $transactionDate, displayedComponents: [.date, .hourAndMinute])
                     
                     Picker("Category", selection: $category) {
                         ForEach(allCategories, id: \.self) { category in
@@ -164,7 +168,7 @@ struct EditTransactionView: View {
                 paidCard: card,
                 fundingAccount: funding,
                 notes: notes,
-                date: transaction.wrappedDate
+                date: transactionDate
             )
         } else {
             viewModel.updateTransaction(
@@ -173,6 +177,7 @@ struct EditTransactionView: View {
                 category: finalCategory,
                 isCredit: isCredit,
                 notes: notes.isEmpty ? nil : notes,
+                date: transactionDate,
                 updateRules: false
             )
         }

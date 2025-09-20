@@ -247,7 +247,7 @@ struct TransactionRowView: View {
                 Text(transaction.wrappedCategory)
                     .font(.subheadline)
                     .fontWeight(.medium)
-                Text(transaction.wrappedDate.formatted(date: .abbreviated, time: .omitted))
+                Text(transaction.wrappedDate.formatted(date: .abbreviated, time: .shortened))
                     .font(.caption)
                     .foregroundColor(.secondary)
             }

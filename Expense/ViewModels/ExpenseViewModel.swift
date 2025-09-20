@@ -21,6 +21,14 @@ class ExpenseViewModel: ObservableObject {
     @Published var subcategoriesByParent: [String: [String]] = [:]
     @Published var lastNAVUpdateAt: Date? = UserDefaults.standard.object(forKey: "LastNAVUpdateAt") as? Date
     
+    // MARK: - Insurance Policies
+    @Published var insurancePolicies: [InsurancePolicy] = []
+    private let insurancePoliciesKey = "InsurancePoliciesStore"
+    
+    // Preferred accounts for banks (persisted in UserDefaults)
+    private let preferredAxisKey = "PreferredAccount_axis"
+    private let preferredICICIKey = "PreferredAccount_icici"
+    
     init(context: NSManagedObjectContext) {
         self.viewContext = context
         loadCustomCategories()
@@ -28,11 +36,93 @@ class ExpenseViewModel: ObservableObject {
         loadExcludedTransactions()
         loadPendingTransactions()
         loadEmailIngestionState()
+        loadInsurancePolicies()
         
         // Load last sync time from UserDefaults
         if let savedDate = UserDefaults.standard.object(forKey: "lastSyncTime") as? Date {
             self.lastSyncTime = savedDate
         }
+
+    // MARK: - Preferred Accounts (Axis/ICICI) by key
+    // bankKey should be "axis" or "icici"
+    func setPreferredAccount(bankKey: String, account: CDAccount?) {
+        let key = (bankKey.lowercased() == "axis") ? preferredAxisKey : preferredICICIKey
+        if let acc = account {
+            if let id = acc.id {
+                UserDefaults.standard.set(id.uuidString, forKey: key)
+            } else {
+                UserDefaults.standard.removeObject(forKey: key)
+                print("[PreferredAccount] Attempted to save account without UUID for bankKey=\(bankKey)")
+            }
+        } else {
+            UserDefaults.standard.removeObject(forKey: key)
+        }
+    }
+    func preferredAccountId(bankKey: String) -> UUID? {
+        let key = (bankKey.lowercased() == "axis") ? preferredAxisKey : preferredICICIKey
+        guard let idStr = UserDefaults.standard.string(forKey: key), let uuid = UUID(uuidString: idStr) else { return nil }
+        return uuid
+    }
+    func getPreferredAccount(bankKey: String) -> CDAccount? {
+        guard let id = preferredAccountId(bankKey: bankKey) else { return nil }
+        return accounts.first { acct in
+            if let aid = acct.id { return aid == id }
+            return false
+        }
+    }
+    
+    // MARK: - Insurance Policies Persistence (moved inside class)
+    func loadInsurancePolicies() {
+        if let data = UserDefaults.standard.data(forKey: insurancePoliciesKey),
+           let items = try? JSONDecoder().decode([InsurancePolicy].self, from: data) {
+            insurancePolicies = items
+        }
+    }
+    func saveInsurancePolicies() {
+        if let data = try? JSONEncoder().encode(insurancePolicies) {
+            UserDefaults.standard.set(data, forKey: insurancePoliciesKey)
+        }
+    }
+    func addInsurancePolicy(_ policy: InsurancePolicy) {
+        insurancePolicies.append(policy)
+        saveInsurancePolicies()
+        objectWillChange.send()
+    }
+    func updateInsurancePolicy(_ policy: InsurancePolicy) {
+        if let idx = insurancePolicies.firstIndex(where: { $0.id == policy.id }) {
+            insurancePolicies[idx] = policy
+            saveInsurancePolicies()
+            objectWillChange.send()
+        }
+    }
+    func deleteInsurancePolicy(_ policy: InsurancePolicy) {
+        insurancePolicies.removeAll { $0.id == policy.id }
+        saveInsurancePolicies()
+        objectWillChange.send()
+    }
+    /// Debits due insurance premiums today and records Utilities transactions
+    func processDueInsurancePremiums(on date: Date = Date()) {
+        let calendar = Calendar.current
+        let todayDay = calendar.component(.day, from: date)
+        let currentMonth = calendar.component(.month, from: date)
+        let currentYear = calendar.component(.year, from: date)
+        var changed = false
+        for i in insurancePolicies.indices {
+            guard insurancePolicies[i].isActive else { continue }
+            let p = insurancePolicies[i]
+            guard p.dayOfMonth == todayDay else { continue }
+            if let last = p.lastPaidAt {
+                let m = calendar.component(.month, from: last)
+                let y = calendar.component(.year, from: last)
+                if m == currentMonth && y == currentYear { continue }
+            }
+            guard let acc = accounts.first(where: { $0.id == p.accountId }) else { continue }
+            addTransaction(amount: p.premiumAmount, category: .utilities, isCredit: false, account: acc, notes: "Insurance: \(p.name)", date: date)
+            insurancePolicies[i].lastPaidAt = date
+            changed = true
+        }
+        if changed { saveInsurancePolicies() }
+    }
         
         // Add observer for Core Data changes
         NotificationCenter.default.addObserver(
@@ -598,7 +688,7 @@ class ExpenseViewModel: ObservableObject {
         }
     }
     
-    func updateTransaction(_ transaction: CDTransaction, amount: Double, category: TransactionCategory, isCredit: Bool, notes: String?, updateRules: Bool = false) {
+    func updateTransaction(_ transaction: CDTransaction, amount: Double, category: TransactionCategory, isCredit: Bool, notes: String?, date: Date? = nil, updateRules: Bool = false) {
         viewContext.performAndWait {
             // First revert the old balance change
             if let account = transaction.account {
@@ -628,6 +718,9 @@ class ExpenseViewModel: ObservableObject {
             transaction.category = category.rawValue
             transaction.isCredit = isCredit
             transaction.notes = notes
+            if let newDate = date {
+                transaction.date = newDate
+            }
             
             do {
                 try viewContext.save()
@@ -976,6 +1069,16 @@ class ExpenseViewModel: ObservableObject {
             UserDefaults.standard.set(ts, forKey: "LastEmailReceivedAt")
         }
     }
+    
+    /// Reset deduplication state for email ingestion so older emails can be reprocessed.
+    /// This clears the processed message IDs and the last-received timestamp.
+    func resetEmailIngestionState() {
+        processedEmailMessageIds.removeAll()
+        lastEmailReceivedAt = nil
+        UserDefaults.standard.removeObject(forKey: "ProcessedEmailMessageIds")
+        UserDefaults.standard.removeObject(forKey: "LastEmailReceivedAt")
+        print("[EmailIngestion] Reset processed IDs and last received timestamp")
+    }
     func markEmailProcessed(messageId: String, receivedAt: Date) {
         processedEmailMessageIds.insert(messageId)
         if let last = lastEmailReceivedAt {
@@ -984,6 +1087,92 @@ class ExpenseViewModel: ObservableObject {
             lastEmailReceivedAt = receivedAt
         }
         persistEmailIngestionState()
+    }
+    
+    // MARK: - Automatic Email → Pending ingestion
+    /// Ingest Outlook and Gmail messages, parse transactions, and add to pending list without duplicates.
+    func ingestEmailsToPending(completion: ((Int) -> Void)? = nil) {
+        var added = 0
+        let group = DispatchGroup()
+        // Outlook (Axis Bank alerts only)
+        group.enter()
+        OutlookService.shared.fetchRecentMessages(since: lastEmailReceivedAt, sender: "alerts@axisbank.com") { [weak self] result in
+            defer { group.leave() }
+            guard let self = self else { return }
+            if case .success(let msgs) = result {
+                for msg in msgs {
+                    guard !self.processedEmailMessageIds.contains(msg.id) else { continue }
+                    let bodyText: String? = msg.body?.content ?? msg.bodyPreview
+                    let receivedAt = ISO8601DateFormatter().date(from: msg.receivedDateTime) ?? Date()
+                    if let parsed = try? EmailParser.parse(subject: msg.subject, body: bodyText) {
+                        let pending = PendingTransactionItem(
+                            subject: parsed.subject,
+                            body: parsed.body,
+                            amount: parsed.amount,
+                            date: parsed.date,
+                            isCredit: parsed.isCredit,
+                            suggestedCategory: parsed.suggestedCategory,
+                            notes: parsed.description
+                        )
+                        self.addPendingTransactionIfNew(pending)
+                        self.markEmailProcessed(messageId: msg.id, receivedAt: receivedAt)
+                        added += 1
+                    }
+                }
+            }
+        }
+        // Gmail (ICICI)
+        if GmailService.shared.isSignedIn {
+            group.enter()
+            let since = lastEmailReceivedAt
+            GmailService.shared.fetchMessages(query: "from:credit_cards@icicibank.com", since: since, max: 50) { [weak self] result in
+                defer { group.leave() }
+                guard let self = self else { return }
+                if case .success(let msgs) = result {
+                    for (subject, body, received) in msgs {
+                        // Use a synthetic signature to dedupe: hash of subject+date+amount
+                        let signature = self.signatureForEmail(subject: subject, body: body)
+                        guard !self.processedEmailMessageIds.contains(signature) else { continue }
+                        if let parsed = try? EmailParser.parse(subject: subject, body: body) {
+                            let pending = PendingTransactionItem(
+                                subject: parsed.subject,
+                                body: parsed.body,
+                                amount: parsed.amount,
+                                date: parsed.date,
+                                isCredit: parsed.isCredit,
+                                suggestedCategory: parsed.suggestedCategory,
+                                notes: parsed.description
+                            )
+                            self.addPendingTransactionIfNew(pending)
+                            self.processedEmailMessageIds.insert(signature)
+                            self.markEmailProcessed(messageId: signature, receivedAt: received)
+                            added += 1
+                        }
+                    }
+                }
+            }
+        }
+        group.notify(queue: .main) {
+            completion?(added)
+        }
+    }
+    
+    private func addPendingTransactionIfNew(_ item: PendingTransactionItem) {
+        // Deduplicate by amount±1 and date±5m and similar subject
+        let windowStart = item.date.addingTimeInterval(-300)
+        let windowEnd = item.date.addingTimeInterval(300)
+        let exists = pendingTransactions.contains { p in
+            p.isCredit == item.isCredit &&
+            abs(p.amount - item.amount) < 1 &&
+            (windowStart...windowEnd).contains(p.date) &&
+            p.subject.lowercased().prefix(24) == item.subject.lowercased().prefix(24)
+        }
+        if !exists { addPendingTransaction(item) }
+    }
+    
+    private func signatureForEmail(subject: String, body: String) -> String {
+        let key = (subject + "|" + String(body.prefix(120))).lowercased()
+        return String(key.hashValue)
     }
 
     func fetchAllOutlookEmails(sender: String? = nil, completion: @escaping (Result<Int, Error>) -> Void) {
@@ -1019,9 +1208,12 @@ class ExpenseViewModel: ObservableObject {
         if let data = UserDefaults.standard.data(forKey: "PendingTransactions"),
            let items = try? JSONDecoder().decode([PendingTransactionItem].self, from: data) {
             pendingTransactions = items
+            print("[ExpenseViewModel] Loaded \(items.count) pending transactions from UserDefaults")
+        } else {
+            print("[ExpenseViewModel] No pending transactions found in UserDefaults")
         }
     }
-    private func savePendingTransactions() {
+    func savePendingTransactions() {
         if let data = try? JSONEncoder().encode(pendingTransactions) {
             UserDefaults.standard.set(data, forKey: "PendingTransactions")
         }
@@ -1029,6 +1221,8 @@ class ExpenseViewModel: ObservableObject {
     func addPendingTransaction(_ item: PendingTransactionItem) {
         pendingTransactions.insert(item, at: 0)
         savePendingTransactions()
+        print("[ExpenseViewModel] Added pending transaction: \(item.subject) - \(item.amount) - \(item.date)")
+        print("[ExpenseViewModel] Total pending transactions: \(pendingTransactions.count)")
         objectWillChange.send()
     }
     func removePendingTransaction(id: UUID) {
@@ -1042,22 +1236,72 @@ class ExpenseViewModel: ObservableObject {
         savePendingTransactions()
         objectWillChange.send()
     }
+    
+    // MARK: - Test Functions for Development
+    func addTestPendingTransactions() {
+        let testTransactions = [
+            PendingTransactionItem(
+                subject: "INR 105.00 was debited from your A/c no. XX5739",
+                body: "Dear Customer, INR 105.00 was debited from your A/c no. XX5739 on 19-09-25, 14:23:24 IST",
+                amount: 105.00,
+                date: Date(),
+                isCredit: false,
+                suggestedCategory: "Food & Dining",
+                notes: "Test transaction from today"
+            ),
+            PendingTransactionItem(
+                subject: "INR 500.00 was credited to your A/c no. XX5739",
+                body: "Dear Customer, INR 500.00 was credited to your A/c no. XX5739 on 18-09-25, 10:15:30 IST",
+                amount: 500.00,
+                date: Calendar.current.date(byAdding: .day, value: -1, to: Date()) ?? Date(),
+                isCredit: true,
+                suggestedCategory: "Salary",
+                notes: "Test transaction from yesterday"
+            ),
+            PendingTransactionItem(
+                subject: "INR 250.00 was debited from your A/c no. XX5739",
+                body: "Dear Customer, INR 250.00 was debited from your A/c no. XX5739 on 17-09-25, 16:45:12 IST",
+                amount: 250.00,
+                date: Calendar.current.date(byAdding: .day, value: -2, to: Date()) ?? Date(),
+                isCredit: false,
+                suggestedCategory: "Shopping",
+                notes: "Test transaction from 2 days ago"
+            )
+        ]
+        
+        for transaction in testTransactions {
+            addPendingTransaction(transaction)
+        }
+        
+        print("[ExpenseViewModel] Added \(testTransactions.count) test pending transactions")
+    }
     func approvePendingTransaction(id: UUID, toAccount: CDAccount?) {
         guard let idx = pendingTransactions.firstIndex(where: { $0.id == id }), let account = toAccount ?? accounts.first else { return }
         let item = pendingTransactions[idx]
         let notes = item.notes ?? item.subject
-        // Use AI/user rules categorization at approval time using item details
-        var finalCategory = TransactionCategory(rawValue: item.suggestedCategory)
-        if finalCategory == .other {
-            let aiSuggested = AICategorizationManager.shared.categorizeTransaction(
-                title: item.subject,
-                amount: item.amount,
-                isCredit: item.isCredit,
-                notes: notes
-            )
-            finalCategory = TransactionCategory(rawValue: aiSuggested)
-        }
-        addTransaction(amount: item.amount, category: finalCategory, isCredit: item.isCredit, account: account, notes: notes, date: item.date)
+        
+        // Resolve the account inside our viewContext to avoid cross-context relationship crashes
+        let accountInContext: CDAccount = {
+            if account.managedObjectContext === viewContext { return account }
+            return viewContext.object(with: account.objectID) as! CDAccount
+        }()
+        
+        // Always apply user rules/AI categorization at approval time
+        let aiSuggested = AICategorizationManager.shared.categorizeTransaction(
+            title: item.subject,
+            amount: item.amount,
+            isCredit: item.isCredit,
+            notes: notes
+        )
+        let finalCategory = TransactionCategory(rawValue: aiSuggested) ?? .other
+        addTransaction(
+            amount: item.amount,
+            category: finalCategory,
+            isCredit: item.isCredit,
+            account: accountInContext,
+            notes: notes,
+            date: item.date
+        )
         pendingTransactions.remove(at: idx)
         savePendingTransactions()
     }
