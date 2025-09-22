@@ -415,7 +415,7 @@ struct CreditCardEmailsView: View {
                 } else {
                     print("DEBUG: Failed to parse PDF: \(fileName)")
                     self.processingEmailId = nil
-                    self.errorMessage = "❌ Failed to parse PDF: \(fileName). Please check if it's password protected with YANA1906."
+                    self.errorMessage = "❌ Failed to parse PDF: \(fileName). Please check if it's password protected. Trying dynamic passwords based on user details."
                     self.showingError = true
                 }
             }

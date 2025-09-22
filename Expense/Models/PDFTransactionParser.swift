@@ -26,23 +26,72 @@ class PDFTransactionParser {
     static let shared = PDFTransactionParser()
     private init() {}
     
-    // Common passwords to try for Axis Bank PDFs (YANA1906 confirmed working)
-    private let axisBankPasswords = [
-        "YANA1906", // Confirmed working password - try first
-        "yana1906", "YANA@1906", "yana@1906",
-        "Yana1906", "YANA_1906", "yana_1906",
-        // Additional common variations
-        "YANA19", "yana19", "YANA06", "yana06",
-        "YANA", "yana", "Yana", "AXIS1906", "axis1906",
-        // Date-based passwords
-        "19061906", "1906", "06", "19",
-        // Common bank passwords
-        "password", "Password", "PASSWORD", "123456",
-        "axis", "AXIS", "Axis", "axisbank", "AXISBANK",
-        // Your name variations (common practice)
-        "ashok", "ASHOK", "Ashok", "naidu", "NAIDU", "Naidu",
-        "ashoknaidu", "ASHOKNAIDU", "AshokNaidu"
-    ]
+    // User details for dynamic password generation
+    // TODO: These should be configurable from user settings/preferences
+    private var userFirstName = "YANAMADALA" // First name
+    private var userDOB = "19/06/1990" // DD/MM/YYYY format (DD/MM/YYYY)
+    
+    // Function to update user details for password generation
+    func updateUserDetails(firstName: String, dateOfBirth: String) {
+        self.userFirstName = firstName.uppercased()
+        self.userDOB = dateOfBirth
+        print("DEBUG: Updated user details - Name: \(firstName), DOB: \(dateOfBirth)")
+    }
+    
+    // Generate dynamic passwords based on user details
+    private func generateDynamicPasswords() -> [String] {
+        let firstName = userFirstName.uppercased()
+        let firstFourChars = String(firstName.prefix(4)) // First 4 characters: "YANA"
+        
+        // Extract date and month from DOB (19/06/1990 -> 1906)
+        let dobComponents = userDOB.components(separatedBy: "/")
+        guard dobComponents.count >= 2,
+              let day = Int(dobComponents[0]),
+              let month = Int(dobComponents[1]) else {
+            return ["YANA1906"] // Fallback to known working password
+        }
+        
+        let dateMonth = String(format: "%02d%02d", day, month) // "1906"
+        
+        // Generate password variations
+        let basePassword = "\(firstFourChars)\(dateMonth)" // "YANA1906"
+        
+        return [
+            basePassword, // "YANA1906" - Primary password
+            basePassword.lowercased(), // "yana1906"
+            "\(firstFourChars)@\(dateMonth)", // "YANA@1906"
+            "\(firstFourChars.lowercased())@\(dateMonth)", // "yana@1906"
+            "\(firstFourChars)_\(dateMonth)", // "YANA_1906"
+            "\(firstFourChars.lowercased())_\(dateMonth)", // "yana_1906"
+            firstFourChars, // "YANA"
+            firstFourChars.lowercased(), // "yana"
+            dateMonth, // "1906"
+            String(day), // "19"
+            String(format: "%02d", month), // "06"
+        ]
+    }
+    
+    // Get all passwords to try (dynamic + fallback)
+    private var axisBankPasswords: [String] {
+        let dynamicPasswords = generateDynamicPasswords()
+        print("DEBUG: Generated \(dynamicPasswords.count) dynamic passwords from name '\(userFirstName)' and DOB '\(userDOB)'")
+        print("DEBUG: Primary password: \(dynamicPasswords.first ?? "None")")
+        
+        var passwords = dynamicPasswords
+        
+        // Add fallback passwords
+        passwords.append(contentsOf: [
+            // Common bank passwords
+            "password", "Password", "PASSWORD", "123456",
+            "axis", "AXIS", "Axis", "axisbank", "AXISBANK",
+            // Additional name variations
+            "ashok", "ASHOK", "Ashok", "naidu", "NAIDU", "Naidu",
+            "ashoknaidu", "ASHOKNAIDU", "AshokNaidu"
+        ])
+        
+        print("DEBUG: Total passwords to try: \(passwords.count)")
+        return passwords
+    }
     
     func parseCreditCardBill(from url: URL) -> CreditCardBillInfo? {
         guard let pdfDocument = loadPDFDocument(from: url) else {
