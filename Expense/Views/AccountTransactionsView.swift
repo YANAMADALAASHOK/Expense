@@ -20,7 +20,27 @@ struct AccountTransactionsView: View {
                 // Transactions List
                 List {
                     ForEach(transactions.grouped(by: \.wrappedDate), id: \.key) { date, dayTransactions in
-                        Section(header: Text(date.formatted(date: .abbreviated, time: .omitted))) {
+                        Section(header: 
+                            HStack {
+                                Text(date.formatted(date: .abbreviated, time: .omitted))
+                                Spacer()
+                                HStack(spacing: 8) {
+                                    Text("\(dayTransactions.count) transactions")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                    
+                                    // Calculate daily sum
+                                    let dailySum = dayTransactions.reduce(0.0) { sum, transaction in
+                                        return sum + (transaction.isCredit ? transaction.amount : -transaction.amount)
+                                    }
+                                    
+                                    Text("₹\(dailySum, specifier: "%.2f")")
+                                        .font(.caption)
+                                        .fontWeight(.semibold)
+                                        .foregroundColor(dailySum >= 0 ? .green : .red)
+                                }
+                            }
+                        ) {
                             ForEach(dayTransactions.sorted(by: { $0.wrappedDate > $1.wrappedDate }), id: \.id) { transaction in
                                 TransactionWithBalanceRow(
                                     transaction: transaction,

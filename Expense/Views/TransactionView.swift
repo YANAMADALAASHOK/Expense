@@ -21,9 +21,21 @@ struct TransactionView: View {
                         HStack {
                             Text(date.formatted(date: .abbreviated, time: .omitted))
                             Spacer()
-                            Text("\(transactions.count) transactions")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
+                            HStack(spacing: 8) {
+                                Text("\(transactions.count) transactions")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                
+                                // Calculate daily sum
+                                let dailySum = transactions.reduce(0.0) { sum, transaction in
+                                    return sum + (transaction.isCredit ? transaction.amount : -transaction.amount)
+                                }
+                                
+                                Text("₹\(dailySum, specifier: "%.2f")")
+                                    .font(.caption)
+                                    .fontWeight(.semibold)
+                                    .foregroundColor(dailySum >= 0 ? .green : .red)
+                            }
                         }
                     ) {
                         ForEach(transactions, id: \.id) { transaction in
