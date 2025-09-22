@@ -194,12 +194,15 @@ struct SettingsView: View {
                     isExpanded: $isBillsExpanded,
                     icon: "doc.text.below.ecg"
                 ) {
-                    NavigationLink(destination: CreditCardEmailsView(viewModel: expenseViewModel)) {
-                        Label("Browse Credit Card Emails", systemImage: "envelope.badge")
-                    }
                     
                     NavigationLink(destination: CreditCardBillsView(viewModel: expenseViewModel)) {
                         Label("View Processed Bills", systemImage: "creditcard")
+                    }
+                    
+                    Button(action: {
+                        resetCreditCardData()
+                    }) {
+                        Label("Reset & Reload Credit Cards", systemImage: "arrow.clockwise")
                     }
                 }
 
@@ -570,30 +573,17 @@ struct SettingsView: View {
     }
     
     private func deleteAllData() {
-        isDeletingData = true
+        expenseViewModel.clearAllData()
+    }
+    
+    private func resetCreditCardData() {
+        // Clear the last fetch timestamp to force a fresh fetch
+        UserDefaults.standard.removeObject(forKey: "lastCreditCardAutoFetch")
+        print("DEBUG: Reset credit card fetch timer - will reload all statements")
         
-        // Delete from Firebase first
-        if let user = authManager.currentUser, !user.isGuest {
-            expenseViewModel.deleteAllDataFromFirebase { success in
-                DispatchQueue.main.async {
-                    if success {
-                        // Then clear local data
-                        expenseViewModel.clearAllData()
-                        errorMessage = "All data has been successfully deleted from both Firebase and device."
-                    } else {
-                        errorMessage = "Failed to delete data from Firebase. Please try again."
-                    }
-                    showingError = true
-                    isDeletingData = false
-                }
-            }
-        } else {
-            // Just clear local data for guest users
-            expenseViewModel.clearAllData()
-            errorMessage = "All local data has been successfully deleted."
-            showingError = true
-            isDeletingData = false
-        }
+        // Trigger a fresh fetch through the AccountsView
+        // This will re-process all emails and recreate credit card accounts
+        NotificationCenter.default.post(name: NSNotification.Name("ResetCreditCardData"), object: nil)
     }
     
 }

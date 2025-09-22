@@ -22,6 +22,22 @@ struct OutlookMessage: Decodable {
     }
 }
 
+struct OutlookAttachment: Decodable {
+    let id: String
+    let name: String?
+    let contentType: String?
+    let size: Int?
+    let isInline: Bool?
+    
+    enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case contentType
+        case size
+        case isInline
+    }
+}
+
 private struct GraphMessagesResponse: Decodable {
     let value: [OutlookMessage]
     let nextLink: String?
@@ -29,6 +45,10 @@ private struct GraphMessagesResponse: Decodable {
         case value
         case nextLink = "@odata.nextLink"
     }
+}
+
+private struct GraphAttachmentsResponse: Decodable {
+    let value: [OutlookAttachment]
 }
 
 final class OutlookService {
@@ -115,6 +135,75 @@ final class OutlookService {
             }
             
             return url
+        }
+    }
+    
+    // MARK: - New Methods for AccountsView
+    
+    func fetchEmails(from sender: String) async throws -> [OutlookMessage] {
+        return try await withCheckedThrowingContinuation { continuation in
+            // Fetch all emails from this sender (no time limit)
+            fetchRecentMessages(since: nil, sender: sender) { result in
+                continuation.resume(with: result)
+            }
+        }
+    }
+    
+    func fetchAttachments(for messageId: String) async throws -> [OutlookAttachment] {
+        return try await withCheckedThrowingContinuation { continuation in
+            getAccessToken { result in
+                switch result {
+                case .failure(let error):
+                    continuation.resume(throwing: error)
+                case .success(let token):
+                    let url = URL(string: "https://graph.microsoft.com/v1.0/me/messages/\(messageId)/attachments")!
+                    var request = URLRequest(url: url)
+                    request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+                    
+                    URLSession.shared.dataTask(with: request) { data, response, error in
+                        if let error = error {
+                            continuation.resume(throwing: error)
+                            return
+                        }
+                        
+                        guard let data = data else {
+                            continuation.resume(throwing: NSError(domain: "OutlookService", code: 0, userInfo: [NSLocalizedDescriptionKey: "No data received"]))
+                            return
+                        }
+                        
+                        do {
+                            let attachmentsResponse = try JSONDecoder().decode(GraphAttachmentsResponse.self, from: data)
+                            continuation.resume(returning: attachmentsResponse.value)
+                        } catch {
+                            continuation.resume(throwing: error)
+                        }
+                    }.resume()
+                }
+            }
+        }
+    }
+    
+    func downloadAttachment(messageId: String, attachmentId: String) async throws -> Data? {
+        return try await withCheckedThrowingContinuation { continuation in
+            getAccessToken { result in
+                switch result {
+                case .failure(let error):
+                    continuation.resume(throwing: error)
+                case .success(let token):
+                    let url = URL(string: "https://graph.microsoft.com/v1.0/me/messages/\(messageId)/attachments/\(attachmentId)/$value")!
+                    var request = URLRequest(url: url)
+                    request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+                    
+                    URLSession.shared.dataTask(with: request) { data, response, error in
+                        if let error = error {
+                            continuation.resume(throwing: error)
+                            return
+                        }
+                        
+                        continuation.resume(returning: data)
+                    }.resume()
+                }
+            }
         }
     }
 }

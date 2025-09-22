@@ -65,6 +65,11 @@ class PDFTransactionParser {
         }
     }
     
+    // Wrapper method for AccountsView compatibility
+    func parsePDF(at url: URL) -> CreditCardBillInfo? {
+        return parseCreditCardBill(from: url)
+    }
+    
     // Test function to process the project folder PDF with detailed analysis
     func testProjectPDF() -> CreditCardBillInfo? {
         // Try multiple possible locations for the PDF

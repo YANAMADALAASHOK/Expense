@@ -17,6 +17,8 @@ struct AccountsView: View {
     @State private var showingAddInsurance = false
     @State private var editingInsurance: InsurancePolicy?
     @State private var insurancePolicies: [InsurancePolicy] = []
+    @State private var isFetchingStatements = false
+    @State private var fetchingProgress = ""
     
     private var assetAccounts: [CDAccount] {
         viewModel.accounts.filter { $0.wrappedAccountType.isAsset }
@@ -78,11 +80,19 @@ struct AccountsView: View {
                 }
             }
             .refreshable {
-                await refreshData()
+                refreshData()
             }
             .onAppear {
-                loadInsurancePolicies()
-                processInsurancePremiums()
+                viewModel.fetchAccounts()
+                
+                // Auto-fetch credit card statements when view appears
+                Task {
+                    await autoFetchCreditCardStatements()
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("ResetCreditCardData"))) { _ in
+                print("DEBUG: Received reset credit card data notification")
+                fetchCreditCardStatements()
             }
             .sheet(isPresented: $showingAddAccount) {
                 AddAccountView(viewModel: viewModel)
@@ -251,6 +261,38 @@ extension AccountsView {
     @ViewBuilder
     private var creditCardsGroup: some View {
         DisclosureGroup {
+            // Auto-fetch status indicator (no manual button)
+            if isFetchingStatements {
+                HStack {
+                    Image(systemName: "arrow.clockwise")
+                        .foregroundColor(.blue)
+                        .rotationEffect(.degrees(360))
+                        .animation(.linear(duration: 1).repeatForever(autoreverses: false), value: isFetchingStatements)
+                    
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Auto-fetching Statements...")
+                        Button("Fetch Credit Card Statements") {
+                            fetchCreditCardStatements()
+                        }
+                        .disabled(isFetchingStatements)
+                        
+                        Button("Reset & Reload All Statements") {
+                            resetAndReloadStatements()
+                        }
+                        .disabled(isFetchingStatements)
+                        
+                        if !fetchingProgress.isEmpty {
+                            Text(fetchingProgress)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    
+                    Spacer()
+                }
+                .padding(.vertical, 4)
+            }
+            
             ForEach(creditCards) { account in
                 AccountRow(account: account)
                     .onTapGesture { openTransactions(for: account) }
@@ -369,6 +411,485 @@ extension AccountsView {
             } label: {
                 Label("Add Insurance Policy", systemImage: "plus")
             }
+        }
+    }
+    
+    @MainActor
+    private func fetchCreditCardStatements() {
+        Task {
+            await manualFetchCreditCardStatements(forceRefresh: true)
+        }
+    }
+    
+    @MainActor
+    private func resetAndReloadStatements() {
+        // Clear the last fetch timestamp to force a fresh fetch
+        UserDefaults.standard.removeObject(forKey: "lastCreditCardAutoFetch")
+        print("DEBUG: Reset fetch timer - will reload all statements")
+        
+        Task {
+            await manualFetchCreditCardStatements(forceRefresh: true)
+        }
+    }
+    
+    @MainActor
+    private func autoFetchCreditCardStatements() async {
+        await manualFetchCreditCardStatements(forceRefresh: false)
+    }
+    
+    @MainActor
+    private func manualFetchCreditCardStatements(forceRefresh: Bool = true) async {
+        // Only auto-fetch if not already fetching
+        guard !isFetchingStatements else { return }
+        
+        // Check if we should auto-fetch (e.g., once per day) unless force refresh
+        let lastFetchKey = "lastCreditCardAutoFetch"
+        let lastFetch = UserDefaults.standard.object(forKey: lastFetchKey) as? Date
+        let shouldFetch = forceRefresh || lastFetch == nil || Date().timeIntervalSince(lastFetch!) > 24 * 60 * 60 // 24 hours
+        
+        if shouldFetch {
+            print("DEBUG: \(forceRefresh ? "Manual" : "Auto")-fetching credit card statements...")
+            UserDefaults.standard.set(Date(), forKey: lastFetchKey)
+            
+            // Add timeout protection for the entire fetch process
+            await withTimeout(seconds: 300, operation: { // 5 minute timeout
+                await performAutomatedStatementFetch()
+            })
+        } else {
+            print("DEBUG: Skipping auto-fetch - already fetched recently")
+        }
+    }
+    
+    @MainActor
+    private func withTimeout<T>(seconds: TimeInterval, operation: @escaping () async throws -> T) async -> T? {
+        return await withTaskGroup(of: T?.self) { group in
+            // Add the main operation
+            group.addTask {
+                do {
+                    return try await operation()
+                } catch {
+                    print("DEBUG: Operation failed with error: \(error)")
+                    return nil
+                }
+            }
+            
+            // Add timeout task
+            group.addTask {
+                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                print("DEBUG: Operation timed out after \(seconds) seconds")
+                return nil
+            }
+            
+            // Return the first completed task result
+            let result = await group.next()
+            group.cancelAll() // Cancel remaining tasks
+            return result ?? nil
+        }
+    }
+    
+    @MainActor
+    private func performAutomatedStatementFetch() async {
+        isFetchingStatements = true
+        fetchingProgress = "Connecting to email..."
+        
+        // Ensure we reset the fetching state even if something goes wrong
+        defer {
+            isFetchingStatements = false
+            fetchingProgress = ""
+        }
+        
+        do {
+            // Step 1: Fetch emails from Axis Bank with timeout
+            fetchingProgress = "Fetching emails from cc.statements@axisbank.com..."
+            let outlookService = OutlookService.shared
+            
+            // Add timeout for email fetching (2 minutes)
+            guard let emails = await withTimeout(seconds: 120, operation: {
+                try await outlookService.fetchEmails(from: "cc.statements@axisbank.com")
+            }) else {
+                print("DEBUG: Email fetching timed out")
+                fetchingProgress = "Email fetch timed out - will retry next time"
+                try? await Task.sleep(nanoseconds: 2_000_000_000) // Show message for 2 seconds
+                return
+            }
+            
+            print("DEBUG: Automated fetch - Found \(emails.count) emails")
+            
+            // Step 2: Process each email with PDF attachments
+            var processedCount = 0
+            let totalEmails = emails.count
+            
+            for (index, email) in emails.enumerated() {
+                fetchingProgress = "Processing email \(index + 1) of \(totalEmails)..."
+                
+                do {
+                    // Add timeout for attachment fetching (30 seconds per email)
+                    guard let attachments = await withTimeout(seconds: 30, operation: {
+                        try await outlookService.fetchAttachments(for: email.id)
+                    }) else {
+                        print("DEBUG: Attachment fetching timed out for email: \(email.subject ?? "Unknown")")
+                        continue
+                    }
+                    
+                    let pdfAttachments = attachments.filter { attachment in
+                        attachment.contentType?.lowercased().contains("pdf") == true ||
+                        attachment.name?.lowercased().hasSuffix(".pdf") == true
+                    }
+                    
+                    if !pdfAttachments.isEmpty {
+                        fetchingProgress = "Processing PDF from \(email.subject ?? "Unknown")..."
+                        
+                        for attachment in pdfAttachments {
+                            // Add timeout for PDF download and processing (60 seconds per PDF)
+                            let success = await withTimeout(seconds: 60, operation: {
+                                if let pdfData = try await outlookService.downloadAttachment(messageId: email.id, attachmentId: attachment.id) {
+                                    
+                                    // Step 3: Parse PDF and create/update accounts
+                                    await processPDFStatement(
+                                        pdfData: pdfData,
+                                        pdfFileName: attachment.name ?? "Statement.pdf",
+                                        email: email
+                                    )
+                                    return true
+                                }
+                                return false
+                            })
+                            
+                            if success == true {
+                                processedCount += 1
+                            } else {
+                                print("DEBUG: PDF processing timed out or failed for: \(attachment.name ?? "Unknown")")
+                            }
+                        }
+                    }
+                } catch {
+                    print("DEBUG: Error processing email \(index + 1): \(error.localizedDescription)")
+                    // Continue with next email instead of failing completely
+                    continue
+                }
+            }
+            
+            fetchingProgress = "Completed! Processed \(processedCount) statements."
+            
+            // Step 4: Refresh accounts and mark bills appropriately
+            viewModel.fetchAccounts()
+            
+            // Wait a moment to show completion message
+            try await Task.sleep(nanoseconds: 2_000_000_000) // 2 seconds
+            
+        } catch {
+            fetchingProgress = "Error: \(error.localizedDescription)"
+            print("DEBUG: Automated fetch error: \(error)")
+            
+            // Wait to show error message
+            try? await Task.sleep(nanoseconds: 3_000_000_000) // 3 seconds
+        }
+    }
+    
+    // Helper function to detect payment transactions
+    private func isPaymentTransaction(_ description: String) -> Bool {
+        let paymentKeywords = [
+            "BBPS PAYMENT", "PAYMENT RECEIVED", "PAYMENT THANK YOU",
+            "CREDIT RECEIVED", "AMOUNT RECEIVED", "PAYMENT PROCESSED",
+            "ONLINE PAYMENT", "NEFT PAYMENT", "RTGS PAYMENT", "UPI PAYMENT",
+            "IMPS PAYMENT", "CHEQUE PAYMENT", "CASH PAYMENT", "AUTOPAY",
+            "REFUND", "REVERSAL", "CASHBACK", "REWARD POINTS"
+        ]
+        
+        let upperDescription = description.uppercased()
+        return paymentKeywords.contains { upperDescription.contains($0) }
+    }
+    
+    // Helper function to automatically mark bills as paid when payment transactions match
+    private func checkAndMarkBillAsPaid(account: CDAccount, paymentAmount: Double, paymentDate: Date, paymentDescription: String) {
+        let metadata = account.metadataDictionary
+        let dateFormatter = ISO8601DateFormatter()
+        
+        // Look for bills that match this payment amount
+        let billHistoryKeys = metadata.keys.filter { $0.hasPrefix("statement_") }
+        
+        for key in billHistoryKeys {
+            if let statementJsonString = metadata[key],
+               let statementJsonData = statementJsonString.data(using: .utf8),
+               let statementData = try? JSONSerialization.jsonObject(with: statementJsonData) as? [String: String] {
+                
+                let statementDate = statementData["statementDate"].flatMap { dateFormatter.date(from: $0) } ?? Date()
+                let dueAmount = statementData["dueAmount"].flatMap { Double($0) } ?? 0.0
+                let dueDate = statementData["dueDate"].flatMap { dateFormatter.date(from: $0) } ?? Date()
+                
+                // Check if payment amount matches due amount (within ₹1 tolerance)
+                // and payment is after statement date but before or on due date + 30 days grace period
+                let gracePeriod: TimeInterval = 30 * 24 * 60 * 60 // 30 days
+                let maxPaymentDate = dueDate.addingTimeInterval(gracePeriod)
+                
+                if abs(paymentAmount - dueAmount) <= 1.0 && 
+                   paymentDate >= statementDate && 
+                   paymentDate <= maxPaymentDate {
+                    
+                    // Check if this bill is not already marked as paid
+                    if !hasBillPayment(account: account, statementDate: statementDate, dueAmount: dueAmount) {
+                        print("DEBUG: 🎯 AUTO-PAYMENT DETECTED!")
+                        print("DEBUG: - Payment: ₹\(paymentAmount) on \(paymentDate)")
+                        print("DEBUG: - Bill Due: ₹\(dueAmount) on \(dueDate)")
+                        print("DEBUG: - Statement: \(statementDate)")
+                        print("DEBUG: - Description: \(paymentDescription)")
+                        print("DEBUG: - Amount difference: ₹\(abs(paymentAmount - dueAmount))")
+                        
+                        // Mark this bill as automatically paid by updating the transaction notes
+                        // The existing payment transaction already marks it as paid
+                        // We just need to log this for user awareness
+                        print("DEBUG: ✅ Bill automatically marked as paid!")
+                        
+                        return // Found matching bill, no need to check others
+                    }
+                }
+            }
+        }
+    }
+    
+    // Helper function to check if a bill has been paid
+    private func hasBillPayment(account: CDAccount, statementDate: Date, dueAmount: Double) -> Bool {
+        // Check if there are payment transactions for this specific bill
+        // Look for payments after statement date
+        
+        let paymentTransactions = account.transactionsArray.filter { transaction in
+            transaction.wrappedCategory.contains("Payment") && 
+            transaction.isCredit && 
+            transaction.wrappedDate >= statementDate
+        }
+        
+        for transaction in paymentTransactions {
+            // Check if amount matches (allow ₹1 variance)
+            if abs(transaction.amount - dueAmount) < 1.0 {
+                return true
+            }
+        }
+        
+        return false
+    }
+    
+    @MainActor
+    private func processPDFStatement(pdfData: Data, pdfFileName: String, email: OutlookMessage) async {
+        // Save PDF temporarily
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(pdfFileName)
+        do {
+            try pdfData.write(to: tempURL)
+            
+            // Parse PDF
+            let parser = PDFTransactionParser.shared
+            guard let billInfo = parser.parsePDF(at: tempURL) else {
+                print("DEBUG: Failed to parse PDF: \(pdfFileName)")
+                return
+            }
+            
+            print("DEBUG: Automated - Parsed PDF: \(billInfo.bankName) ****\(billInfo.cardNumber), Due: ₹\(billInfo.dueAmount)")
+            
+            // Create or find existing credit card account
+            let accountName = "\(billInfo.bankName) ****\(billInfo.cardNumber)"
+            let existingAccount = viewModel.accounts.first(where: { account in
+                account.wrappedAccountName == accountName && account.wrappedAccountType == AccountType.creditCard
+            })
+            
+            let dateFormatter = ISO8601DateFormatter()
+            
+            let creditCardAccount: CDAccount
+            if let existing = existingAccount {
+                creditCardAccount = existing
+                print("DEBUG: Automated - Using existing account: \(accountName)")
+                
+                // Update metadata
+                var metadata = existing.metadataDictionary
+                
+                // Store this statement in bill history
+                let statementKey = "statement_\(dateFormatter.string(from: billInfo.statementDate))"
+                var statementData: [String: String] = [:]
+                statementData["statementDate"] = dateFormatter.string(from: billInfo.statementDate)
+                statementData["dueDate"] = dateFormatter.string(from: billInfo.dueDate)
+                statementData["dueAmount"] = String(billInfo.dueAmount)
+                statementData["currentUsage"] = String(billInfo.totalAmount)
+                statementData["creditLimit"] = String(billInfo.creditLimit ?? 0)
+                statementData["pdfFileName"] = pdfFileName
+                statementData["transactionCount"] = String(billInfo.transactions.count)
+                statementData["emailSubject"] = email.subject ?? ""
+                statementData["emailDate"] = email.receivedDateTime
+                
+                if let statementJsonData = try? JSONSerialization.data(withJSONObject: statementData),
+                   let statementJsonString = String(data: statementJsonData, encoding: .utf8) {
+                    metadata[statementKey] = statementJsonString
+                }
+                
+                // Check if this statement is newer than the last one
+                var shouldUpdateAccountBalance = true
+                if let lastDateString = metadata["lastStatementDate"],
+                   let lastDate = dateFormatter.date(from: lastDateString) {
+                    shouldUpdateAccountBalance = billInfo.statementDate > lastDate
+                    print("DEBUG: Statement date comparison: \(billInfo.statementDate) > \(lastDate) = \(shouldUpdateAccountBalance)")
+                } else {
+                    print("DEBUG: No previous statement date found, will update balance")
+                }
+                
+                // Only update account-level info if this statement is newer
+                if shouldUpdateAccountBalance {
+                    metadata["lastStatementDate"] = dateFormatter.string(from: billInfo.statementDate)
+                    metadata["lastDueDate"] = dateFormatter.string(from: billInfo.dueDate)
+                    metadata["lastDueAmount"] = String(billInfo.dueAmount)
+                    metadata["creditLimit"] = String(billInfo.creditLimit ?? 0)
+                    metadata["lastCurrentUsage"] = String(billInfo.totalAmount)
+                    
+                    // For credit cards, balance represents current usage (positive value for display)
+                    // totalAmount represents current usage/outstanding amount from PDF
+                    creditCardAccount.balance = billInfo.totalAmount
+                    creditCardAccount.creditLimit = billInfo.creditLimit ?? 0
+                    
+                    print("DEBUG: Updated existing account balance: ₹\(billInfo.totalAmount) (Current Usage from newer statement)")
+                } else {
+                    print("DEBUG: Skipping balance update - statement is older than current: \(billInfo.statementDate)")
+                }
+                
+                creditCardAccount.metadataDictionary = metadata
+                
+            } else {
+                // Create new account
+                creditCardAccount = CDAccount(context: viewModel.viewContext)
+                creditCardAccount.id = UUID()
+                creditCardAccount.accountName = accountName
+                creditCardAccount.accountType = AccountType.creditCard.rawValue
+                // For credit cards, balance represents current usage (positive value for display)
+                // totalAmount represents current usage/outstanding amount from PDF
+                creditCardAccount.balance = billInfo.totalAmount
+                creditCardAccount.creditLimit = billInfo.creditLimit ?? 0
+                
+                print("DEBUG: Created new account balance: ₹\(billInfo.totalAmount) (Current Usage from PDF)")
+                
+                var metadata: [String: String] = [:]
+                
+                metadata["bankName"] = billInfo.bankName
+                metadata["cardNumber"] = billInfo.cardNumber
+                metadata["lastStatementDate"] = dateFormatter.string(from: billInfo.statementDate)
+                metadata["lastDueDate"] = dateFormatter.string(from: billInfo.dueDate)
+                metadata["lastDueAmount"] = String(billInfo.dueAmount)
+                metadata["creditLimit"] = String(billInfo.creditLimit ?? 0)
+                metadata["lastPDFFileName"] = pdfFileName
+                metadata["lastEmailSubject"] = email.subject ?? ""
+                metadata["lastEmailDate"] = email.receivedDateTime
+                
+                // Store statement history
+                let statementKey = "statement_\(dateFormatter.string(from: billInfo.statementDate))"
+                var statementData: [String: String] = [:]
+                statementData["statementDate"] = dateFormatter.string(from: billInfo.statementDate)
+                statementData["dueDate"] = dateFormatter.string(from: billInfo.dueDate)
+                statementData["dueAmount"] = String(billInfo.dueAmount)
+                statementData["currentUsage"] = String(billInfo.totalAmount)
+                statementData["creditLimit"] = String(billInfo.creditLimit ?? 0)
+                statementData["pdfFileName"] = pdfFileName
+                statementData["transactionCount"] = String(billInfo.transactions.count)
+                statementData["emailSubject"] = email.subject ?? ""
+                statementData["emailDate"] = email.receivedDateTime
+                
+                if let statementJsonData = try? JSONSerialization.data(withJSONObject: statementData),
+                   let statementJsonString = String(data: statementJsonData, encoding: .utf8) {
+                    metadata[statementKey] = statementJsonString
+                }
+                
+                creditCardAccount.metadataDictionary = metadata
+                
+                print("DEBUG: Automated - Created new account: \(accountName)")
+            }
+            
+            // Save the account first to ensure it's properly persisted in the context
+            try viewModel.viewContext.save()
+            
+            // Refresh the account from the context to ensure it's properly managed
+            viewModel.viewContext.refresh(creditCardAccount, mergeChanges: true)
+            
+            // Add all transactions but tag older ones as historical
+            var newTransactionsCount = 0
+            var shouldIncludeInBalance = true
+            
+            // For existing accounts, check if this statement is newer than the last processed one
+            if let existingAccount = existingAccount {
+                let metadata = existingAccount.metadataDictionary
+                if let lastDateString = metadata["lastStatementDate"],
+                   let lastDate = dateFormatter.date(from: lastDateString) {
+                    shouldIncludeInBalance = billInfo.statementDate >= lastDate
+                    print("DEBUG: Balance inclusion decision: \(billInfo.statementDate) >= \(lastDate) = \(shouldIncludeInBalance)")
+                }
+            }
+            
+            print("DEBUG: Processing transactions from statement dated: \(billInfo.statementDate) (Include in balance: \(shouldIncludeInBalance))")
+            
+            // Add transactions to credit card account
+            for transaction in billInfo.transactions {
+                let existingTransaction = creditCardAccount.transactionsArray.first(where: { cdTransaction in
+                    abs(cdTransaction.amount - transaction.amount) < 0.01 &&
+                    Calendar.current.isDate(cdTransaction.wrappedDate, inSameDayAs: transaction.date) &&
+                    cdTransaction.wrappedNotes.contains(transaction.description)
+                })
+                
+                if existingTransaction == nil {
+                    // Determine if this is a credit transaction (payment to the card)
+                    let isPayment = isPaymentTransaction(transaction.description)
+                    
+                    // Re-fetch the account in viewContext to ensure proper context management
+                    let accountInViewContext = viewModel.viewContext.object(with: creditCardAccount.objectID) as! CDAccount
+                    
+                    // Store original balance before adding transaction (only for historical transactions)
+                    let balanceBeforeTransaction = shouldIncludeInBalance ? 0.0 : accountInViewContext.balance
+                    
+                    // Add transaction using viewModel (which handles context properly)
+                    viewModel.addTransaction(
+                        amount: transaction.amount,
+                        category: TransactionCategory(rawValue: transaction.category),
+                        isCredit: isPayment, // Credit transactions reduce the amount owed
+                        account: accountInViewContext,
+                        notes: shouldIncludeInBalance ? transaction.description : "[HISTORICAL] \(transaction.description)",
+                        date: transaction.date
+                    )
+                    
+                    // Check for automatic bill payment detection
+                    if isPayment && shouldIncludeInBalance {
+                        checkAndMarkBillAsPaid(
+                            account: accountInViewContext,
+                            paymentAmount: transaction.amount,
+                            paymentDate: transaction.date,
+                            paymentDescription: transaction.description
+                        )
+                    }
+                    
+                    // If this is a historical transaction, revert the balance change
+                    if !shouldIncludeInBalance {
+                        // Re-fetch account again after transaction addition to ensure fresh reference
+                        let freshAccount = viewModel.viewContext.object(with: creditCardAccount.objectID) as! CDAccount
+                        freshAccount.balance = balanceBeforeTransaction
+                        print("DEBUG: Added HISTORICAL transaction: \(transaction.description) - ₹\(transaction.amount) (balance reverted)")
+                    } else {
+                        print("DEBUG: Added CURRENT transaction: \(transaction.description) - ₹\(transaction.amount) (affects balance)")
+                    }
+                    
+                    newTransactionsCount += 1
+                }
+            }
+            let finalAccount = viewModel.viewContext.object(with: creditCardAccount.objectID) as! CDAccount
+            let originalBalance = finalAccount.balance
+            
+            if shouldIncludeInBalance {
+                // Set balance to current usage from this statement
+                finalAccount.balance = billInfo.totalAmount
+                print("DEBUG: Final balance set: ₹\(originalBalance) → ₹\(billInfo.totalAmount) (Current Usage from newer statement)")
+            } else {
+                print("DEBUG: Balance unchanged: ₹\(originalBalance) (Historical statement - balance preserved)")
+            }
+            
+            // Save context
+            try viewModel.viewContext.save()
+            
+            print("DEBUG: Automated - Processed \(billInfo.bankName) ****\(billInfo.cardNumber): \(newTransactionsCount) new transactions")
+            
+            // Clean up temp file
+            try? FileManager.default.removeItem(at: tempURL)
+            
+        } catch {
+            print("DEBUG: Automated - Error processing PDF \(pdfFileName): \(error)")
         }
     }
     
