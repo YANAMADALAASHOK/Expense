@@ -933,6 +933,7 @@ struct BillDetailView: View {
                     showingPaymentSheet = false
                     if success {
                         showingPaymentSuccess = true
+                        currentBillStatus = true // Update bill status to paid
                         loadTransactions() // Refresh transactions
                     } else {
                         paymentError = error
@@ -1194,11 +1195,14 @@ struct PaymentSheet: View {
             
             // Update account balances
             fromAccount.balance -= amount // Reduce balance in payment account
-            creditCardAccount.balance += amount // Reduce debt in credit card (balance becomes less negative)
+            creditCardAccount.balance -= amount // Reduce debt in credit card (balance becomes less negative/more positive)
             
             // Add transactions to accounts
             fromAccount.addToTransactions(debitTransaction)
             creditCardAccount.addToTransactions(creditTransaction)
+            
+            // Mark bill as paid in metadata
+            markBillAsPaid(creditCardAccount: creditCardAccount, bill: bill)
             
             // Save context
             try context.save()
@@ -1207,6 +1211,7 @@ struct PaymentSheet: View {
             print("DEBUG: - Amount: ₹\(amount)")
             print("DEBUG: - From: \(fromAccount.wrappedAccountName) (New balance: ₹\(fromAccount.balance))")
             print("DEBUG: - To: \(creditCardAccount.wrappedAccountName) (New balance: ₹\(creditCardAccount.balance))")
+            print("DEBUG: - Bill marked as PAID")
             
             // Refresh accounts in view model
             DispatchQueue.main.async {
@@ -1218,6 +1223,35 @@ struct PaymentSheet: View {
         } catch {
             print("DEBUG: Failed to process payment: \(error)")
             return false
+        }
+    }
+    
+    private func markBillAsPaid(creditCardAccount: CDAccount, bill: CreditCardBill) {
+        var metadata = creditCardAccount.metadataDictionary
+        let dateFormatter = ISO8601DateFormatter()
+        
+        // Find the statement key for this bill
+        let statementKey = "statement_\(dateFormatter.string(from: bill.statementDate))"
+        
+        if let existingJsonString = metadata[statementKey],
+           let existingJsonData = existingJsonString.data(using: .utf8),
+           var existingBillData = try? JSONSerialization.jsonObject(with: existingJsonData) as? [String: String] {
+            
+            // Mark as manually paid
+            existingBillData["manuallyPaid"] = "true"
+            existingBillData["paidDate"] = dateFormatter.string(from: Date())
+            
+            // Convert back to JSON string
+            if let updatedJsonData = try? JSONSerialization.data(withJSONObject: existingBillData),
+               let updatedJsonString = String(data: updatedJsonData, encoding: .utf8) {
+                metadata[statementKey] = updatedJsonString
+                creditCardAccount.metadataDictionary = metadata
+                
+                print("DEBUG: 💳 Marked bill as PAID in metadata")
+                print("DEBUG: - Statement Date: \(bill.statementDate)")
+                print("DEBUG: - Amount: ₹\(bill.dueAmount)")
+                print("DEBUG: - Paid Date: \(Date())")
+            }
         }
     }
 }
