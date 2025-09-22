@@ -701,16 +701,14 @@ extension AccountsView {
            let jsonString = String(data: jsonData, encoding: .utf8) {
             metadata[statementKey] = jsonString
             
-            // Update account metadata
-            let metadataString = metadata.compactMapValues { $0 }.reduce(into: "") { result, pair in
-                result += "\(pair.key)=\(pair.value)\n"
-            }
-            account.metadata = metadataString.data(using: .utf8)
+            // Update account metadata using the proper metadataDictionary setter
+            account.metadataDictionary = metadata
             
             print("DEBUG: 💾 Saved bill metadata for statement: \(billInfo.statementDate)")
             print("DEBUG: - Key: \(statementKey)")
             print("DEBUG: - Due Amount: ₹\(billInfo.dueAmount)")
             print("DEBUG: - PDF: \(pdfFileName)")
+            print("DEBUG: - Total metadata keys: \(metadata.keys.count)")
         }
     }
     

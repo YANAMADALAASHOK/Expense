@@ -97,30 +97,14 @@ struct CreditCardBillsView: View {
             let billHistoryKeys = metadata.keys.filter { $0.hasPrefix("statement_") }
             let totalBills = billHistoryKeys.count > 0 ? billHistoryKeys.count : 1
             
-            // Count unpaid bills (bills with payment due date in future and no payment transactions)
+            // Count unpaid bills (only latest bill is unpaid)
             var unpaidBills = 0
             if billHistoryKeys.isEmpty {
-                // Check if current bill is unpaid
-                let dueDate = metadata["lastDueDate"].flatMap { ISO8601DateFormatter().date(from: $0) } ?? Date()
-                if dueDate > Date() && !hasPaymentTransactions(account: account) {
-                    unpaidBills = 1
-                }
+                // No bills found
+                unpaidBills = 0
             } else {
-                // Check each bill in history
-                for key in billHistoryKeys {
-                    if let statementJsonString = metadata[key],
-                       let statementJsonData = statementJsonString.data(using: .utf8),
-                       let statementData = try? JSONSerialization.jsonObject(with: statementJsonData) as? [String: String] {
-                        
-                        let dueDate = statementData["dueDate"].flatMap { ISO8601DateFormatter().date(from: $0) } ?? Date()
-                        let statementDate = statementData["statementDate"].flatMap { ISO8601DateFormatter().date(from: $0) } ?? Date()
-                        let dueAmount = statementData["dueAmount"].flatMap { Double($0) } ?? 0.0
-                        
-                        if !hasBillPayment(account: account, statementDate: statementDate, dueAmount: dueAmount) {
-                            unpaidBills += 1
-                        }
-                    }
-                }
+                // Only the latest bill is unpaid, all others are automatically paid
+                unpaidBills = 1 // Always 1 unpaid bill (the latest one)
             }
             
             let card = CreditCard(
@@ -490,56 +474,92 @@ struct CardDetailView: View {
         let metadata = card.account.metadataDictionary
         var allBills: [CreditCardBill] = []
         
+        print("DEBUG: CardDetail - Account name: \(card.account.wrappedAccountName)")
+        print("DEBUG: CardDetail - Account metadata count: \(metadata.count)")
+        print("DEBUG: CardDetail - Raw metadata: \(metadata)")
+        
         // Load bills from history
         let billHistoryKeys = metadata.keys.filter { $0.hasPrefix("statement_") }
-        print("DEBUG: CardDetail - Loading \(billHistoryKeys.count) bills for card: \(card.bankName) ****\(card.cardNumber)")
+        print("DEBUG: CardDetail - Found \(billHistoryKeys.count) statement keys: \(billHistoryKeys.sorted())")
         
-        // Debug: Print all metadata keys
-        print("DEBUG: CardDetail - All metadata keys: \(metadata.keys.sorted())")
+        if billHistoryKeys.isEmpty {
+            print("DEBUG: CardDetail - No statement keys found! Checking for legacy metadata...")
+            // Check if there are any other keys that might contain bill data
+            let allKeys = metadata.keys.sorted()
+            print("DEBUG: CardDetail - All available keys: \(allKeys)")
+        }
         
         for key in billHistoryKeys {
-            if let statementJsonString = metadata[key],
-               let statementJsonData = statementJsonString.data(using: .utf8),
-               let statementData = try? JSONSerialization.jsonObject(with: statementJsonData) as? [String: String] {
-                
-                let dateFormatter = ISO8601DateFormatter()
-                let statementDate = statementData["statementDate"].flatMap { dateFormatter.date(from: $0) } ?? Date()
-                let dueDate = statementData["dueDate"].flatMap { dateFormatter.date(from: $0) } ?? Date()
-                let dueAmount = statementData["dueAmount"].flatMap { Double($0) } ?? 0.0
-                let currentUsage = statementData["currentUsage"].flatMap { Double($0) } ?? 0.0
-                let statementCreditLimit = statementData["creditLimit"].flatMap { Double($0) } ?? card.creditLimit
-                let pdfFileName = statementData["pdfFileName"]
-                
-                // Check if bill is paid (either manually marked or has payment transaction)
-                let isPaid = isSpecificBillPaid(statementData: statementData, account: card.account, statementDate: statementDate, dueAmount: dueAmount)
-                
-                print("DEBUG: CardDetail - Creating bill: \(statementDate), Amount: ₹\(dueAmount), Paid: \(isPaid)")
-                print("DEBUG: CardDetail - Statement data keys: \(statementData.keys.sorted())")
-                
-                let bill = CreditCardBill(
-                    bankName: card.bankName,
-                    cardNumber: card.cardNumber,
-                    statementDate: statementDate,
-                    dueDate: dueDate,
-                    totalAmount: currentUsage,
-                    dueAmount: dueAmount,
-                    creditLimit: statementCreditLimit,
-                    pdfFileName: pdfFileName,
-                    isProcessed: true,
-                    isPaid: isPaid
-                )
-                allBills.append(bill)
+            print("DEBUG: CardDetail - Processing key: \(key)")
+            
+            guard let statementJsonString = metadata[key] else {
+                print("DEBUG: CardDetail - No JSON string for key: \(key)")
+                continue
             }
+            
+            print("DEBUG: CardDetail - JSON string length: \(statementJsonString.count)")
+            print("DEBUG: CardDetail - JSON string preview: \(String(statementJsonString.prefix(200)))")
+            
+            guard let statementJsonData = statementJsonString.data(using: .utf8) else {
+                print("DEBUG: CardDetail - Failed to convert JSON string to data for key: \(key)")
+                continue
+            }
+            
+            guard let statementData = try? JSONSerialization.jsonObject(with: statementJsonData) as? [String: String] else {
+                print("DEBUG: CardDetail - Failed to parse JSON data for key: \(key)")
+                continue
+            }
+            
+            print("DEBUG: CardDetail - Successfully parsed statement data: \(statementData)")
+            
+            let dateFormatter = ISO8601DateFormatter()
+            let statementDate = statementData["statementDate"].flatMap { dateFormatter.date(from: $0) } ?? Date()
+            let dueDate = statementData["dueDate"].flatMap { dateFormatter.date(from: $0) } ?? Date()
+            let dueAmount = statementData["dueAmount"].flatMap { Double($0) } ?? 0.0
+            let currentUsage = statementData["currentUsage"].flatMap { Double($0) } ?? 0.0
+            let statementCreditLimit = statementData["creditLimit"].flatMap { Double($0) } ?? card.creditLimit
+            let pdfFileName = statementData["pdfFileName"]
+            
+            // Check if bill is paid (either manually marked or has payment transaction)
+            let isPaid = isSpecificBillPaid(statementData: statementData, account: card.account, statementDate: statementDate, dueAmount: dueAmount)
+            
+            print("DEBUG: CardDetail - Creating bill: \(statementDate), Amount: ₹\(dueAmount), Paid: \(isPaid)")
+            
+            let bill = CreditCardBill(
+                bankName: card.bankName,
+                cardNumber: card.cardNumber,
+                statementDate: statementDate,
+                dueDate: dueDate,
+                totalAmount: currentUsage,
+                dueAmount: dueAmount,
+                creditLimit: statementCreditLimit,
+                pdfFileName: pdfFileName,
+                isProcessed: true,
+                isPaid: isPaid
+            )
+            allBills.append(bill)
+            print("DEBUG: CardDetail - Successfully created bill for: \(statementDate)")
         }
         
         // Sort bills by statement date (newest first)
         bills = allBills.sorted { $0.statementDate > $1.statementDate }
         
+        print("DEBUG: CardDetail - Final result: \(allBills.count) bills loaded")
+        for (index, bill) in bills.enumerated() {
+            print("DEBUG: CardDetail - Bill \(index + 1): \(bill.statementDate), Amount: ₹\(bill.dueAmount), Paid: \(bill.isPaid)")
+        }
+        
         isLoading = false
     }
     
-    // Function to check if a specific bill is paid (automatic logic: only latest bill is unpaid)
+    // Function to check if a specific bill is paid (only latest bill is unpaid)
     private func isSpecificBillPaid(statementData: [String: String], account: CDAccount, statementDate: Date, dueAmount: Double) -> Bool {
+        // First check if manually marked as paid in metadata
+        if statementData["manuallyPaid"] == "true" {
+            print("DEBUG: CardDetail - Bill manually marked as PAID - Statement: \(statementDate), Amount: ₹\(dueAmount)")
+            return true
+        }
+        
         // Get all statement dates for this account to find the latest one
         let metadata = account.metadataDictionary
         let dateFormatter = ISO8601DateFormatter()
@@ -581,19 +601,33 @@ struct CardDetailView: View {
         // Look for payments after statement date (no end date limit for now)
         
         let paymentTransactions = account.transactionsArray.filter { transaction in
-            transaction.wrappedCategory.contains("Payment") && 
-            transaction.isCredit && 
-            transaction.wrappedDate >= statementDate
+            let notes = transaction.wrappedNotes.uppercased()
+            let category = transaction.wrappedCategory.uppercased()
+            
+            // Check for various payment patterns
+            let isPaymentTransaction = transaction.isCredit && (
+                notes.contains("BBPS PAYMENT") ||
+                notes.contains("PAYMENT RECEIVED") ||
+                notes.contains("PAYMENT THANK") ||
+                notes.contains("NEFT PAYMENT") ||
+                notes.contains("UPI PAYMENT") ||
+                notes.contains("IMPS PAYMENT") ||
+                notes.contains("RTGS PAYMENT") ||
+                notes.contains("MB PAYMENT") ||
+                category.contains("PAYMENT")
+            )
+            
+            return isPaymentTransaction && transaction.wrappedDate >= statementDate
         }
         
         print("DEBUG: CardDetail - Checking payment for statement date: \(statementDate), due amount: ₹\(dueAmount)")
         print("DEBUG: CardDetail - Found \(paymentTransactions.count) payment transactions after statement date")
         
         for transaction in paymentTransactions {
-            print("DEBUG: CardDetail - Payment transaction - Date: \(transaction.wrappedDate), Amount: ₹\(transaction.amount), Category: \(transaction.wrappedCategory)")
+            print("DEBUG: CardDetail - Payment transaction - Date: \(transaction.wrappedDate), Amount: ₹\(transaction.amount), Notes: \(transaction.wrappedNotes)")
             
-            // Check if amount matches (allow ₹1 variance)
-            if abs(transaction.amount - dueAmount) < 1.0 {
+            // Check if amount matches (allow ₹100 variance for payment matching)
+            if abs(transaction.amount - dueAmount) < 100.0 {
                 print("DEBUG: CardDetail - Found matching payment! Amount difference: ₹\(abs(transaction.amount - dueAmount))")
                 return true
             }
