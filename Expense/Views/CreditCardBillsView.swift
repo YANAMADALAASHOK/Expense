@@ -95,7 +95,9 @@ struct CreditCardBillsView: View {
             
             // Count bills from history
             let billHistoryKeys = metadata.keys.filter { $0.hasPrefix("statement_") }
-            let totalBills = billHistoryKeys.count > 0 ? billHistoryKeys.count : 1
+            let totalBills = billHistoryKeys.count
+            
+            print("DEBUG: Account \(accountName) - Found \(billHistoryKeys.count) statement keys: \(billHistoryKeys.sorted())")
             
             // Count unpaid bills (only latest bill is unpaid)
             var unpaidBills = 0
@@ -103,22 +105,44 @@ struct CreditCardBillsView: View {
                 // No bills found
                 unpaidBills = 0
             } else {
-                // Only the latest bill is unpaid, all others are automatically paid
-                unpaidBills = 1 // Always 1 unpaid bill (the latest one)
+                // Find the latest statement date to determine which bill is unpaid
+                let dateFormatter = ISO8601DateFormatter()
+                var latestStatementDate: Date?
+                
+                for key in billHistoryKeys {
+                    if let statementJsonString = metadata[key],
+                       let statementJsonData = statementJsonString.data(using: .utf8),
+                       let statementData = try? JSONSerialization.jsonObject(with: statementJsonData) as? [String: String],
+                       let statementDateString = statementData["statementDate"],
+                       let statementDate = dateFormatter.date(from: statementDateString) {
+                        
+                        if latestStatementDate == nil || statementDate > latestStatementDate! {
+                            latestStatementDate = statementDate
+                        }
+                    }
+                }
+                
+                // Only the latest bill is unpaid
+                unpaidBills = latestStatementDate != nil ? 1 : 0
             }
             
-            let card = CreditCard(
-                bankName: bankName,
-                cardNumber: cardNumber,
-                creditLimit: creditLimit,
-                currentBalance: currentBalance,
-                availableCredit: availableCredit,
-                totalBills: totalBills,
-                unpaidBills: unpaidBills,
-                account: account
-            )
-            allCards.append(card)
-            print("DEBUG: Added card: \(bankName) ****\(cardNumber) - \(totalBills) bills, \(unpaidBills) unpaid")
+            // Only add card if it has bills
+            if totalBills > 0 {
+                let card = CreditCard(
+                    bankName: bankName,
+                    cardNumber: cardNumber,
+                    creditLimit: creditLimit,
+                    currentBalance: currentBalance,
+                    availableCredit: availableCredit,
+                    totalBills: totalBills,
+                    unpaidBills: unpaidBills,
+                    account: account
+                )
+                allCards.append(card)
+                print("DEBUG: Added card: \(bankName) ****\(cardNumber) - \(totalBills) bills, \(unpaidBills) unpaid")
+            } else {
+                print("DEBUG: Skipping card \(bankName) ****\(cardNumber) - no bills found")
+            }
         }
         
         creditCards = allCards
@@ -330,13 +354,14 @@ struct CardDetailView: View {
     @ObservedObject var viewModel: ExpenseViewModel
     @State private var bills: [CreditCardBill] = []
     @State private var isLoading = false
+    @State private var showPaidBills = false
     
     var openBills: [CreditCardBill] {
-        bills.filter { !$0.isPaid }
+        bills.filter { !$0.isPaid }.sorted { $0.statementDate > $1.statementDate }
     }
     
     var paidBills: [CreditCardBill] {
-        bills.filter { $0.isPaid }
+        bills.filter { $0.isPaid }.sorted { $0.statementDate > $1.statementDate }
     }
     
     var body: some View {
@@ -397,19 +422,23 @@ struct CardDetailView: View {
                 .background(Color(.systemGray6))
                 .cornerRadius(12)
                 
-                // Open Bills Section
+                // Current Bill (Not Paid) Section
                 if !openBills.isEmpty {
                     VStack(alignment: .leading, spacing: 12) {
                         HStack {
-                            Text("Open Bills")
+                            Text("Current Bill")
                                 .font(.headline)
                                 .foregroundColor(.red)
                             
                             Spacer()
                             
-                            Text("\(openBills.count) bills")
+                            Text("Not Paid")
                                 .font(.caption)
-                                .foregroundColor(.secondary)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 2)
+                                .background(Color.red.opacity(0.2))
+                                .foregroundColor(.red)
+                                .cornerRadius(4)
                         }
                         
                         ForEach(openBills) { bill in
@@ -424,26 +453,39 @@ struct CardDetailView: View {
                     .cornerRadius(12)
                 }
                 
-                // Paid Bills Section
+                // Paid Bills Section (Collapsible)
                 if !paidBills.isEmpty {
                     VStack(alignment: .leading, spacing: 12) {
-                        HStack {
-                            Text("Paid Bills")
-                                .font(.headline)
-                                .foregroundColor(.green)
-                            
-                            Spacer()
-                            
-                            Text("\(paidBills.count) bills")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                        
-                        ForEach(paidBills) { bill in
-                            NavigationLink(destination: BillDetailView(bill: bill, viewModel: viewModel)) {
-                                CreditCardBillRow(bill: bill)
+                        Button(action: {
+                            withAnimation(.easeInOut(duration: 0.3)) {
+                                showPaidBills.toggle()
                             }
-                            .buttonStyle(PlainButtonStyle())
+                        }) {
+                            HStack {
+                                Text("Paid Bills")
+                                    .font(.headline)
+                                    .foregroundColor(.green)
+                                
+                                Spacer()
+                                
+                                Text("\(paidBills.count) bills")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                
+                                Image(systemName: showPaidBills ? "chevron.up" : "chevron.down")
+                                    .foregroundColor(.secondary)
+                                    .font(.system(size: 12, weight: .medium))
+                            }
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                        
+                        if showPaidBills {
+                            ForEach(paidBills) { bill in
+                                NavigationLink(destination: BillDetailView(bill: bill, viewModel: viewModel)) {
+                                    CreditCardBillRow(bill: bill)
+                                }
+                                .buttonStyle(PlainButtonStyle())
+                            }
                         }
                     }
                     .padding()
@@ -476,17 +518,28 @@ struct CardDetailView: View {
         
         print("DEBUG: CardDetail - Account name: \(card.account.wrappedAccountName)")
         print("DEBUG: CardDetail - Account metadata count: \(metadata.count)")
-        print("DEBUG: CardDetail - Raw metadata: \(metadata)")
+        print("DEBUG: CardDetail - Raw metadata keys: \(metadata.keys.sorted())")
         
         // Load bills from history
         let billHistoryKeys = metadata.keys.filter { $0.hasPrefix("statement_") }
         print("DEBUG: CardDetail - Found \(billHistoryKeys.count) statement keys: \(billHistoryKeys.sorted())")
         
         if billHistoryKeys.isEmpty {
-            print("DEBUG: CardDetail - No statement keys found! Checking for legacy metadata...")
-            // Check if there are any other keys that might contain bill data
-            let allKeys = metadata.keys.sorted()
-            print("DEBUG: CardDetail - All available keys: \(allKeys)")
+            print("DEBUG: CardDetail - ❌ No statement keys found! This means no bills were saved to metadata.")
+            print("DEBUG: CardDetail - Account balance: \(card.account.balance)")
+            print("DEBUG: CardDetail - Account credit limit: \(card.account.creditLimit)")
+            print("DEBUG: CardDetail - All available metadata keys: \(metadata.keys.sorted())")
+            
+            // Check if this account has transactions
+            let transactionCount = card.account.transactionsArray.count
+            print("DEBUG: CardDetail - Account has \(transactionCount) transactions")
+            
+            if transactionCount > 0 {
+                print("DEBUG: CardDetail - Sample transactions:")
+                for (index, transaction) in card.account.transactionsArray.prefix(3).enumerated() {
+                    print("DEBUG: CardDetail - Transaction \(index + 1): \(transaction.wrappedNotes) - ₹\(transaction.amount) on \(transaction.wrappedDate)")
+                }
+            }
         }
         
         for key in billHistoryKeys {

@@ -6,6 +6,9 @@ class ExpenseViewModel: ObservableObject {
     let viewContext: NSManagedObjectContext
     private let db = Firestore.firestore()
     private var isDeletingAccount = false
+    @Published var deletionStatus: String = ""
+    @Published var isDeletingFromCloud = false
+    private var cloudSyncDisabledUntil: Date?
     
     @Published var accounts: [CDAccount] = []
     @Published var recentTransactions: [CDTransaction] = []
@@ -159,9 +162,14 @@ class ExpenseViewModel: ObservableObject {
         // Only load if we don't have local data to avoid overwriting recent changes
         if let user = AuthenticationManager.shared.currentUser,
            !user.isGuest {
-            // Check if we have local data first
+            // Check if we have local data first and cloud sync is not disabled
             if accounts.isEmpty && recentTransactions.isEmpty {
-                loadFromCloud { _ in }
+                // Don't load from cloud if temporarily disabled (e.g., after account deletion)
+                if let disabledUntil = cloudSyncDisabledUntil, Date() < disabledUntil {
+                    print("Skipping initial cloud load - temporarily disabled until \(disabledUntil)")
+                } else {
+                    loadFromCloud { _ in }
+                }
             }
         }
     }
@@ -342,36 +350,133 @@ class ExpenseViewModel: ObservableObject {
     
     func deleteAccount(_ account: CDAccount) {
         isDeletingAccount = true
+        isDeletingFromCloud = true
         
+        let accountName = account.wrappedAccountName
+        let accountId = account.id?.uuidString ?? "unknown"
+        
+        Task { @MainActor in
+            // Step 1: Delete from cloud completely (both locations)
+            deletionStatus = "🌩️ Deleting \(accountName) from cloud..."
+            
+            do {
+                // Delete from accounts collection
+                try await db.collection("accounts").document(accountId).delete()
+                print("DEBUG: Deleted from accounts collection: \(accountName)")
+                
+                // Delete transactions from transactions collection
+                let transactionQuery = db.collection("transactions").whereField("accountId", isEqualTo: accountId)
+                let transactionSnapshot = try await transactionQuery.getDocuments()
+                
+                if !transactionSnapshot.documents.isEmpty {
+                    let batch = db.batch()
+                    for document in transactionSnapshot.documents {
+                        batch.deleteDocument(document.reference)
+                    }
+                    try await batch.commit()
+                    print("DEBUG: Deleted \(transactionSnapshot.documents.count) transactions from cloud")
+                }
+                
+                // CRITICAL: Update user's backup data without the deleted account
+                if let userId = AuthenticationManager.shared.currentUser?.id {
+                    // First delete locally so export doesn't include deleted account
+                    await withCheckedContinuation { continuation in
+                        viewContext.performAndWait {
+                            viewContext.delete(account)
+                            try? viewContext.save()
+                            continuation.resume()
+                        }
+                    }
+                    
+                    // Now export clean data and update user backup
+                    let exportData = try self.exportData()
+                    let jsonObject = try JSONSerialization.jsonObject(with: exportData) as? [String: Any]
+                    
+                    let docRef = db.collection("users").document(userId)
+                    let payload: [String: Any] = [
+                        "data": jsonObject ?? [:],
+                        "lastSynced": Date()
+                    ]
+                    
+                    try await docRef.setData(payload)
+                    print("DEBUG: Updated user backup without deleted account")
+                }
+                
+                deletionStatus = "✅ Completely deleted from cloud and local"
+                
+            } catch {
+                print("DEBUG: Error deleting from cloud: \(error)")
+                deletionStatus = "⚠️ Cloud deletion failed - deleting locally only"
+                
+                // Delete locally even if cloud fails
+                await withCheckedContinuation { continuation in
+                    viewContext.performAndWait {
+                        viewContext.delete(account)
+                        try? viewContext.save()
+                        continuation.resume()
+                    }
+                }
+            }
+            
+            isDeletingFromCloud = false
+            
+            // Refresh UI and show completion
+            print("DEBUG: Successfully deleted account: \(accountName)")
+            
+            // Disable cloud sync for 30 seconds to prevent re-syncing deleted accounts
+            cloudSyncDisabledUntil = Date().addingTimeInterval(30)
+            print("DEBUG: Cloud sync disabled until \(cloudSyncDisabledUntil!) to prevent account resurrection")
+            
+            // Also disable auto-fetch for credit card statements temporarily to prevent recreation
+            if accountName.contains("Axis Bank") || accountName.contains("ICICI Bank") || accountName.contains("HDFC Bank") {
+                // Use a separate key for temporary disable due to deletion
+                let tempDisableKey = "tempDisableAutoFetchCreditCards"
+                UserDefaults.standard.set(Date().addingTimeInterval(60), forKey: tempDisableKey)
+                print("DEBUG: Auto-fetch temporarily disabled for credit card accounts (60 seconds)")
+            }
+            
+            fetchAccounts()
+            fetchRecentTransactions()
+            objectWillChange.send()
+            
+            // Clear status after 3 seconds
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                self.deletionStatus = ""
+                self.isDeletingAccount = false
+            }
+        }
+    }
+    
+    // Add a function to clean up corrupted accounts
+    func cleanupCorruptedAccounts() {
         viewContext.performAndWait {
             do {
-                // Delete the account (transactions will be deleted automatically due to cascade rule)
-                viewContext.delete(account)
+                let request = NSFetchRequest<CDAccount>(entityName: "CDAccount")
+                let allAccounts = try viewContext.fetch(request)
                 
-                // Save changes
-                try viewContext.save()
-                print("Successfully deleted account: \(account.wrappedAccountName)")
+                var deletedCount = 0
+                for account in allAccounts {
+                    // Delete accounts with nil or empty names, or invalid data
+                    if account.accountName == nil || account.accountName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true {
+                        print("DEBUG: Deleting corrupted account with nil/empty name: \(account.id?.uuidString ?? "unknown")")
+                        viewContext.delete(account)
+                        deletedCount += 1
+                    }
+                }
                 
-                // Refresh data on main thread
-                DispatchQueue.main.async { [weak self] in
-                    self?.fetchAccounts()
-                    self?.fetchRecentTransactions()
-                    self?.objectWillChange.send()
+                if deletedCount > 0 {
+                    try viewContext.save()
+                    print("DEBUG: Cleaned up \(deletedCount) corrupted accounts")
                     
-                    // Sync to cloud after a short delay to ensure local changes are stable
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-                        self?.syncToCloud()
-                        self?.isDeletingAccount = false
+                    DispatchQueue.main.async { [weak self] in
+                        self?.fetchAccounts()
+                        self?.fetchRecentTransactions()
+                        self?.objectWillChange.send()
                     }
                 }
             } catch {
-                print("Error deleting account: \(error)")
-                // Try to reset context and refresh
+                print("Error cleaning up corrupted accounts: \(error)")
                 viewContext.rollback()
-                DispatchQueue.main.async { [weak self] in
-                    self?.refreshData()
-                    self?.isDeletingAccount = false
-                }
             }
         }
     }
@@ -1025,9 +1130,22 @@ class ExpenseViewModel: ObservableObject {
     func fetchAccounts() {
         let request = NSFetchRequest<CDAccount>(entityName: "CDAccount")
         request.sortDescriptors = [NSSortDescriptor(keyPath: \CDAccount.accountName, ascending: true)]
+        // Filter out accounts with nil or empty names
+        request.predicate = NSPredicate(format: "accountName != nil AND accountName != ''")
         
         do {
-            accounts = try viewContext.fetch(request)
+            let fetchedAccounts = try viewContext.fetch(request)
+            
+            // Additional filtering to ensure data integrity
+            accounts = fetchedAccounts.filter { account in
+                guard let name = account.accountName,
+                      !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    print("DEBUG: Filtering out account with invalid name: \(account.id?.uuidString ?? "unknown")")
+                    return false
+                }
+                return true
+            }
+            
             objectWillChange.send()
         } catch {
             print("Error fetching accounts: \(error)")
@@ -1516,6 +1634,12 @@ class ExpenseViewModel: ObservableObject {
             return
         }
         
+        // Don't sync if temporarily disabled after local deletion
+        if let disabledUntil = cloudSyncDisabledUntil, Date() < disabledUntil {
+            print("Skipping cloud sync - temporarily disabled until \(disabledUntil)")
+            return
+        }
+        
         do {
             let data = try exportData()
             guard let jsonObject = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
@@ -1551,6 +1675,13 @@ class ExpenseViewModel: ObservableObject {
         // Don't load from cloud if we're in the middle of deleting an account
         guard !isDeletingAccount else {
             print("Skipping cloud load - account deletion in progress")
+            completion(false)
+            return
+        }
+        
+        // Don't load from cloud if temporarily disabled after local deletion
+        if let disabledUntil = cloudSyncDisabledUntil, Date() < disabledUntil {
+            print("Skipping cloud load - temporarily disabled until \(disabledUntil) to prevent account resurrection")
             completion(false)
             return
         }

@@ -1,6 +1,15 @@
 import SwiftUI
 import CoreData
 
+extension DateFormatter {
+    static let shortDateTime: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .short
+        formatter.timeStyle = .short
+        return formatter
+    }()
+}
+
 struct AccountsView: View {
     @ObservedObject var viewModel: ExpenseViewModel
     @StateObject private var currencySettings = CurrencySettings.shared
@@ -19,6 +28,19 @@ struct AccountsView: View {
     @State private var insurancePolicies: [InsurancePolicy] = []
     @State private var isFetchingStatements = false
     @State private var fetchingProgress = ""
+    @State private var selectedBank: CreditCardBank = .axis
+    
+    enum CreditCardBank: String, CaseIterable {
+        case axis = "cc.statements@axisbank.com"
+        case icici = "credit_cards@icicibank.com"
+        
+        var displayName: String {
+            switch self {
+            case .axis: return "Axis Bank"
+            case .icici: return "ICICI Bank"
+            }
+        }
+    }
     
     private var assetAccounts: [CDAccount] {
         viewModel.accounts.filter { $0.wrappedAccountType.isAsset }
@@ -55,20 +77,55 @@ struct AccountsView: View {
     
     var body: some View {
         NavigationView {
-            List {
-                Section { BalanceSummarySection(accounts: viewModel.accounts) }
-                assetsSection
-                liabilitiesSection
-                insurancesSection
+            ZStack {
+                List {
+                    Section { BalanceSummarySection(accounts: viewModel.accounts) }
+                    assetsSection
+                    liabilitiesSection
+                    insurancesSection
+                }
+                .background(Color(.systemGroupedBackground))
+                
+                // Deletion Status Overlay
+                if !viewModel.deletionStatus.isEmpty {
+                    VStack {
+                        Spacer()
+                        HStack {
+                            if viewModel.isDeletingFromCloud {
+                                ProgressView()
+                                    .scaleEffect(0.8)
+                            }
+                            Text(viewModel.deletionStatus)
+                                .font(.caption)
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 8)
+                        }
+                        .background(Color.black.opacity(0.8))
+                        .cornerRadius(20)
+                        .padding(.bottom, 100)
+                    }
+                    .transition(.opacity)
+                    .animation(.easeInOut, value: viewModel.deletionStatus)
+                }
             }
-            .background(Color(.systemGroupedBackground))
             .navigationTitle("Accounts")
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
-                    Button(action: refreshData) {
-                        Image(systemName: "arrow.clockwise")
-                            .rotationEffect(.degrees(isRefreshing ? 360 : 0))
-                            .animation(isRefreshing ? .linear(duration: 1).repeatForever(autoreverses: false) : .default, value: isRefreshing)
+                    HStack {
+                        Button(action: refreshData) {
+                            Image(systemName: "arrow.clockwise")
+                                .rotationEffect(.degrees(isRefreshing ? 360 : 0))
+                                .animation(isRefreshing ? .linear(duration: 1).repeatForever(autoreverses: false) : .default, value: isRefreshing)
+                        }
+                        
+                        Button(action: {
+                            viewModel.cleanupCorruptedAccounts()
+                        }) {
+                            Image(systemName: "trash.fill")
+                                .foregroundColor(.red)
+                        }
+                        .help("Clean up corrupted accounts")
                     }
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
@@ -85,7 +142,10 @@ struct AccountsView: View {
             .onAppear {
                 viewModel.fetchAccounts()
                 
-                // Auto-fetch credit card statements when view appears
+                // Setup daily scheduler for 12am credit card statement checks
+                setupDailyScheduler()
+                
+                // Auto-fetch credit card statements when view appears (unless disabled)
                 Task {
                     await autoFetchCreditCardStatements()
                 }
@@ -261,37 +321,6 @@ extension AccountsView {
     @ViewBuilder
     private var creditCardsGroup: some View {
         DisclosureGroup {
-            // Auto-fetch status indicator (no manual button)
-            if isFetchingStatements {
-                HStack {
-                    Image(systemName: "arrow.clockwise")
-                        .foregroundColor(.blue)
-                        .rotationEffect(.degrees(360))
-                        .animation(.linear(duration: 1).repeatForever(autoreverses: false), value: isFetchingStatements)
-                    
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Auto-fetching Statements...")
-                        Button("Fetch Credit Card Statements") {
-                            fetchCreditCardStatements()
-                        }
-                        .disabled(isFetchingStatements)
-                        
-                        Button("Reset & Reload All Statements") {
-                            resetAndReloadStatements()
-                        }
-                        .disabled(isFetchingStatements)
-                        
-                        if !fetchingProgress.isEmpty {
-                            Text(fetchingProgress)
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                    
-                    Spacer()
-                }
-                .padding(.vertical, 4)
-            }
             
             ForEach(creditCards) { account in
                 AccountRow(account: account)
@@ -414,10 +443,159 @@ extension AccountsView {
         }
     }
     
+    private func setupDailyScheduler() {
+        // Schedule daily check at 12:00 AM
+        let calendar = Calendar.current
+        let now = Date()
+        
+        // Calculate next 12:00 AM
+        var components = calendar.dateComponents([.year, .month, .day], from: now)
+        components.hour = 0
+        components.minute = 0
+        components.second = 0
+        
+        guard let midnight = calendar.date(from: components) else { return }
+        
+        // If it's already past midnight today, schedule for tomorrow
+        let nextMidnight = midnight > now ? midnight : calendar.date(byAdding: .day, value: 1, to: midnight)!
+        
+        let timeInterval = nextMidnight.timeIntervalSinceNow
+        
+        print("DEBUG: Daily scheduler setup - next check in \(timeInterval/3600) hours at \(nextMidnight)")
+        
+        // Schedule the timer
+        Timer.scheduledTimer(withTimeInterval: timeInterval, repeats: false) { _ in
+            Task { @MainActor in
+                await performDailyStatementCheck()
+                // Reschedule for next day
+                setupDailyScheduler()
+            }
+        }
+    }
+    
+    @MainActor
+    private func performDailyStatementCheck() async {
+        print("DEBUG: 🕛 Daily 12:00 AM credit card statement check starting...")
+        
+        // Check if auto-fetch is disabled by user preference
+        let autoFetchDisabled = UserDefaults.standard.bool(forKey: "disableAutoFetchCreditCards")
+        if autoFetchDisabled {
+            print("DEBUG: Daily check skipped - auto-fetch disabled by user")
+            return
+        }
+        
+        // Perform comprehensive check for both banks and both email providers
+        await performComprehensiveStatementFetch()
+    }
+    
+    @MainActor
+    private func performComprehensiveStatementFetch() async {
+        print("DEBUG: 🔍 Starting comprehensive statement fetch (both banks, both email providers)")
+        
+        isFetchingStatements = true
+        fetchingProgress = "Daily check: Searching for new statements..."
+        
+        defer {
+            isFetchingStatements = false
+            fetchingProgress = ""
+        }
+        
+        var totalProcessed = 0
+        
+        // Check both banks
+        let banks: [CreditCardBank] = [.axis, .icici]
+        let providers: [EmailServiceManager.EmailProvider] = [.outlook, .gmail]
+        
+        for bank in banks {
+            for provider in providers {
+                fetchingProgress = "Checking \(bank.displayName) via \(provider == .outlook ? "Outlook" : "Gmail")..."
+                
+                // Temporarily switch to this provider
+                let originalProvider = EmailServiceManager.shared.preferredProvider
+                EmailServiceManager.shared.preferredProvider = provider
+                
+                defer {
+                    EmailServiceManager.shared.preferredProvider = originalProvider
+                }
+                
+                do {
+                    let emailService = EmailServiceManager.shared.getEmailService()
+                    
+                    // Fetch emails with timeout
+                    guard let emails = await withTimeout(seconds: 120, operation: {
+                        try await emailService.fetchEmails(from: bank.rawValue)
+                    }) else {
+                        print("DEBUG: \(bank.displayName) via \(provider == .outlook ? "Outlook" : "Gmail") timed out")
+                        continue
+                    }
+                    
+                    print("DEBUG: Found \(emails.count) emails from \(bank.displayName) via \(provider == .outlook ? "Outlook" : "Gmail")")
+                    
+                    // Process only recent emails (last 7 days)
+                    let recentEmails = emails.filter { email in
+                        guard let emailDate = ISO8601DateFormatter().date(from: email.receivedDateTime) else {
+                            return false
+                        }
+                        return Date().timeIntervalSince(emailDate) < 7 * 24 * 60 * 60 // 7 days
+                    }
+                    
+                    if recentEmails.isEmpty {
+                        print("DEBUG: No recent emails from \(bank.displayName) via \(provider == .outlook ? "Outlook" : "Gmail")")
+                        continue
+                    }
+                    
+                    // Process recent emails
+                    for email in recentEmails {
+                        guard let attachments = await withTimeout(seconds: 60, operation: {
+                            try await emailService.fetchAttachments(for: email.id)
+                        }) else {
+                            continue
+                        }
+                        
+                        let pdfAttachments = attachments.filter { attachment in
+                            attachment.contentType?.lowercased().contains("pdf") == true ||
+                            attachment.name?.lowercased().hasSuffix(".pdf") == true
+                        }
+                        
+                        for attachment in pdfAttachments {
+                            if let pdfDataOptional = await withTimeout(seconds: 120, operation: {
+                                try await emailService.downloadAttachment(messageId: email.id, attachmentId: attachment.id)
+                            }), let pdfData = pdfDataOptional {
+                                await processPDFStatement(
+                                    pdfData: pdfData,
+                                    pdfFileName: attachment.name ?? "\(bank.displayName)_Statement.pdf",
+                                    email: email
+                                )
+                                totalProcessed += 1
+                            }
+                        }
+                    }
+                    
+                } catch {
+                    print("DEBUG: Error checking \(bank.displayName) via \(provider == .outlook ? "Outlook" : "Gmail"): \(error)")
+                }
+            }
+        }
+        
+        if totalProcessed > 0 {
+            print("DEBUG: ✅ Daily check complete - processed \(totalProcessed) new statements")
+            viewModel.fetchAccounts()
+        } else {
+            print("DEBUG: ℹ️ Daily check complete - no new statements found")
+        }
+    }
+    
     @MainActor
     private func fetchCreditCardStatements() {
         Task {
             await manualFetchCreditCardStatements(forceRefresh: true)
+        }
+    }
+    
+    @MainActor
+    private func fetchICICIFromGmailOnly() {
+        Task {
+            await performICICIGmailFetch()
         }
     }
     
@@ -434,6 +612,21 @@ extension AccountsView {
     
     @MainActor
     private func autoFetchCreditCardStatements() async {
+        // Check if auto-fetch is disabled by user preference
+        let autoFetchDisabled = UserDefaults.standard.bool(forKey: "disableAutoFetchCreditCards")
+        if autoFetchDisabled {
+            print("DEBUG: Auto-fetch disabled by user preference")
+            return
+        }
+        
+        // Check if auto-fetch is temporarily disabled due to recent deletion
+        let tempDisableKey = "tempDisableAutoFetchCreditCards"
+        if let tempDisableUntil = UserDefaults.standard.object(forKey: tempDisableKey) as? Date,
+           Date() < tempDisableUntil {
+            print("DEBUG: Auto-fetch temporarily disabled until \(tempDisableUntil) due to recent deletion")
+            return
+        }
+        
         await manualFetchCreditCardStatements(forceRefresh: false)
     }
     
@@ -457,6 +650,133 @@ extension AccountsView {
             })
         } else {
             print("DEBUG: Skipping auto-fetch - already fetched recently")
+        }
+    }
+    
+    @MainActor
+    private func performICICIGmailFetch() async {
+        isFetchingStatements = true
+        fetchingProgress = "Connecting to Gmail for ICICI..."
+        
+        // Ensure we reset the fetching state even if something goes wrong
+        defer {
+            isFetchingStatements = false
+            fetchingProgress = ""
+        }
+        
+        do {
+            // Force Gmail provider for this fetch
+            let originalProvider = EmailServiceManager.shared.preferredProvider
+            EmailServiceManager.shared.preferredProvider = .gmail
+            
+            // Restore original provider when done
+            defer {
+                EmailServiceManager.shared.preferredProvider = originalProvider
+            }
+            
+            // Step 1: Fetch emails from ICICI Bank with timeout
+            fetchingProgress = "Fetching ICICI emails from Gmail..."
+            let emailService = EmailServiceManager.shared.getEmailService()
+            
+            // Add timeout for email fetching (2 minutes)
+            guard let emails = await withTimeout(seconds: 120, operation: {
+                try await emailService.fetchEmails(from: "credit_cards@icicibank.com")
+            }) else {
+                print("DEBUG: ICICI Gmail fetch timed out")
+                fetchingProgress = "ICICI Gmail fetch timed out - check connection"
+                try? await Task.sleep(nanoseconds: 2_000_000_000) // Show message for 2 seconds
+                return
+            }
+            
+            print("DEBUG: ICICI Gmail fetch - Found \(emails.count) emails from ICICI Bank")
+            
+            // Step 2: Process each email with PDF attachments
+            var processedCount = 0
+            // Sort emails by date (oldest first, newest last) so latest bill sets final balance
+            let sortedEmails = emails.sorted { email1, email2 in
+                let date1 = ISO8601DateFormatter().date(from: email1.receivedDateTime) ?? Date.distantPast
+                let date2 = ISO8601DateFormatter().date(from: email2.receivedDateTime) ?? Date.distantPast
+                return date1 < date2
+            }
+            
+            let totalEmails = sortedEmails.count
+            print("DEBUG: Processing \(totalEmails) ICICI emails in chronological order (oldest first)")
+            
+            for (index, email) in sortedEmails.enumerated() {
+                fetchingProgress = "Processing ICICI email \(index + 1) of \(totalEmails)..."
+                
+                do {
+                    // Add timeout for attachment fetching (60 seconds per email)
+                    guard let attachments = await withTimeout(seconds: 60, operation: {
+                        try await emailService.fetchAttachments(for: email.id)
+                    }) else {
+                        print("DEBUG: ICICI attachment fetching timed out for email: \(email.subject ?? "Unknown")")
+                        continue
+                    }
+                    
+                    let pdfAttachments = attachments.filter { attachment in
+                        attachment.contentType?.lowercased().contains("pdf") == true ||
+                        attachment.name?.lowercased().hasSuffix(".pdf") == true
+                    }
+                    
+                    if !pdfAttachments.isEmpty {
+                        fetchingProgress = "Processing ICICI PDF from \(email.subject ?? "Unknown")..."
+                        
+                        for attachment in pdfAttachments {
+                            print("DEBUG: Processing ICICI PDF attachment: \(attachment.name ?? "Unknown")")
+                            
+                            // Add timeout for PDF download and processing (120 seconds per PDF)
+                            let success = await withTimeout(seconds: 120, operation: {
+                                do {
+                                    if let pdfData = try await emailService.downloadAttachment(messageId: email.id, attachmentId: attachment.id) {
+                                        print("DEBUG: Downloaded ICICI PDF: \(attachment.name ?? "Unknown") (\(pdfData.count) bytes)")
+                                        
+                                        // Step 3: Parse PDF and create/update accounts
+                                        await processPDFStatement(
+                                            pdfData: pdfData,
+                                            pdfFileName: attachment.name ?? "ICICI_Statement.pdf",
+                                            email: email
+                                        )
+                                        return true
+                                    } else {
+                                        print("DEBUG: Failed to download ICICI PDF: \(attachment.name ?? "Unknown")")
+                                        return false
+                                    }
+                                } catch {
+                                    print("DEBUG: Error downloading/processing ICICI PDF: \(attachment.name ?? "Unknown") - \(error.localizedDescription)")
+                                    return false
+                                }
+                            })
+                            
+                            if success == true {
+                                processedCount += 1
+                                print("DEBUG: ✅ Successfully processed ICICI PDF: \(attachment.name ?? "Unknown")")
+                            } else {
+                                print("DEBUG: ❌ ICICI PDF processing timed out or failed for: \(attachment.name ?? "Unknown")")
+                            }
+                        }
+                    }
+                } catch {
+                    print("DEBUG: Error processing ICICI email \(index + 1): \(error.localizedDescription)")
+                    // Continue with next email instead of failing completely
+                    continue
+                }
+            }
+            
+            fetchingProgress = "✅ ICICI Gmail Complete! Processed \(processedCount) ICICI statements."
+            
+            // Step 4: Refresh accounts
+            viewModel.fetchAccounts()
+            
+            // Wait a moment to show completion message
+            try await Task.sleep(nanoseconds: 3_000_000_000) // 3 seconds
+            
+        } catch {
+            fetchingProgress = "❌ ICICI Gmail Error: \(error.localizedDescription)"
+            print("DEBUG: ICICI Gmail fetch error: \(error)")
+            
+            // Wait to show error message
+            try? await Task.sleep(nanoseconds: 3_000_000_000) // 3 seconds
         }
     }
     
@@ -499,13 +819,13 @@ extension AccountsView {
         }
         
         do {
-            // Step 1: Fetch emails from Axis Bank with timeout
-            fetchingProgress = "Fetching emails from cc.statements@axisbank.com..."
-            let outlookService = OutlookService.shared
+            // Step 1: Fetch emails from selected bank with timeout (try both Outlook and Gmail)
+            fetchingProgress = "Fetching emails from \(selectedBank.rawValue)..."
+            let emailService = EmailServiceManager.shared.getEmailService()
             
             // Add timeout for email fetching (2 minutes)
             guard let emails = await withTimeout(seconds: 120, operation: {
-                try await outlookService.fetchEmails(from: "cc.statements@axisbank.com")
+                try await emailService.fetchEmails(from: selectedBank.rawValue)
             }) else {
                 print("DEBUG: Email fetching timed out")
                 fetchingProgress = "Email fetch timed out - will retry next time"
@@ -513,7 +833,7 @@ extension AccountsView {
                 return
             }
             
-            print("DEBUG: Automated fetch - Found \(emails.count) emails")
+            print("DEBUG: Automated fetch - Found \(emails.count) emails from \(selectedBank.displayName)")
             
             // Step 2: Process each email with PDF attachments
             var processedCount = 0
@@ -531,9 +851,9 @@ extension AccountsView {
                 fetchingProgress = "Processing email \(index + 1) of \(totalEmails)..."
                 
                 do {
-                    // Add timeout for attachment fetching (30 seconds per email)
-                    guard let attachments = await withTimeout(seconds: 30, operation: {
-                        try await outlookService.fetchAttachments(for: email.id)
+                    // Add timeout for attachment fetching (60 seconds per email - increased for ICICI)
+                    guard let attachments = await withTimeout(seconds: 60, operation: {
+                        try await emailService.fetchAttachments(for: email.id)
                     }) else {
                         print("DEBUG: Attachment fetching timed out for email: \(email.subject ?? "Unknown")")
                         continue
@@ -548,25 +868,36 @@ extension AccountsView {
                         fetchingProgress = "Processing PDF from \(email.subject ?? "Unknown")..."
                         
                         for attachment in pdfAttachments {
-                            // Add timeout for PDF download and processing (60 seconds per PDF)
-                            let success = await withTimeout(seconds: 60, operation: {
-                                if let pdfData = try await outlookService.downloadAttachment(messageId: email.id, attachmentId: attachment.id) {
-                                    
-                                    // Step 3: Parse PDF and create/update accounts
-                                    await processPDFStatement(
-                                        pdfData: pdfData,
-                                        pdfFileName: attachment.name ?? "Statement.pdf",
-                                        email: email
-                                    )
-                                    return true
+                            print("DEBUG: Processing PDF attachment: \(attachment.name ?? "Unknown")")
+                            
+                            // Add timeout for PDF download and processing (120 seconds per PDF - increased for complex PDFs)
+                            let success = await withTimeout(seconds: 120, operation: {
+                                do {
+                                    if let pdfData = try await emailService.downloadAttachment(messageId: email.id, attachmentId: attachment.id) {
+                                        print("DEBUG: Downloaded PDF: \(attachment.name ?? "Unknown") (\(pdfData.count) bytes)")
+                                        
+                                        // Step 3: Parse PDF and create/update accounts
+                                        await processPDFStatement(
+                                            pdfData: pdfData,
+                                            pdfFileName: attachment.name ?? "Statement.pdf",
+                                            email: email
+                                        )
+                                        return true
+                                    } else {
+                                        print("DEBUG: Failed to download PDF: \(attachment.name ?? "Unknown")")
+                                        return false
+                                    }
+                                } catch {
+                                    print("DEBUG: Error downloading/processing PDF: \(attachment.name ?? "Unknown") - \(error.localizedDescription)")
+                                    return false
                                 }
-                                return false
                             })
                             
                             if success == true {
                                 processedCount += 1
+                                print("DEBUG: ✅ Successfully processed PDF: \(attachment.name ?? "Unknown")")
                             } else {
-                                print("DEBUG: PDF processing timed out or failed for: \(attachment.name ?? "Unknown")")
+                                print("DEBUG: ❌ PDF processing timed out or failed for: \(attachment.name ?? "Unknown")")
                             }
                         }
                     }
@@ -577,7 +908,7 @@ extension AccountsView {
                 }
             }
             
-            fetchingProgress = "Completed! Processed \(processedCount) statements."
+            fetchingProgress = "Completed! Processed \(processedCount) \(selectedBank.displayName) statements."
             
             // Step 4: Refresh accounts and mark bills appropriately
             viewModel.fetchAccounts()
@@ -714,18 +1045,30 @@ extension AccountsView {
     
     
     @MainActor
-    private func processPDFStatement(pdfData: Data, pdfFileName: String, email: OutlookMessage) async {
+    private func processPDFStatement(pdfData: Data, pdfFileName: String, email: EmailMessage) async {
+        print("DEBUG: Starting PDF processing for: \(pdfFileName)")
+        
         // Save PDF temporarily
         let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(pdfFileName)
         do {
             try pdfData.write(to: tempURL)
+            print("DEBUG: Saved PDF to temp location: \(tempURL.path)")
             
-            // Parse PDF
+            // Parse PDF with timeout
             let parser = PDFTransactionParser.shared
-            guard let billInfo = parser.parsePDF(at: tempURL) else {
-                print("DEBUG: Failed to parse PDF: \(pdfFileName)")
+            
+            // Add timeout for PDF parsing (60 seconds)
+            let timeoutResult = await withTimeout(seconds: 60, operation: {
+                return parser.parsePDF(at: tempURL)
+            })
+            
+            // Handle double optional: withTimeout returns T?, and parsePDF returns CreditCardBillInfo?
+            guard let optionalBillInfo = timeoutResult, let billInfo = optionalBillInfo else {
+                print("DEBUG: Failed to parse PDF or parsing timed out: \(pdfFileName)")
                 return
             }
+            
+            print("DEBUG: Successfully parsed PDF: \(pdfFileName) - Found \(billInfo.transactions.count) transactions")
             
             print("DEBUG: Automated - Parsed PDF: \(billInfo.bankName) ****\(billInfo.cardNumber), Due: ₹\(billInfo.dueAmount)")
             
@@ -850,6 +1193,19 @@ extension AccountsView {
             
             print("DEBUG: Processing bill dated: \(billInfo.statementDate)")
             
+            // Determine if this is a current or historical bill
+            let metadata = creditCardAccount.metadataDictionary
+            let billDateFormatter = ISO8601DateFormatter()
+            var isCurrentBill = true
+            
+            if let lastDateString = metadata["lastStatementDate"],
+               let lastDate = billDateFormatter.date(from: lastDateString) {
+                isCurrentBill = billInfo.statementDate >= lastDate
+                print("DEBUG: Bill date comparison: \(billInfo.statementDate) >= \(lastDate) = \(isCurrentBill ? "✅ Current" : "📜 Historical")")
+            } else {
+                print("DEBUG: No previous bill date found, treating as current bill")
+            }
+            
             // Add all transactions from this bill
             for transaction in billInfo.transactions {
                 let existingTransaction = creditCardAccount.transactionsArray.first(where: { cdTransaction in
@@ -865,13 +1221,18 @@ extension AccountsView {
                     // Re-fetch the account in viewContext to ensure proper context management
                     let accountInViewContext = viewModel.viewContext.object(with: creditCardAccount.objectID) as! CDAccount
                     
-                    // Add transaction using viewModel (which handles context properly)
+                    // Add CC tag and historical tag if needed
+                    var ccTaggedNotes = "[CC] \(transaction.description)"
+                    if !isCurrentBill {
+                        ccTaggedNotes = "[HISTORICAL] " + ccTaggedNotes
+                    }
+                    
                     viewModel.addTransaction(
                         amount: transaction.amount,
                         category: TransactionCategory(rawValue: transaction.category),
                         isCredit: isPayment, // Credit transactions reduce the amount owed
                         account: accountInViewContext,
-                        notes: transaction.description,
+                        notes: ccTaggedNotes,
                         date: transaction.date
                     )
                     
@@ -890,10 +1251,14 @@ extension AccountsView {
                 }
             }
             
-            // Always update balance to current usage from this bill (last one processed wins)
+            // Only update balance if this is a current bill (not historical)
             let finalAccount = viewModel.viewContext.object(with: creditCardAccount.objectID) as! CDAccount
-            finalAccount.balance = billInfo.totalAmount
-            print("DEBUG: ✅ Balance updated to: ₹\(billInfo.totalAmount) (from bill dated \(billInfo.statementDate))")
+            if isCurrentBill {
+                finalAccount.balance = billInfo.totalAmount
+                print("DEBUG: ✅ Balance updated to: ₹\(billInfo.totalAmount) (from bill dated \(billInfo.statementDate))")
+            } else {
+                print("DEBUG: 📜 Balance NOT updated - historical bill (current balance: ₹\(finalAccount.balance))")
+            }
             
             // Save bill metadata for UI display
             saveBillMetadata(account: finalAccount, billInfo: billInfo, pdfFileName: pdfFileName)

@@ -208,6 +208,10 @@ struct TransactionView: View {
     
     private var filteredTransactions: [CDTransaction] {
         var items = viewModel.recentTransactions
+        
+        // Filter out 0 amount transactions
+        items = items.filter { $0.amount > 0 }
+        
         if let filter = selectedCategoryFilter {
             items = items.filter { txn in
                 let raw = txn.wrappedCategory

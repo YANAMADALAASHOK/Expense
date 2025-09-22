@@ -1,0 +1,69 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper function to check if user is authenticated
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    // Helper function to check if user is accessing their own data
+    function isUserAuthenticated(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    // Rules for user profiles
+    match /users/{userId} {
+      // Allow users to read and write their own document
+      allow read, write: if isUserAuthenticated(userId);
+      
+      // Rules for weights subcollection
+      match /weights/{weightId} {
+        allow read, write: if isUserAuthenticated(userId);
+      }
+      
+      // Rules for food entries subcollection
+      match /foodEntries/{entryId} {
+        allow read, write: if isUserAuthenticated(userId);
+      }
+      
+      // Rules for medicines subcollection
+      match /medicines/{medicineId} {
+        allow read, write: if isUserAuthenticated(userId);
+      }
+    }
+    
+    // Rules for expense tracking app collections
+    match /accounts/{accountId} {
+      // Allow authenticated users to read and write accounts
+      // You might want to add userId field to accounts and restrict to user's own accounts
+      allow read, write: if isAuthenticated();
+    }
+    
+    match /transactions/{transactionId} {
+      // Allow authenticated users to read and write transactions
+      // You might want to add userId field to transactions and restrict to user's own transactions
+      allow read, write: if isAuthenticated();
+    }
+    
+    match /categories/{categoryId} {
+      // Allow authenticated users to read and write categories
+      allow read, write: if isAuthenticated();
+    }
+    
+    match /creditCardBills/{billId} {
+      // Allow authenticated users to read and write credit card bills
+      allow read, write: if isAuthenticated();
+    }
+    
+    match /insurancePolicies/{policyId} {
+      // Allow authenticated users to read and write insurance policies
+      allow read, write: if isAuthenticated();
+    }
+    
+    // Add any other collections your app uses
+    match /{document=**} {
+      // Fallback rule - be more restrictive in production
+      allow read, write: if isAuthenticated();
+    }
+  }
+}
