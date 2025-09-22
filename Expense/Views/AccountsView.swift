@@ -517,9 +517,17 @@ extension AccountsView {
             
             // Step 2: Process each email with PDF attachments
             var processedCount = 0
-            let totalEmails = emails.count
+            // Sort emails by date (oldest first, newest last) so latest bill sets final balance
+            let sortedEmails = emails.sorted { email1, email2 in
+                let date1 = ISO8601DateFormatter().date(from: email1.receivedDateTime) ?? Date.distantPast
+                let date2 = ISO8601DateFormatter().date(from: email2.receivedDateTime) ?? Date.distantPast
+                return date1 < date2
+            }
             
-            for (index, email) in emails.enumerated() {
+            let totalEmails = sortedEmails.count
+            print("DEBUG: Processing \(totalEmails) emails in chronological order (oldest first)")
+            
+            for (index, email) in sortedEmails.enumerated() {
                 fetchingProgress = "Processing email \(index + 1) of \(totalEmails)..."
                 
                 do {
@@ -668,6 +676,45 @@ extension AccountsView {
         return false
     }
     
+    // Helper function to save bill metadata for UI display
+    private func saveBillMetadata(account: CDAccount, billInfo: CreditCardBillInfo, pdfFileName: String) {
+        var metadata = account.metadataDictionary
+        let dateFormatter = ISO8601DateFormatter()
+        
+        // Create a unique key for this statement
+        let statementKey = "statement_\(dateFormatter.string(from: billInfo.statementDate))"
+        
+        // Create bill data dictionary (totalAmount is already the current usage)
+        let billData: [String: String] = [
+            "statementDate": dateFormatter.string(from: billInfo.statementDate),
+            "dueDate": dateFormatter.string(from: billInfo.dueDate),
+            "dueAmount": String(billInfo.dueAmount),
+            "currentUsage": String(billInfo.totalAmount),
+            "creditLimit": String(billInfo.creditLimit ?? 0.0),
+            "bankName": billInfo.bankName,
+            "cardNumber": billInfo.cardNumber,
+            "pdfFileName": pdfFileName
+        ]
+        
+        // Convert to JSON string
+        if let jsonData = try? JSONSerialization.data(withJSONObject: billData),
+           let jsonString = String(data: jsonData, encoding: .utf8) {
+            metadata[statementKey] = jsonString
+            
+            // Update account metadata
+            let metadataString = metadata.compactMapValues { $0 }.reduce(into: "") { result, pair in
+                result += "\(pair.key)=\(pair.value)\n"
+            }
+            account.metadata = metadataString.data(using: .utf8)
+            
+            print("DEBUG: 💾 Saved bill metadata for statement: \(billInfo.statementDate)")
+            print("DEBUG: - Key: \(statementKey)")
+            print("DEBUG: - Due Amount: ₹\(billInfo.dueAmount)")
+            print("DEBUG: - PDF: \(pdfFileName)")
+        }
+    }
+    
+    
     @MainActor
     private func processPDFStatement(pdfData: Data, pdfFileName: String, email: OutlookMessage) async {
         // Save PDF temporarily
@@ -722,13 +769,13 @@ extension AccountsView {
                 var shouldUpdateAccountBalance = true
                 if let lastDateString = metadata["lastStatementDate"],
                    let lastDate = dateFormatter.date(from: lastDateString) {
-                    shouldUpdateAccountBalance = billInfo.statementDate > lastDate
-                    print("DEBUG: Statement date comparison: \(billInfo.statementDate) > \(lastDate) = \(shouldUpdateAccountBalance)")
+                    shouldUpdateAccountBalance = billInfo.statementDate >= lastDate
+                    print("DEBUG: Bill date comparison: \(billInfo.statementDate) >= \(lastDate) = \(shouldUpdateAccountBalance)")
                 } else {
-                    print("DEBUG: No previous statement date found, will update balance")
+                    print("DEBUG: No previous bill date found, will update balance")
                 }
                 
-                // Only update account-level info if this statement is newer
+                // Only update account balance if this bill is newer or same date
                 if shouldUpdateAccountBalance {
                     metadata["lastStatementDate"] = dateFormatter.string(from: billInfo.statementDate)
                     metadata["lastDueDate"] = dateFormatter.string(from: billInfo.dueDate)
@@ -736,14 +783,13 @@ extension AccountsView {
                     metadata["creditLimit"] = String(billInfo.creditLimit ?? 0)
                     metadata["lastCurrentUsage"] = String(billInfo.totalAmount)
                     
-                    // For credit cards, balance represents current usage (positive value for display)
-                    // totalAmount represents current usage/outstanding amount from PDF
+                    // Simple formula: Current Usage = Credit Limit - Available Credit Limit
                     creditCardAccount.balance = billInfo.totalAmount
                     creditCardAccount.creditLimit = billInfo.creditLimit ?? 0
                     
-                    print("DEBUG: Updated existing account balance: ₹\(billInfo.totalAmount) (Current Usage from newer statement)")
+                    print("DEBUG: ✅ Updated balance from newer bill: ₹\(billInfo.totalAmount)")
                 } else {
-                    print("DEBUG: Skipping balance update - statement is older than current: \(billInfo.statementDate)")
+                    print("DEBUG: ❌ Skipping balance update - bill is older: \(billInfo.statementDate)")
                 }
                 
                 creditCardAccount.metadataDictionary = metadata
@@ -754,12 +800,11 @@ extension AccountsView {
                 creditCardAccount.id = UUID()
                 creditCardAccount.accountName = accountName
                 creditCardAccount.accountType = AccountType.creditCard.rawValue
-                // For credit cards, balance represents current usage (positive value for display)
-                // totalAmount represents current usage/outstanding amount from PDF
+                // Simple formula: Current Usage = Credit Limit - Available Credit Limit
                 creditCardAccount.balance = billInfo.totalAmount
                 creditCardAccount.creditLimit = billInfo.creditLimit ?? 0
                 
-                print("DEBUG: Created new account balance: ₹\(billInfo.totalAmount) (Current Usage from PDF)")
+                print("DEBUG: ✅ Created new account with balance: ₹\(billInfo.totalAmount)")
                 
                 var metadata: [String: String] = [:]
                 
@@ -802,23 +847,12 @@ extension AccountsView {
             // Refresh the account from the context to ensure it's properly managed
             viewModel.viewContext.refresh(creditCardAccount, mergeChanges: true)
             
-            // Add all transactions but tag older ones as historical
+            // Process all transactions and always update balance (last bill processed wins)
             var newTransactionsCount = 0
-            var shouldIncludeInBalance = true
             
-            // For existing accounts, check if this statement is newer than the last processed one
-            if let existingAccount = existingAccount {
-                let metadata = existingAccount.metadataDictionary
-                if let lastDateString = metadata["lastStatementDate"],
-                   let lastDate = dateFormatter.date(from: lastDateString) {
-                    shouldIncludeInBalance = billInfo.statementDate >= lastDate
-                    print("DEBUG: Balance inclusion decision: \(billInfo.statementDate) >= \(lastDate) = \(shouldIncludeInBalance)")
-                }
-            }
+            print("DEBUG: Processing bill dated: \(billInfo.statementDate)")
             
-            print("DEBUG: Processing transactions from statement dated: \(billInfo.statementDate) (Include in balance: \(shouldIncludeInBalance))")
-            
-            // Add transactions to credit card account
+            // Add all transactions from this bill
             for transaction in billInfo.transactions {
                 let existingTransaction = creditCardAccount.transactionsArray.first(where: { cdTransaction in
                     abs(cdTransaction.amount - transaction.amount) < 0.01 &&
@@ -833,21 +867,18 @@ extension AccountsView {
                     // Re-fetch the account in viewContext to ensure proper context management
                     let accountInViewContext = viewModel.viewContext.object(with: creditCardAccount.objectID) as! CDAccount
                     
-                    // Store original balance before adding transaction (only for historical transactions)
-                    let balanceBeforeTransaction = shouldIncludeInBalance ? 0.0 : accountInViewContext.balance
-                    
                     // Add transaction using viewModel (which handles context properly)
                     viewModel.addTransaction(
                         amount: transaction.amount,
                         category: TransactionCategory(rawValue: transaction.category),
                         isCredit: isPayment, // Credit transactions reduce the amount owed
                         account: accountInViewContext,
-                        notes: shouldIncludeInBalance ? transaction.description : "[HISTORICAL] \(transaction.description)",
+                        notes: transaction.description,
                         date: transaction.date
                     )
                     
                     // Check for automatic bill payment detection
-                    if isPayment && shouldIncludeInBalance {
+                    if isPayment {
                         checkAndMarkBillAsPaid(
                             account: accountInViewContext,
                             paymentAmount: transaction.amount,
@@ -856,29 +887,19 @@ extension AccountsView {
                         )
                     }
                     
-                    // If this is a historical transaction, revert the balance change
-                    if !shouldIncludeInBalance {
-                        // Re-fetch account again after transaction addition to ensure fresh reference
-                        let freshAccount = viewModel.viewContext.object(with: creditCardAccount.objectID) as! CDAccount
-                        freshAccount.balance = balanceBeforeTransaction
-                        print("DEBUG: Added HISTORICAL transaction: \(transaction.description) - ₹\(transaction.amount) (balance reverted)")
-                    } else {
-                        print("DEBUG: Added CURRENT transaction: \(transaction.description) - ₹\(transaction.amount) (affects balance)")
-                    }
-                    
+                    print("DEBUG: ✅ Added transaction: \(transaction.description) - ₹\(transaction.amount)")
                     newTransactionsCount += 1
                 }
             }
-            let finalAccount = viewModel.viewContext.object(with: creditCardAccount.objectID) as! CDAccount
-            let originalBalance = finalAccount.balance
             
-            if shouldIncludeInBalance {
-                // Set balance to current usage from this statement
-                finalAccount.balance = billInfo.totalAmount
-                print("DEBUG: Final balance set: ₹\(originalBalance) → ₹\(billInfo.totalAmount) (Current Usage from newer statement)")
-            } else {
-                print("DEBUG: Balance unchanged: ₹\(originalBalance) (Historical statement - balance preserved)")
-            }
+            // Always update balance to current usage from this bill (last one processed wins)
+            let finalAccount = viewModel.viewContext.object(with: creditCardAccount.objectID) as! CDAccount
+            finalAccount.balance = billInfo.totalAmount
+            print("DEBUG: ✅ Balance updated to: ₹\(billInfo.totalAmount) (from bill dated \(billInfo.statementDate))")
+            
+            // Save bill metadata for UI display
+            saveBillMetadata(account: finalAccount, billInfo: billInfo, pdfFileName: pdfFileName)
+            
             
             // Save context
             try viewModel.viewContext.save()

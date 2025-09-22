@@ -492,6 +492,10 @@ struct CardDetailView: View {
         
         // Load bills from history
         let billHistoryKeys = metadata.keys.filter { $0.hasPrefix("statement_") }
+        print("DEBUG: CardDetail - Loading \(billHistoryKeys.count) bills for card: \(card.bankName) ****\(card.cardNumber)")
+        
+        // Debug: Print all metadata keys
+        print("DEBUG: CardDetail - All metadata keys: \(metadata.keys.sorted())")
         
         for key in billHistoryKeys {
             if let statementJsonString = metadata[key],
@@ -502,12 +506,15 @@ struct CardDetailView: View {
                 let statementDate = statementData["statementDate"].flatMap { dateFormatter.date(from: $0) } ?? Date()
                 let dueDate = statementData["dueDate"].flatMap { dateFormatter.date(from: $0) } ?? Date()
                 let dueAmount = statementData["dueAmount"].flatMap { Double($0) } ?? 0.0
-                let currentUsage = statementData["currentUsage"].flatMap { Double($0) } ?? dueAmount
+                let currentUsage = statementData["currentUsage"].flatMap { Double($0) } ?? 0.0
                 let statementCreditLimit = statementData["creditLimit"].flatMap { Double($0) } ?? card.creditLimit
                 let pdfFileName = statementData["pdfFileName"]
                 
                 // Check if bill is paid (either manually marked or has payment transaction)
                 let isPaid = isSpecificBillPaid(statementData: statementData, account: card.account, statementDate: statementDate, dueAmount: dueAmount)
+                
+                print("DEBUG: CardDetail - Creating bill: \(statementDate), Amount: ₹\(dueAmount), Paid: \(isPaid)")
+                print("DEBUG: CardDetail - Statement data keys: \(statementData.keys.sorted())")
                 
                 let bill = CreditCardBill(
                     bankName: card.bankName,
@@ -531,30 +538,42 @@ struct CardDetailView: View {
         isLoading = false
     }
     
-    // Function to check if a specific bill is paid
+    // Function to check if a specific bill is paid (automatic logic: only latest bill is unpaid)
     private func isSpecificBillPaid(statementData: [String: String], account: CDAccount, statementDate: Date, dueAmount: Double) -> Bool {
-        // First check if this specific bill is manually marked as paid
-        if statementData["manuallyPaid"] == "true" {
-            print("DEBUG: Bill marked as manually paid - Statement: \(statementDate), Amount: ₹\(dueAmount)")
-            return true
-        }
+        // Get all statement dates for this account to find the latest one
+        let metadata = account.metadataDictionary
+        let dateFormatter = ISO8601DateFormatter()
         
-        // Then check if there are payment transactions for this specific bill
-        let paymentTransactions = account.transactionsArray.filter { transaction in
-            transaction.wrappedCategory.contains("Payment") && 
-            transaction.isCredit && 
-            transaction.wrappedDate >= statementDate
-        }
+        var allStatementDates: [Date] = []
+        let billHistoryKeys = metadata.keys.filter { $0.hasPrefix("statement_") }
         
-        for transaction in paymentTransactions {
-            // Check if amount matches (allow ₹1 variance)
-            if abs(transaction.amount - dueAmount) < 1.0 {
-                print("DEBUG: Bill paid via transaction - Statement: \(statementDate), Amount: ₹\(dueAmount)")
-                return true
+        for key in billHistoryKeys {
+            if let statementJsonString = metadata[key],
+               let statementJsonData = statementJsonString.data(using: .utf8),
+               let statementData = try? JSONSerialization.jsonObject(with: statementJsonData) as? [String: String],
+               let statementDateString = statementData["statementDate"],
+               let date = dateFormatter.date(from: statementDateString) {
+                allStatementDates.append(date)
             }
         }
         
-        return false
+        // Find the latest statement date
+        guard let latestStatementDate = allStatementDates.max() else {
+            print("DEBUG: CardDetail - No statement dates found, marking as unpaid")
+            return false
+        }
+        
+        // Only the latest bill is unpaid, all others are automatically paid
+        let isLatestBill = Calendar.current.isDate(statementDate, inSameDayAs: latestStatementDate)
+        let isPaid = !isLatestBill
+        
+        if isPaid {
+            print("DEBUG: CardDetail - Bill auto-marked as PAID (older bill) - Statement: \(statementDate), Amount: ₹\(dueAmount)")
+        } else {
+            print("DEBUG: CardDetail - Bill marked as UNPAID (latest bill) - Statement: \(statementDate), Amount: ₹\(dueAmount)")
+        }
+        
+        return isPaid
     }
     
     private func hasBillPayment(account: CDAccount, statementDate: Date, dueAmount: Double) -> Bool {
@@ -745,62 +764,37 @@ struct BillDetailView: View {
                     
                     Divider()
                     
-                    // Payment Buttons
-                    if currentBillStatus {
-                        // Show paid status
-                        HStack {
-                            Image(systemName: "checkmark.circle.fill")
-                                .font(.title3)
-                                .foregroundColor(.green)
-                            Text("Bill Paid")
-                                .font(.headline)
-                                .foregroundColor(.green)
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding()
-                        .background(Color.green.opacity(0.1))
-                        .cornerRadius(10)
-                    } else {
-                        // Show payment options
-                        VStack(spacing: 12) {
-                            // Pay Bill Button
-                            Button(action: {
-                                paymentAmount = String(format: "%.2f", bill.dueAmount)
-                                showingPaymentSheet = true
-                            }) {
-                                HStack {
-                                    Image(systemName: "creditcard")
-                                        .font(.title3)
-                                    Text("Pay Bill - ₹\(bill.dueAmount, specifier: "%.2f")")
-                                        .font(.headline)
-                                }
-                                .foregroundColor(.white)
-                                .frame(maxWidth: .infinity)
-                                .padding()
-                                .background(Color.blue)
-                                .cornerRadius(10)
+                    // Payment Status (automatic based on latest bill logic)
+                    HStack {
+                        Image(systemName: currentBillStatus ? "checkmark.circle.fill" : "clock.circle.fill")
+                            .font(.title3)
+                            .foregroundColor(currentBillStatus ? .green : .orange)
+                        Text(currentBillStatus ? "Bill Paid (Older Statement)" : "Current Outstanding Bill")
+                            .font(.headline)
+                            .foregroundColor(currentBillStatus ? .green : .orange)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding()
+                    .background(currentBillStatus ? Color.green.opacity(0.1) : Color.orange.opacity(0.1))
+                    .cornerRadius(8)
+                    
+                    // Payment Options (only for unpaid/current bills)
+                    if !currentBillStatus {
+                        Button(action: {
+                            paymentAmount = String(format: "%.2f", bill.dueAmount)
+                            showingPaymentSheet = true
+                        }) {
+                            HStack {
+                                Image(systemName: "creditcard")
+                                    .font(.title3)
+                                Text("Pay Bill - ₹\(bill.dueAmount, specifier: "%.2f")")
+                                    .font(.headline)
                             }
-                            
-                            // Mark as Paid Button
-                            Button(action: {
-                                markBillAsPaid()
-                            }) {
-                                HStack {
-                                    Image(systemName: "checkmark.circle")
-                                        .font(.title3)
-                                    Text("Mark as Paid")
-                                        .font(.headline)
-                                }
-                                .foregroundColor(.green)
-                                .frame(maxWidth: .infinity)
-                                .padding()
-                                .background(Color.green.opacity(0.1))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 10)
-                                        .stroke(Color.green, lineWidth: 2)
-                                )
-                                .cornerRadius(10)
-                            }
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .background(Color.blue)
+                            .cornerRadius(10)
                         }
                     }
                 }
@@ -880,77 +874,6 @@ struct BillDetailView: View {
         }
     }
     
-    private func markBillAsPaid() {
-        // Find the credit card account that matches this bill
-        let accountName = "\(bill.bankName) ****\(bill.cardNumber)"
-        
-        guard let account = viewModel.accounts.first(where: { $0.wrappedAccountName == accountName }) else {
-            print("DEBUG: Credit card account not found: \(accountName)")
-            return
-        }
-        
-        let context = viewModel.viewContext
-        
-        do {
-            // Mark bill as paid by adding a "paid" flag to the bill's metadata
-            var metadata = account.metadataDictionary
-            let dateFormatter = ISO8601DateFormatter()
-            
-            // Find the specific bill in metadata and mark it as paid
-            let billHistoryKeys = metadata.keys.filter { $0.hasPrefix("statement_") }
-            
-            for key in billHistoryKeys {
-                if let statementJsonString = metadata[key],
-                   let statementJsonData = statementJsonString.data(using: .utf8),
-                   var statementData = try? JSONSerialization.jsonObject(with: statementJsonData) as? [String: String] {
-                    
-                    let statementDate = statementData["statementDate"].flatMap { dateFormatter.date(from: $0) } ?? Date()
-                    let dueAmount = statementData["dueAmount"].flatMap { Double($0) } ?? 0.0
-                    
-                    // Check if this matches our bill
-                    if Calendar.current.isDate(statementDate, inSameDayAs: bill.statementDate) &&
-                       abs(dueAmount - bill.dueAmount) < 0.01 {
-                        
-                        // Mark this bill as manually paid
-                        statementData["manuallyPaid"] = "true"
-                        statementData["paidDate"] = dateFormatter.string(from: Date())
-                        
-                        // Update the metadata
-                        if let updatedJsonData = try? JSONSerialization.data(withJSONObject: statementData),
-                           let updatedJsonString = String(data: updatedJsonData, encoding: .utf8) {
-                            metadata[key] = updatedJsonString
-                        }
-                        
-                        print("DEBUG: Bill marked as paid (no transaction created)")
-                        print("DEBUG: - Amount: ₹\(bill.dueAmount)")
-                        print("DEBUG: - Account: \(accountName)")
-                        print("DEBUG: - Statement Date: \(bill.statementDate)")
-                        
-                        break
-                    }
-                }
-            }
-            
-            // Update account metadata
-            let metadataString = metadata.compactMapValues { $0 }.reduce(into: "") { result, pair in
-                result += "\(pair.key)=\(pair.value)\n"
-            }
-            account.metadata = metadataString.data(using: .utf8)
-            
-            // Save context
-            try context.save()
-            
-            // Update local state and refresh accounts
-            currentBillStatus = true
-            DispatchQueue.main.async {
-                viewModel.fetchAccounts()
-            }
-            
-        } catch {
-            print("DEBUG: Failed to mark bill as paid: \(error)")
-            paymentError = "Failed to mark bill as paid: \(error.localizedDescription)"
-        }
-    }
 }
 
 struct BillTransactionRowView: View {
