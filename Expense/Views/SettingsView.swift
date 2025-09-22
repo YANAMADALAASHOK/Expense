@@ -122,24 +122,27 @@ struct SettingsView: View {
     @State private var gmailTokenInput = ""
     @State private var gmailClientId: String = GmailOAuthManager.shared.clientId ?? ""
     @State private var gmailRedirectUri: String = GmailOAuthManager.shared.redirectUri ?? ""
+    @State private var showingProfile = false
+    
+    // Collapsible section states
+    @State private var isCloudSyncExpanded = false
+    @State private var isEmailExpanded = false
+    @State private var isBillsExpanded = false
+    @State private var isGmailExpanded = false
+    @State private var isDataManagementExpanded = false
+    @State private var isDangerZoneExpanded = false
+    @State private var isCategoriesExpanded = false
+    @State private var isCurrencyExpanded = false
     
     var body: some View {
         NavigationView {
             Form {
-                Section(header: Text("Account")) {
-                    if let user = authManager.currentUser {
-                        if user.isGuest {
-                            Text("Signed in as Guest")
-                        } else {
-                            Text("Email: \(user.email)")
-                        }
-                        Button("Sign Out") {
-                            authManager.signOut()
-                        }
-                    }
-                }
-                
-                Section(header: Text("Cloud Sync")) {
+                // Cloud Sync Section
+                CollapsibleSection(
+                    title: "Cloud Sync",
+                    isExpanded: $isCloudSyncExpanded,
+                    icon: "icloud.and.arrow.up"
+                ) {
                     VStack(alignment: .leading) {
                         Text("Status: \(cloudSyncStatus)")
                         if let lastSync = lastSyncTime {
@@ -167,14 +170,16 @@ struct SettingsView: View {
                     }
                 }
                 
-                Section(header: Text("Outlook Email")) {
+                // Email Management Section
+                CollapsibleSection(
+                    title: "Email Management",
+                    isExpanded: $isEmailExpanded,
+                    icon: "envelope"
+                ) {
                     NavigationLink(destination: MailLoginsView(viewModel: expenseViewModel)) {
                         Label("Mail Logins (Outlook & Gmail)", systemImage: "envelope")
                     }
-                }
-
-                
-                Section(header: Text("Email Inboxes")) {
+                    
                     NavigationLink(destination: EmailInboxView(viewModel: expenseViewModel, initialSender: "alerts@axisbank.com")) {
                         Label("Axis Alerts (Outlook)", systemImage: "envelope.badge")
                     }
@@ -183,7 +188,27 @@ struct SettingsView: View {
                     }
                 }
 
-                Section(header: Text("Gmail Email")) {
+                // Bills Section
+                CollapsibleSection(
+                    title: "Bills",
+                    isExpanded: $isBillsExpanded,
+                    icon: "doc.text.below.ecg"
+                ) {
+                    NavigationLink(destination: CreditCardEmailsView(viewModel: expenseViewModel)) {
+                        Label("Browse Credit Card Emails", systemImage: "envelope.badge")
+                    }
+                    
+                    NavigationLink(destination: CreditCardBillsView(viewModel: expenseViewModel)) {
+                        Label("View Processed Bills", systemImage: "creditcard")
+                    }
+                }
+
+                // Gmail Configuration Section
+                CollapsibleSection(
+                    title: "Gmail Configuration",
+                    isExpanded: $isGmailExpanded,
+                    icon: "envelope.circle"
+                ) {
                     HStack {
                         Text("Status: ")
                         Text(GmailService.shared.isSignedIn ? "Signed In" : "Not Signed In")
@@ -262,7 +287,12 @@ struct SettingsView: View {
                     }
                 }
 
-                Section(header: Text("Data Management")) {
+                // Data Management Section
+                CollapsibleSection(
+                    title: "Data Management",
+                    isExpanded: $isDataManagementExpanded,
+                    icon: "folder"
+                ) {
                     Button(action: {
                         isUpdatingNAVs = true
                         expenseViewModel.updateMutualFundNAVs { _ in
@@ -310,7 +340,37 @@ struct SettingsView: View {
                     }
                 }
                 
-                Section(header: Text("Danger Zone")) {
+                // Categories Section
+                CollapsibleSection(
+                    title: "Categories",
+                    isExpanded: $isCategoriesExpanded,
+                    icon: "tag"
+                ) {
+                    Button("Manage Custom Categories") {
+                        showingCustomCategorySheet = true
+                    }
+                    NavigationLink(destination: CategorizationRulesView()) {
+                        Label("Teach Auto-Categorization Rules", systemImage: "text.badge.plus")
+                    }
+                }
+                
+                // Currency Section
+                CollapsibleSection(
+                    title: "Currency",
+                    isExpanded: $isCurrencyExpanded,
+                    icon: "dollarsign.circle"
+                ) {
+                    Button("Change Currency") {
+                        showingCurrencyPicker = true
+                    }
+                }
+                
+                // Danger Zone Section
+                CollapsibleSection(
+                    title: "Danger Zone",
+                    isExpanded: $isDangerZoneExpanded,
+                    icon: "exclamationmark.triangle"
+                ) {
                     Button(action: {
                         showingDeleteConfirmation = true
                     }) {
@@ -322,25 +382,20 @@ struct SettingsView: View {
                     }
                     .disabled(isDeletingData)
                 }
-                
-                Section(header: Text("Categories")) {
-                    Button("Manage Custom Categories") {
-                        showingCustomCategorySheet = true
-                    }
-                    NavigationLink(destination: CategorizationRulesView()) {
-                        Label("Teach Auto-Categorization Rules", systemImage: "text.badge.plus")
-                    }
-                }
-                
-                Section(header: Text("Currency")) {
-                    Button("Change Currency") {
-                        showingCurrencyPicker = true
-                    }
-                }
             }
             .navigationTitle("Settings")
+            .navigationBarItems(trailing: 
+                Button(action: {
+                    showingProfile = true
+                }) {
+                    ProfileButtonView()
+                }
+            )
             .sheet(isPresented: $showingCurrencyPicker) {
                 CurrencyPickerView()
+            }
+            .sheet(isPresented: $showingProfile) {
+                UserProfileView()
             }
             .sheet(isPresented: $showingCustomCategorySheet) {
                 CustomCategoryView()
@@ -539,6 +594,90 @@ struct SettingsView: View {
             showingError = true
             isDeletingData = false
         }
+    }
+    
+}
+
+struct CollapsibleSection<Content: View>: View {
+    let title: String
+    @Binding var isExpanded: Bool
+    let icon: String
+    let content: Content
+    
+    init(title: String, isExpanded: Binding<Bool>, icon: String, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self._isExpanded = isExpanded
+        self.icon = icon
+        self.content = content()
+    }
+    
+    var body: some View {
+        Section {
+            // Header Button
+            Button(action: {
+                withAnimation(.easeInOut(duration: 0.3)) {
+                    isExpanded.toggle()
+                }
+            }) {
+                HStack {
+                    Image(systemName: icon)
+                        .foregroundColor(.blue)
+                        .frame(width: 20)
+                    
+                    Text(title)
+                        .font(.headline)
+                        .foregroundColor(.primary)
+                    
+                    Spacer()
+                    
+                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                        .foregroundColor(.secondary)
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .padding(.vertical, 4)
+            }
+            .buttonStyle(PlainButtonStyle())
+            
+            // Collapsible Content
+            if isExpanded {
+                content
+            }
+        }
+    }
+}
+
+struct ProfileButtonView: View {
+    @EnvironmentObject var authManager: AuthenticationManager
+    
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(Color.blue.opacity(0.1))
+                .frame(width: 32, height: 32)
+            
+            if let user = authManager.currentUser {
+                if user.isGuest {
+                    Image(systemName: "person.fill")
+                        .font(.system(size: 16))
+                        .foregroundColor(.blue)
+                } else {
+                    Text(initials)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(.blue)
+                }
+            } else {
+                Image(systemName: "person.circle")
+                    .font(.system(size: 16))
+                    .foregroundColor(.blue)
+            }
+        }
+    }
+    
+    private var initials: String {
+        guard let user = authManager.currentUser else { return "" }
+        let first = user.firstName?.first?.uppercased() ?? ""
+        let last = user.lastName?.first?.uppercased() ?? ""
+        return first + last
     }
 }
 

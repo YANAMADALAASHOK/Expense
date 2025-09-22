@@ -6,7 +6,20 @@ struct OutlookMessage: Decodable {
     let subject: String?
     let bodyPreview: String?
     let body: Body?
-    struct Body: Decodable { let content: String? }
+    let from: From?
+    
+    struct Body: Decodable { 
+        let content: String? 
+    }
+    
+    struct From: Decodable {
+        let emailAddress: EmailAddress?
+    }
+    
+    struct EmailAddress: Decodable {
+        let address: String?
+        let name: String?
+    }
 }
 
 private struct GraphMessagesResponse: Decodable {
@@ -41,6 +54,7 @@ final class OutlookService {
                 var nextLink: String? = self.buildInitialUrl(since: since, sender: sender)
                 func fetchPage() {
                     guard let link = nextLink, let url = URL(string: link) else { completion(.success(messages)); return }
+                    print("DEBUG: Fetching from URL: \(link)")
                     var req = URLRequest(url: url)
                     req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
                     URLSession.shared.dataTask(with: req) { data, _, error in
@@ -48,14 +62,21 @@ final class OutlookService {
                         guard let data = data else { completion(.failure(NSError(domain: "Outlook", code: 0, userInfo: [NSLocalizedDescriptionKey: "No data"])) ); return }
                         do {
                             let response = try JSONDecoder().decode(GraphMessagesResponse.self, from: data)
+                            print("DEBUG: Received \(response.value.count) messages in this batch")
                             messages.append(contentsOf: response.value)
                             nextLink = response.nextLink
                             if nextLink != nil && messages.count < 500 { // safety cap
+                                print("DEBUG: Fetching next page, total so far: \(messages.count)")
                                 fetchPage()
                             } else {
+                                print("DEBUG: Finished fetching, total messages: \(messages.count)")
                                 completion(.success(messages))
                             }
                         } catch {
+                            print("DEBUG: JSON decode error: \(error)")
+                            if let dataString = String(data: data, encoding: .utf8) {
+                                print("DEBUG: Response data: \(dataString)")
+                            }
                             completion(.failure(error))
                         }
                     }.resume()
@@ -66,21 +87,35 @@ final class OutlookService {
     }
 
     private func buildInitialUrl(since: Date?, sender: String?) -> String {
-        var url = "https://graph.microsoft.com/v1.0/me/messages?$top=25&$select=id,subject,receivedDateTime,bodyPreview,body&$orderby=receivedDateTime%20desc"
-        var filters: [String] = []
-        if let since = since {
-            let iso = ISO8601DateFormatter().string(from: since)
-            filters.append("receivedDateTime gt \(iso)")
-        }
+        // Microsoft Graph API has issues with $orderby and $search together
+        // Use simpler approach with proper URL encoding
+        
         if let sender = sender, !sender.isEmpty {
-            // Filter by sender address
-            filters.append("from/emailAddress/address eq '\(sender)'")
+            // Use search for specific sender - this searches all folders automatically
+            let searchQuery = "from:\(sender)"
+            let encodedSearch = searchQuery.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? searchQuery
+            var url = "https://graph.microsoft.com/v1.0/me/messages?$top=50&$select=id,subject,receivedDateTime,bodyPreview,body,from&$search=\"\(encodedSearch)\""
+            
+            // Add date filter if specified
+            if let since = since {
+                let iso = ISO8601DateFormatter().string(from: since)
+                let dateQuery = "received>=\(iso)"
+                url = url.replacingOccurrences(of: "$search=\"\(encodedSearch)\"", with: "$search=\"\(dateQuery) AND \(encodedSearch)\"")
+            }
+            
+            return url
+        } else {
+            // For no sender filter, use standard messages endpoint with filter
+            var url = "https://graph.microsoft.com/v1.0/me/messages?$top=50&$select=id,subject,receivedDateTime,bodyPreview,body,from&$orderby=receivedDateTime desc"
+            
+            // Add date filter if specified
+            if let since = since {
+                let iso = ISO8601DateFormatter().string(from: since)
+                url += "&$filter=receivedDateTime gt \(iso)"
+            }
+            
+            return url
         }
-        if !filters.isEmpty {
-            let filter = filters.joined(separator: " and ")
-            url += "&$filter=\(filter.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? filter)"
-        }
-        return url
     }
 }
 

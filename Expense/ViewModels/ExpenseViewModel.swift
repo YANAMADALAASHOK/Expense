@@ -1022,7 +1022,7 @@ class ExpenseViewModel: ObservableObject {
         }
     }
     
-    private func fetchAccounts() {
+    func fetchAccounts() {
         let request = NSFetchRequest<CDAccount>(entityName: "CDAccount")
         request.sortDescriptors = [NSSortDescriptor(keyPath: \CDAccount.accountName, ascending: true)]
         

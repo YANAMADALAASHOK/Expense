@@ -5,9 +5,10 @@ struct LoginView: View {
     @StateObject private var authManager = AuthenticationManager.shared
     @State private var email = ""
     @State private var password = ""
-    @State private var isSignUp = false
+    @State private var showingSignup = false
     @State private var showingError = false
     @State private var errorMessage = ""
+    @State private var isLoading = false
     
     var body: some View {
         VStack(spacing: 20) {
@@ -38,32 +39,27 @@ struct LoginView: View {
                     .textFieldStyle(RoundedBorderTextFieldStyle())
                     .textContentType(.password)
                 
-                Button(action: {
-                    Task {
-                        do {
-                            if isSignUp {
-                                try await authManager.createAccount(email: email, password: password)
-                            } else {
-                                try await authManager.signIn(email: email, password: password)
-                            }
-                        } catch {
-                            showingError = true
-                            errorMessage = error.localizedDescription
+                Button(action: signIn) {
+                    HStack {
+                        if isLoading {
+                            ProgressView()
+                                .scaleEffect(0.8)
+                                .foregroundColor(.white)
                         }
+                        Text(isLoading ? "Signing In..." : "Sign In")
                     }
-                }) {
-                    Text(isSignUp ? "Sign Up" : "Sign In")
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 50)
-                        .foregroundColor(.white)
-                        .background(Color.blue)
-                        .cornerRadius(10)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 50)
+                    .foregroundColor(.white)
+                    .background(isFormValid ? Color.blue : Color.gray)
+                    .cornerRadius(10)
                 }
+                .disabled(!isFormValid || isLoading)
                 
                 Button(action: {
-                    isSignUp.toggle()
+                    showingSignup = true
                 }) {
-                    Text(isSignUp ? "Already have an account? Sign In" : "Don't have an account? Sign Up")
+                    Text("Don't have an account? Sign Up")
                         .foregroundColor(.blue)
                 }
                 
@@ -90,6 +86,34 @@ struct LoginView: View {
             Button("OK", role: .cancel) { }
         } message: {
             Text(errorMessage)
+        }
+        .sheet(isPresented: $showingSignup) {
+            SignupView()
+        }
+    }
+    
+    private var isFormValid: Bool {
+        !email.isEmpty && !password.isEmpty && email.contains("@")
+    }
+    
+    private func signIn() {
+        guard isFormValid else { return }
+        
+        isLoading = true
+        
+        Task {
+            do {
+                try await authManager.signIn(email: email, password: password)
+                DispatchQueue.main.async {
+                    self.isLoading = false
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self.isLoading = false
+                    self.errorMessage = error.localizedDescription
+                    self.showingError = true
+                }
+            }
         }
     }
 } 

@@ -13,20 +13,42 @@ class AuthenticationManager: ObservableObject {
     struct User {
         let id: String
         let email: String?
-        let name: String?
+        let firstName: String?
+        let lastName: String?
+        let mobileNumber: String?
+        let dateOfBirth: Date?
         let isGuest: Bool
+        
+        var fullName: String {
+            let first = firstName ?? ""
+            let last = lastName ?? ""
+            return "\(first) \(last)".trimmingCharacters(in: .whitespaces)
+        }
+        
+        // Legacy name property for backward compatibility
+        var name: String? {
+            return fullName.isEmpty ? nil : fullName
+        }
     }
     
     private init() {
         // Check if user is already signed in
         if let user = Auth.auth().currentUser {
             self.isAuthenticated = true
-            self.currentUser = User(
-                id: user.uid,
-                email: user.email,
-                name: user.displayName,
-                isGuest: false
-            )
+            // Load user profile from Firestore
+            loadUserProfile(userId: user.uid) { userProfile in
+                DispatchQueue.main.async {
+                    self.currentUser = userProfile ?? User(
+                        id: user.uid,
+                        email: user.email,
+                        firstName: user.displayName,
+                        lastName: nil,
+                        mobileNumber: nil,
+                        dateOfBirth: nil,
+                        isGuest: false
+                    )
+                }
+            }
         }
         
         // Listen for auth state changes
@@ -34,12 +56,20 @@ class AuthenticationManager: ObservableObject {
             DispatchQueue.main.async {
                 if let firebaseUser = user {
                     self?.isAuthenticated = true
-                    self?.currentUser = User(
-                        id: firebaseUser.uid,
-                        email: firebaseUser.email,
-                        name: firebaseUser.displayName,
-                        isGuest: false
-                    )
+                    // Load user profile from Firestore
+                    self?.loadUserProfile(userId: firebaseUser.uid) { userProfile in
+                        DispatchQueue.main.async {
+                            self?.currentUser = userProfile ?? User(
+                                id: firebaseUser.uid,
+                                email: firebaseUser.email,
+                                firstName: firebaseUser.displayName,
+                                lastName: nil,
+                                mobileNumber: nil,
+                                dateOfBirth: nil,
+                                isGuest: false
+                            )
+                        }
+                    }
                 } else {
                     self?.isAuthenticated = false
                     self?.currentUser = nil
@@ -53,29 +83,46 @@ class AuthenticationManager: ObservableObject {
             let result = try await Auth.auth().signIn(withEmail: email, password: password)
             DispatchQueue.main.async {
                 self.isAuthenticated = true
-                self.currentUser = User(
-                    id: result.user.uid,
-                    email: result.user.email,
-                    name: result.user.displayName,
-                    isGuest: false
-                )
+                // Load user profile from Firestore
+                self.loadUserProfile(userId: result.user.uid) { userProfile in
+                    DispatchQueue.main.async {
+                        self.currentUser = userProfile ?? User(
+                            id: result.user.uid,
+                            email: result.user.email,
+                            firstName: result.user.displayName,
+                            lastName: nil,
+                            mobileNumber: nil,
+                            dateOfBirth: nil,
+                            isGuest: false
+                        )
+                    }
+                }
             }
         } catch {
             throw error
         }
     }
     
-    func createAccount(email: String, password: String) async throws {
+    func createAccount(email: String, password: String, firstName: String, lastName: String, mobileNumber: String, dateOfBirth: Date) async throws {
         do {
             let result = try await Auth.auth().createUser(withEmail: email, password: password)
+            
+            let newUser = User(
+                id: result.user.uid,
+                email: result.user.email,
+                firstName: firstName,
+                lastName: lastName,
+                mobileNumber: mobileNumber,
+                dateOfBirth: dateOfBirth,
+                isGuest: false
+            )
+            
+            // Save user profile to Firestore
+            try await saveUserProfile(user: newUser)
+            
             DispatchQueue.main.async {
                 self.isAuthenticated = true
-                self.currentUser = User(
-                    id: result.user.uid,
-                    email: result.user.email,
-                    name: result.user.displayName,
-                    isGuest: false
-                )
+                self.currentUser = newUser
             }
         } catch {
             throw error
@@ -107,9 +154,78 @@ class AuthenticationManager: ObservableObject {
             self.currentUser = User(
                 id: UUID().uuidString,
                 email: nil,
-                name: "Guest",
+                firstName: "Guest",
+                lastName: nil,
+                mobileNumber: nil,
+                dateOfBirth: nil,
                 isGuest: true
             )
+        }
+    }
+    
+    // MARK: - Firestore Methods
+    
+    private func saveUserProfile(user: User) async throws {
+        let userData: [String: Any] = [
+            "email": user.email ?? "",
+            "firstName": user.firstName ?? "",
+            "lastName": user.lastName ?? "",
+            "mobileNumber": user.mobileNumber ?? "",
+            "dateOfBirth": user.dateOfBirth ?? Date(),
+            "createdAt": Date(),
+            "updatedAt": Date()
+        ]
+        
+        try await db.collection("users").document(user.id).setData(userData)
+    }
+    
+    private func loadUserProfile(userId: String, completion: @escaping (User?) -> Void) {
+        db.collection("users").document(userId).getDocument { document, error in
+            if let error = error {
+                print("Error loading user profile: \(error)")
+                completion(nil)
+                return
+            }
+            
+            guard let document = document, document.exists,
+                  let data = document.data() else {
+                completion(nil)
+                return
+            }
+            
+            let user = User(
+                id: userId,
+                email: data["email"] as? String,
+                firstName: data["firstName"] as? String,
+                lastName: data["lastName"] as? String,
+                mobileNumber: data["mobileNumber"] as? String,
+                dateOfBirth: (data["dateOfBirth"] as? Timestamp)?.dateValue(),
+                isGuest: false
+            )
+            
+            completion(user)
+        }
+    }
+    
+    func updateUserProfile(firstName: String, lastName: String, mobileNumber: String, dateOfBirth: Date) async throws {
+        guard let currentUser = currentUser, !currentUser.isGuest else {
+            throw NSError(domain: "AuthError", code: 0, userInfo: [NSLocalizedDescriptionKey: "No authenticated user"])
+        }
+        
+        let updatedUser = User(
+            id: currentUser.id,
+            email: currentUser.email,
+            firstName: firstName,
+            lastName: lastName,
+            mobileNumber: mobileNumber,
+            dateOfBirth: dateOfBirth,
+            isGuest: false
+        )
+        
+        try await saveUserProfile(user: updatedUser)
+        
+        DispatchQueue.main.async {
+            self.currentUser = updatedUser
         }
     }
     
