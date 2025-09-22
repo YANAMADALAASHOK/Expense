@@ -3,7 +3,7 @@ import CoreData
 
 struct CreditCardBillsView: View {
     @ObservedObject var viewModel: ExpenseViewModel
-    @State private var bills: [CreditCardBill] = []
+    @State private var creditCards: [CreditCard] = []
     @State private var isLoading = false
     @State private var showingError = false
     @State private var errorMessage = ""
@@ -15,31 +15,31 @@ struct CreditCardBillsView: View {
                 if isLoading {
                     ProgressView("Loading bills...")
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if bills.isEmpty {
+                } else if creditCards.isEmpty {
                     ContentUnavailableView(
-                        "No Credit Card Bills",
+                        "No Credit Cards",
                         systemImage: "creditcard",
                         description: Text("Use 'Fetch Bills' in Settings to download your credit card statements from email.")
                     )
                 } else {
                     List {
-                        ForEach(bills) { bill in
-                            NavigationLink(destination: BillDetailView(bill: bill, viewModel: viewModel)) {
-                                CreditCardBillRow(bill: bill)
+                        ForEach(creditCards) { card in
+                            NavigationLink(destination: CardDetailView(card: card, viewModel: viewModel)) {
+                                CreditCardRow(card: card)
                             }
                         }
-                        .onDelete(perform: deleteBills)
+                        .onDelete(perform: deleteCards)
                     }
                     .refreshable {
-                        loadBills()
+                        loadCreditCards()
                     }
                 }
             }
-            .navigationTitle("Credit Card Bills")
+            .navigationTitle("Credit Cards")
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    if !bills.isEmpty {
+                    if !creditCards.isEmpty {
                         Button("Delete All") {
                             showingDeleteAllAlert = true
                         }
@@ -48,7 +48,7 @@ struct CreditCardBillsView: View {
                 }
             }
             .onAppear {
-                loadBills()
+                loadCreditCards()
             }
             .alert("Error", isPresented: $showingError) {
                 Button("OK", role: .cancel) { }
@@ -66,16 +66,16 @@ struct CreditCardBillsView: View {
         }
     }
     
-    private func loadBills() {
+    private func loadCreditCards() {
         isLoading = true
         
-        // Load credit card accounts from Core Data and extract all bill history
+        // Load credit card accounts from Core Data
         let creditCardAccounts = viewModel.accounts.filter { $0.wrappedAccountType == .creditCard }
         
         print("DEBUG: Total accounts: \(viewModel.accounts.count)")
         print("DEBUG: Credit card accounts found: \(creditCardAccounts.count)")
         
-        var allBills: [CreditCardBill] = []
+        var allCards: [CreditCard] = []
         
         for account in creditCardAccounts {
             print("DEBUG: Account - Name: \(account.wrappedAccountName), Type: \(account.wrappedAccountType), Balance: \(account.balance)")
@@ -90,89 +90,99 @@ struct CreditCardBillsView: View {
             
             // Get credit limit from account or metadata
             let creditLimit = account.creditLimit > 0 ? account.creditLimit : (metadata["creditLimit"].flatMap { Double($0) } ?? 0.0)
+            let currentBalance = abs(account.balance)
+            let availableCredit = creditLimit - currentBalance
             
-            // Check for multiple bill history in metadata
+            // Count bills from history
             let billHistoryKeys = metadata.keys.filter { $0.hasPrefix("statement_") }
+            let totalBills = billHistoryKeys.count > 0 ? billHistoryKeys.count : 1
             
+            // Count unpaid bills (bills with payment due date in future and no payment transactions)
+            var unpaidBills = 0
             if billHistoryKeys.isEmpty {
-                // Fallback to single bill from current metadata
-                let dateFormatter = ISO8601DateFormatter()
-                let statementDate = metadata["lastStatementDate"].flatMap { dateFormatter.date(from: $0) } ?? Date()
-                let dueDate = metadata["lastDueDate"].flatMap { dateFormatter.date(from: $0) } ?? Date()
-                let currentUsage = abs(account.balance)
-                let dueAmount = metadata["lastDueAmount"].flatMap { Double($0) } ?? currentUsage
-                let isProcessed = !account.transactionsArray.isEmpty
-                
-                let bill = CreditCardBill(
-                    bankName: bankName,
-                    cardNumber: cardNumber,
-                    statementDate: statementDate,
-                    dueDate: dueDate,
-                    totalAmount: currentUsage,
-                    dueAmount: dueAmount,
-                    creditLimit: creditLimit,
-                    pdfFileName: metadata["lastPDFFileName"],
-                    isProcessed: isProcessed
-                )
-                allBills.append(bill)
-                print("DEBUG: Added single bill for \(bankName) ****\(cardNumber) - \(statementDate)")
+                // Check if current bill is unpaid
+                let dueDate = metadata["lastDueDate"].flatMap { ISO8601DateFormatter().date(from: $0) } ?? Date()
+                if dueDate > Date() && !hasPaymentTransactions(account: account) {
+                    unpaidBills = 1
+                }
             } else {
-                // Process multiple bills from history
-                print("DEBUG: Found \(billHistoryKeys.count) bill history entries")
-                
+                // Check each bill in history
                 for key in billHistoryKeys {
                     if let statementJsonString = metadata[key],
                        let statementJsonData = statementJsonString.data(using: .utf8),
                        let statementData = try? JSONSerialization.jsonObject(with: statementJsonData) as? [String: String] {
                         
-                        let dateFormatter = ISO8601DateFormatter()
-                        let statementDate = statementData["statementDate"].flatMap { dateFormatter.date(from: $0) } ?? Date()
-                        let dueDate = statementData["dueDate"].flatMap { dateFormatter.date(from: $0) } ?? Date()
+                        let dueDate = statementData["dueDate"].flatMap { ISO8601DateFormatter().date(from: $0) } ?? Date()
+                        let statementDate = statementData["statementDate"].flatMap { ISO8601DateFormatter().date(from: $0) } ?? Date()
                         let dueAmount = statementData["dueAmount"].flatMap { Double($0) } ?? 0.0
-                        let currentUsage = statementData["currentUsage"].flatMap { Double($0) } ?? dueAmount
-                        let statementCreditLimit = statementData["creditLimit"].flatMap { Double($0) } ?? creditLimit
-                        let pdfFileName = statementData["pdfFileName"]
-                        let isProcessed = true // If it's in history, it's processed
                         
-                        let bill = CreditCardBill(
-                            bankName: bankName,
-                            cardNumber: cardNumber,
-                            statementDate: statementDate,
-                            dueDate: dueDate,
-                            totalAmount: currentUsage,
-                            dueAmount: dueAmount,
-                            creditLimit: statementCreditLimit,
-                            pdfFileName: pdfFileName,
-                            isProcessed: isProcessed
-                        )
-                        allBills.append(bill)
-                        print("DEBUG: Added bill from history: \(key) - Due: ₹\(dueAmount)")
-                    } else {
-                        print("DEBUG: Failed to parse bill history: \(key)")
+                        if !hasBillPayment(account: account, statementDate: statementDate, dueAmount: dueAmount) {
+                            unpaidBills += 1
+                        }
                     }
                 }
             }
+            
+            let card = CreditCard(
+                bankName: bankName,
+                cardNumber: cardNumber,
+                creditLimit: creditLimit,
+                currentBalance: currentBalance,
+                availableCredit: availableCredit,
+                totalBills: totalBills,
+                unpaidBills: unpaidBills,
+                account: account
+            )
+            allCards.append(card)
+            print("DEBUG: Added card: \(bankName) ****\(cardNumber) - \(totalBills) bills, \(unpaidBills) unpaid")
         }
         
-        // Only show actual processed bills - no mock data
-        print("DEBUG: Showing only actual processed bills from Core Data accounts")
+        creditCards = allCards
         
-        bills = allBills
-        
-        // Sort bills by statement date (newest first)
-        bills.sort { $0.statementDate > $1.statementDate }
-        
-        print("DEBUG: Total bills loaded: \(bills.count)")
+        print("DEBUG: Total credit cards loaded: \(creditCards.count)")
         
         isLoading = false
     }
     
-    private func deleteBills(at offsets: IndexSet) {
-        for index in offsets {
-            let bill = bills[index]
-            deleteBill(bill)
+    private func hasPaymentTransactions(account: CDAccount) -> Bool {
+        return account.transactionsArray.contains { transaction in
+            transaction.wrappedCategory.contains("Payment") && transaction.isCredit
         }
-        loadBills() // Refresh the list
+    }
+    
+    private func hasBillPayment(account: CDAccount, statementDate: Date, dueAmount: Double) -> Bool {
+        // Check if there are payment transactions for this specific bill
+        // Look for payments after statement date (no end date limit for now)
+        
+        let paymentTransactions = account.transactionsArray.filter { transaction in
+            transaction.wrappedCategory.contains("Payment") && 
+            transaction.isCredit && 
+            transaction.wrappedDate >= statementDate
+        }
+        
+        print("DEBUG: Checking payment for statement date: \(statementDate), due amount: ₹\(dueAmount)")
+        print("DEBUG: Found \(paymentTransactions.count) payment transactions after statement date")
+        
+        for transaction in paymentTransactions {
+            print("DEBUG: Payment transaction - Date: \(transaction.wrappedDate), Amount: ₹\(transaction.amount), Category: \(transaction.wrappedCategory)")
+            
+            // Check if amount matches (allow ₹1 variance)
+            if abs(transaction.amount - dueAmount) < 1.0 {
+                print("DEBUG: Found matching payment! Amount difference: ₹\(abs(transaction.amount - dueAmount))")
+                return true
+            }
+        }
+        
+        print("DEBUG: No matching payment found for due amount ₹\(dueAmount)")
+        return false
+    }
+    
+    private func deleteCards(at offsets: IndexSet) {
+        for index in offsets {
+            let card = creditCards[index]
+            deleteCreditCardAccount(card.account)
+        }
+        loadCreditCards() // Refresh the list
     }
     
     private func deleteAllBills() {
@@ -182,7 +192,7 @@ struct CreditCardBillsView: View {
             deleteCreditCardAccount(account)
         }
         
-        loadBills() // Refresh the list
+        loadCreditCards() // Refresh the list
     }
     
     private func deleteBill(_ bill: CreditCardBill) {
@@ -219,6 +229,18 @@ struct CreditCardBillsView: View {
     }
 }
 
+struct CreditCard: Identifiable {
+    let id = UUID()
+    let bankName: String
+    let cardNumber: String
+    let creditLimit: Double
+    let currentBalance: Double
+    let availableCredit: Double
+    let totalBills: Int
+    let unpaidBills: Int
+    let account: CDAccount
+}
+
 struct CreditCardBill: Identifiable {
     let id = UUID()
     let bankName: String
@@ -230,6 +252,294 @@ struct CreditCardBill: Identifiable {
     let creditLimit: Double // Credit limit
     let pdfFileName: String?
     let isProcessed: Bool
+    let isPaid: Bool // New field to track payment status
+}
+
+struct CreditCardRow: View {
+    let card: CreditCard
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(card.bankName)
+                        .font(.headline)
+                        .foregroundColor(.primary)
+                    
+                    Text("****\(card.cardNumber)")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                }
+                
+                Spacer()
+                
+                VStack(alignment: .trailing, spacing: 4) {
+                    Text("₹\(card.currentBalance, specifier: "%.0f")")
+                        .font(.title3)
+                        .fontWeight(.semibold)
+                        .foregroundColor(.primary)
+                    
+                    if card.unpaidBills > 0 {
+                        Text("\(card.unpaidBills) unpaid")
+                            .font(.caption)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 2)
+                            .background(Color.red.opacity(0.2))
+                            .foregroundColor(.red)
+                            .cornerRadius(4)
+                    } else {
+                        Text("All paid")
+                            .font(.caption)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 2)
+                            .background(Color.green.opacity(0.2))
+                            .foregroundColor(.green)
+                            .cornerRadius(4)
+                    }
+                }
+            }
+            
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Available Credit")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Text("₹\(card.availableCredit, specifier: "%.0f")")
+                        .font(.subheadline)
+                        .foregroundColor(.green)
+                }
+                
+                Spacer()
+                
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text("Total Bills")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Text("\(card.totalBills)")
+                        .font(.subheadline)
+                }
+            }
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+struct CardDetailView: View {
+    let card: CreditCard
+    @ObservedObject var viewModel: ExpenseViewModel
+    @State private var bills: [CreditCardBill] = []
+    @State private var isLoading = false
+    
+    var openBills: [CreditCardBill] {
+        bills.filter { !$0.isPaid }
+    }
+    
+    var paidBills: [CreditCardBill] {
+        bills.filter { $0.isPaid }
+    }
+    
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                // Card Summary
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        Image(systemName: "creditcard.fill")
+                            .foregroundColor(.blue)
+                            .font(.title2)
+                        
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(card.bankName)
+                                .font(.headline)
+                            Text("****\(card.cardNumber)")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                        }
+                        
+                        Spacer()
+                        
+                        VStack(alignment: .trailing, spacing: 4) {
+                            Text("₹\(card.currentBalance, specifier: "%.2f")")
+                                .font(.title2)
+                                .fontWeight(.semibold)
+                            
+                            Text("Current Balance")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    
+                    Divider()
+                    
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Credit Limit")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            Text("₹\(card.creditLimit, specifier: "%.2f")")
+                                .font(.subheadline)
+                        }
+                        
+                        Spacer()
+                        
+                        VStack(alignment: .trailing, spacing: 4) {
+                            Text("Available Credit")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            Text("₹\(card.availableCredit, specifier: "%.2f")")
+                                .font(.subheadline)
+                                .foregroundColor(.green)
+                        }
+                    }
+                }
+                .padding()
+                .background(Color(.systemGray6))
+                .cornerRadius(12)
+                
+                // Open Bills Section
+                if !openBills.isEmpty {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack {
+                            Text("Open Bills")
+                                .font(.headline)
+                                .foregroundColor(.red)
+                            
+                            Spacer()
+                            
+                            Text("\(openBills.count) bills")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        
+                        ForEach(openBills) { bill in
+                            NavigationLink(destination: BillDetailView(bill: bill, viewModel: viewModel)) {
+                                CreditCardBillRow(bill: bill)
+                            }
+                            .buttonStyle(PlainButtonStyle())
+                        }
+                    }
+                    .padding()
+                    .background(Color(.systemGray6))
+                    .cornerRadius(12)
+                }
+                
+                // Paid Bills Section
+                if !paidBills.isEmpty {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack {
+                            Text("Paid Bills")
+                                .font(.headline)
+                                .foregroundColor(.green)
+                            
+                            Spacer()
+                            
+                            Text("\(paidBills.count) bills")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        
+                        ForEach(paidBills) { bill in
+                            NavigationLink(destination: BillDetailView(bill: bill, viewModel: viewModel)) {
+                                CreditCardBillRow(bill: bill)
+                            }
+                            .buttonStyle(PlainButtonStyle())
+                        }
+                    }
+                    .padding()
+                    .background(Color(.systemGray6))
+                    .cornerRadius(12)
+                }
+                
+                if bills.isEmpty && !isLoading {
+                    Text("No bills found for this card")
+                        .foregroundColor(.secondary)
+                        .italic()
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding()
+                }
+            }
+            .padding()
+        }
+        .navigationTitle("\(card.bankName)")
+        .navigationBarTitleDisplayMode(.inline)
+        .onAppear {
+            loadBillsForCard()
+        }
+    }
+    
+    private func loadBillsForCard() {
+        isLoading = true
+        
+        let metadata = card.account.metadataDictionary
+        var allBills: [CreditCardBill] = []
+        
+        // Load bills from history
+        let billHistoryKeys = metadata.keys.filter { $0.hasPrefix("statement_") }
+        
+        for key in billHistoryKeys {
+            if let statementJsonString = metadata[key],
+               let statementJsonData = statementJsonString.data(using: .utf8),
+               let statementData = try? JSONSerialization.jsonObject(with: statementJsonData) as? [String: String] {
+                
+                let dateFormatter = ISO8601DateFormatter()
+                let statementDate = statementData["statementDate"].flatMap { dateFormatter.date(from: $0) } ?? Date()
+                let dueDate = statementData["dueDate"].flatMap { dateFormatter.date(from: $0) } ?? Date()
+                let dueAmount = statementData["dueAmount"].flatMap { Double($0) } ?? 0.0
+                let currentUsage = statementData["currentUsage"].flatMap { Double($0) } ?? dueAmount
+                let statementCreditLimit = statementData["creditLimit"].flatMap { Double($0) } ?? card.creditLimit
+                let pdfFileName = statementData["pdfFileName"]
+                
+                // Check if bill is paid
+                let isPaid = hasBillPayment(account: card.account, statementDate: statementDate, dueAmount: dueAmount)
+                
+                let bill = CreditCardBill(
+                    bankName: card.bankName,
+                    cardNumber: card.cardNumber,
+                    statementDate: statementDate,
+                    dueDate: dueDate,
+                    totalAmount: currentUsage,
+                    dueAmount: dueAmount,
+                    creditLimit: statementCreditLimit,
+                    pdfFileName: pdfFileName,
+                    isProcessed: true,
+                    isPaid: isPaid
+                )
+                allBills.append(bill)
+            }
+        }
+        
+        // Sort bills by statement date (newest first)
+        bills = allBills.sorted { $0.statementDate > $1.statementDate }
+        
+        isLoading = false
+    }
+    
+    private func hasBillPayment(account: CDAccount, statementDate: Date, dueAmount: Double) -> Bool {
+        // Check if there are payment transactions for this specific bill
+        // Look for payments after statement date (no end date limit for now)
+        
+        let paymentTransactions = account.transactionsArray.filter { transaction in
+            transaction.wrappedCategory.contains("Payment") && 
+            transaction.isCredit && 
+            transaction.wrappedDate >= statementDate
+        }
+        
+        print("DEBUG: CardDetail - Checking payment for statement date: \(statementDate), due amount: ₹\(dueAmount)")
+        print("DEBUG: CardDetail - Found \(paymentTransactions.count) payment transactions after statement date")
+        
+        for transaction in paymentTransactions {
+            print("DEBUG: CardDetail - Payment transaction - Date: \(transaction.wrappedDate), Amount: ₹\(transaction.amount), Category: \(transaction.wrappedCategory)")
+            
+            // Check if amount matches (allow ₹1 variance)
+            if abs(transaction.amount - dueAmount) < 1.0 {
+                print("DEBUG: CardDetail - Found matching payment! Amount difference: ₹\(abs(transaction.amount - dueAmount))")
+                return true
+            }
+        }
+        
+        print("DEBUG: CardDetail - No matching payment found for due amount ₹\(dueAmount)")
+        return false
+    }
 }
 
 struct CreditCardBillRow: View {
@@ -239,54 +549,31 @@ struct CreditCardBillRow: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(bill.bankName)
-                        .font(.headline)
-                        .foregroundColor(.primary)
-                    
-                    Text("****\(bill.cardNumber)")
-                        .font(.subheadline)
+                    Text("Statement")
+                        .font(.caption)
                         .foregroundColor(.secondary)
+                    Text(bill.statementDate.formatted(date: .abbreviated, time: .omitted))
+                        .font(.subheadline)
                 }
                 
                 Spacer()
                 
                 VStack(alignment: .trailing, spacing: 4) {
-                    VStack(alignment: .trailing, spacing: 2) {
-                        Text("Due: ₹\(bill.dueAmount, specifier: "%.2f")")
-                            .font(.headline)
-                            .foregroundColor(.red)
-                        
-                        Text("Used: ₹\(bill.totalAmount, specifier: "%.2f")")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
+                    Text("₹\(bill.dueAmount, specifier: "%.2f")")
+                        .font(.headline)
+                        .foregroundColor(bill.isPaid ? .green : .red)
                     
-                    Text(bill.isProcessed ? "Processed" : "Pending")
+                    Text(bill.isPaid ? "Paid" : "Due: \(bill.dueDate.formatted(date: .abbreviated, time: .omitted))")
                         .font(.caption)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 2)
-                        .background(bill.isProcessed ? Color.green.opacity(0.2) : Color.orange.opacity(0.2))
-                        .foregroundColor(bill.isProcessed ? .green : .orange)
-                        .cornerRadius(4)
+                        .foregroundColor(.secondary)
                 }
-            }
-            
-            HStack {
-                Label("Statement: \(bill.statementDate.formatted(date: .abbreviated, time: .omitted))", systemImage: "calendar")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                
-                Spacer()
-                
-                Label("Due: \(bill.dueDate.formatted(date: .abbreviated, time: .omitted))", systemImage: "clock")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
             }
             
             if let pdfFileName = bill.pdfFileName {
                 HStack {
                     Image(systemName: "doc.fill")
                         .foregroundColor(.blue)
+                        .font(.caption)
                     Text(pdfFileName)
                         .font(.caption)
                         .foregroundColor(.blue)
@@ -301,6 +588,11 @@ struct BillDetailView: View {
     let bill: CreditCardBill
     @ObservedObject var viewModel: ExpenseViewModel
     @State private var transactions: [CDTransaction] = []
+    @State private var showingPaymentSheet = false
+    @State private var selectedPaymentAccount: CDAccount?
+    @State private var paymentAmount: String = ""
+    @State private var showingPaymentSuccess = false
+    @State private var paymentError: String?
     
     var body: some View {
         ScrollView {
@@ -400,6 +692,26 @@ struct BillDetailView: View {
                                 .foregroundColor(.blue)
                         }
                     }
+                    
+                    Divider()
+                    
+                    // Pay Bill Button
+                    Button(action: {
+                        paymentAmount = String(format: "%.2f", bill.dueAmount)
+                        showingPaymentSheet = true
+                    }) {
+                        HStack {
+                            Image(systemName: "creditcard")
+                                .font(.title3)
+                            Text("Pay Bill - ₹\(bill.dueAmount, specifier: "%.2f")")
+                                .font(.headline)
+                        }
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                        .background(Color.blue)
+                        .cornerRadius(10)
+                    }
                 }
                 .padding()
                 .background(Color(.systemGray6))
@@ -438,6 +750,33 @@ struct BillDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
             loadTransactions()
+        }
+        .sheet(isPresented: $showingPaymentSheet) {
+            PaymentSheet(
+                bill: bill,
+                viewModel: viewModel,
+                paymentAmount: $paymentAmount,
+                selectedAccount: $selectedPaymentAccount,
+                onPaymentComplete: { success, error in
+                    showingPaymentSheet = false
+                    if success {
+                        showingPaymentSuccess = true
+                        loadTransactions() // Refresh transactions
+                    } else {
+                        paymentError = error
+                    }
+                }
+            )
+        }
+        .alert("Payment Successful", isPresented: $showingPaymentSuccess) {
+            Button("OK") { }
+        } message: {
+            Text("Your bill payment of ₹\(paymentAmount) has been processed successfully.")
+        }
+        .alert("Payment Error", isPresented: .constant(paymentError != nil)) {
+            Button("OK") { paymentError = nil }
+        } message: {
+            Text(paymentError ?? "")
         }
     }
     
@@ -479,6 +818,234 @@ struct BillTransactionRowView: View {
             }
         }
         .padding(.vertical, 4)
+    }
+}
+
+struct PaymentSheet: View {
+    let bill: CreditCardBill
+    @ObservedObject var viewModel: ExpenseViewModel
+    @Binding var paymentAmount: String
+    @Binding var selectedAccount: CDAccount?
+    let onPaymentComplete: (Bool, String?) -> Void
+    
+    @Environment(\.dismiss) private var dismiss
+    @State private var isProcessing = false
+    
+    var availableAccounts: [CDAccount] {
+        viewModel.accounts.filter { account in
+            account.wrappedAccountType != .creditCard && account.balance >= (Double(paymentAmount) ?? 0)
+        }
+    }
+    
+    var body: some View {
+        NavigationView {
+            VStack(spacing: 20) {
+                // Header
+                VStack(spacing: 8) {
+                    Text("Pay Credit Card Bill")
+                        .font(.title2)
+                        .fontWeight(.semibold)
+                    
+                    Text("\(bill.bankName) ****\(bill.cardNumber)")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                }
+                .padding(.top)
+                
+                // Payment Amount
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Payment Amount")
+                        .font(.headline)
+                    
+                    HStack {
+                        Text("₹")
+                            .font(.title2)
+                            .foregroundColor(.secondary)
+                        
+                        TextField("0.00", text: $paymentAmount)
+                            .font(.title2)
+                            .keyboardType(.decimalPad)
+                            .textFieldStyle(RoundedBorderTextFieldStyle())
+                    }
+                    
+                    HStack {
+                        Button("Full Amount") {
+                            paymentAmount = String(format: "%.2f", bill.dueAmount)
+                        }
+                        .buttonStyle(.bordered)
+                        
+                        Button("Minimum") {
+                            paymentAmount = String(format: "%.2f", bill.dueAmount * 0.05) // 5% minimum
+                        }
+                        .buttonStyle(.bordered)
+                        
+                        Spacer()
+                    }
+                }
+                
+                // Account Selection
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Pay From Account")
+                        .font(.headline)
+                    
+                    if availableAccounts.isEmpty {
+                        Text("No accounts with sufficient balance")
+                            .foregroundColor(.red)
+                            .italic()
+                    } else {
+                        Picker("Select Account", selection: $selectedAccount) {
+                            Text("Select Account").tag(nil as CDAccount?)
+                            ForEach(availableAccounts, id: \.id) { account in
+                                HStack {
+                                    Text(account.wrappedAccountName)
+                                    Spacer()
+                                    Text("₹\(account.balance, specifier: "%.2f")")
+                                        .foregroundColor(.secondary)
+                                }
+                                .tag(account as CDAccount?)
+                            }
+                        }
+                        .pickerStyle(MenuPickerStyle())
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding()
+                        .background(Color(.systemGray6))
+                        .cornerRadius(8)
+                    }
+                }
+                
+                Spacer()
+                
+                // Pay Button
+                Button(action: processPayment) {
+                    HStack {
+                        if isProcessing {
+                            ProgressView()
+                                .scaleEffect(0.8)
+                        } else {
+                            Image(systemName: "creditcard")
+                        }
+                        Text(isProcessing ? "Processing..." : "Pay ₹\(paymentAmount)")
+                            .fontWeight(.semibold)
+                    }
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding()
+                    .background(canPay ? Color.blue : Color.gray)
+                    .cornerRadius(10)
+                }
+                .disabled(!canPay || isProcessing)
+            }
+            .padding()
+            .navigationTitle("Payment")
+            .navigationBarTitleDisplayMode(.inline)
+            .navigationBarBackButtonHidden(isProcessing)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("Cancel") {
+                        dismiss()
+                    }
+                    .disabled(isProcessing)
+                }
+            }
+        }
+    }
+    
+    private var canPay: Bool {
+        guard let amount = Double(paymentAmount),
+              amount > 0,
+              let account = selectedAccount,
+              account.balance >= amount else {
+            return false
+        }
+        return true
+    }
+    
+    private func processPayment() {
+        guard let amount = Double(paymentAmount),
+              let paymentAccount = selectedAccount else {
+            onPaymentComplete(false, "Invalid payment details")
+            return
+        }
+        
+        isProcessing = true
+        
+        // Create double-entry transactions
+        let success = createPaymentTransactions(
+            amount: amount,
+            fromAccount: paymentAccount,
+            bill: bill
+        )
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+            isProcessing = false
+            if success {
+                onPaymentComplete(true, nil)
+            } else {
+                onPaymentComplete(false, "Failed to process payment")
+            }
+        }
+    }
+    
+    private func createPaymentTransactions(amount: Double, fromAccount: CDAccount, bill: CreditCardBill) -> Bool {
+        let context = viewModel.viewContext
+        
+        do {
+            // Find the credit card account
+            let creditCardAccountName = "\(bill.bankName) ****\(bill.cardNumber)"
+            guard let creditCardAccount = viewModel.accounts.first(where: { 
+                $0.wrappedAccountName == creditCardAccountName && $0.wrappedAccountType == .creditCard 
+            }) else {
+                print("DEBUG: Credit card account not found: \(creditCardAccountName)")
+                return false
+            }
+            
+            // Transaction 1: Debit from payment account
+            let debitTransaction = CDTransaction(context: context)
+            debitTransaction.id = UUID()
+            debitTransaction.amount = amount
+            debitTransaction.category = "Credit Card Payment"
+            debitTransaction.date = Date()
+            debitTransaction.isCredit = false // Debit from account
+            debitTransaction.notes = "Payment to \(bill.bankName) ****\(bill.cardNumber)"
+            debitTransaction.account = fromAccount
+            
+            // Transaction 2: Credit to credit card account (reduces debt)
+            let creditTransaction = CDTransaction(context: context)
+            creditTransaction.id = UUID()
+            creditTransaction.amount = amount
+            creditTransaction.category = "Payment Received"
+            creditTransaction.date = Date()
+            creditTransaction.isCredit = true // Credit to credit card (reduces balance)
+            creditTransaction.notes = "Payment from \(fromAccount.wrappedAccountName)"
+            creditTransaction.account = creditCardAccount
+            
+            // Update account balances
+            fromAccount.balance -= amount // Reduce balance in payment account
+            creditCardAccount.balance += amount // Reduce debt in credit card (balance becomes less negative)
+            
+            // Add transactions to accounts
+            fromAccount.addToTransactions(debitTransaction)
+            creditCardAccount.addToTransactions(creditTransaction)
+            
+            // Save context
+            try context.save()
+            
+            print("DEBUG: Payment processed successfully")
+            print("DEBUG: - Amount: ₹\(amount)")
+            print("DEBUG: - From: \(fromAccount.wrappedAccountName) (New balance: ₹\(fromAccount.balance))")
+            print("DEBUG: - To: \(creditCardAccount.wrappedAccountName) (New balance: ₹\(creditCardAccount.balance))")
+            
+            // Refresh accounts in view model
+            DispatchQueue.main.async {
+                viewModel.fetchAccounts()
+            }
+            
+            return true
+            
+        } catch {
+            print("DEBUG: Failed to process payment: \(error)")
+            return false
+        }
     }
 }
 

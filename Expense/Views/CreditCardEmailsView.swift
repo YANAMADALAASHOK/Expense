@@ -485,7 +485,7 @@ struct CreditCardEmailsView: View {
             var statementData: [String: String] = [:]
             statementData["statementDate"] = dateFormatter.string(from: billInfo.statementDate)
             statementData["dueDate"] = dateFormatter.string(from: billInfo.dueDate)
-            statementData["dueAmount"] = String(billInfo.totalAmount)
+            statementData["dueAmount"] = String(billInfo.dueAmount)
             statementData["currentUsage"] = String(billInfo.totalAmount) // Current usage at time of statement
             statementData["creditLimit"] = String(billInfo.creditLimit ?? 0)
             statementData["pdfFileName"] = pdfFileName
@@ -506,7 +506,7 @@ struct CreditCardEmailsView: View {
             if shouldUpdateAccountBalance {
                 metadata["lastStatementDate"] = dateFormatter.string(from: billInfo.statementDate)
                 metadata["lastDueDate"] = dateFormatter.string(from: billInfo.dueDate)
-                metadata["lastDueAmount"] = String(billInfo.totalAmount)
+                metadata["lastDueAmount"] = String(billInfo.dueAmount)
                 metadata["creditLimit"] = String(billInfo.creditLimit ?? 0)
                 
                 // Update account balance and credit limit
@@ -555,7 +555,7 @@ struct CreditCardEmailsView: View {
             var statementData: [String: String] = [:]
             statementData["statementDate"] = dateFormatter.string(from: billInfo.statementDate)
             statementData["dueDate"] = dateFormatter.string(from: billInfo.dueDate)
-            statementData["dueAmount"] = String(billInfo.totalAmount)
+            statementData["dueAmount"] = String(billInfo.dueAmount)
             statementData["currentUsage"] = String(billInfo.totalAmount) // Current usage at time of statement
             statementData["creditLimit"] = String(billInfo.creditLimit ?? 0)
             statementData["pdfFileName"] = pdfFileName

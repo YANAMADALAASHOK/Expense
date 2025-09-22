@@ -16,7 +16,8 @@ struct CreditCardBillInfo {
     let cardNumber: String
     let statementDate: Date
     let dueDate: Date
-    let totalAmount: Double
+    let totalAmount: Double // Current usage/balance
+    let dueAmount: Double // Amount due to be paid
     let creditLimit: Double?
     let transactions: [CreditCardTransaction]
 }
@@ -226,7 +227,8 @@ class PDFTransactionParser {
             cardNumber: "6988",
             statementDate: Calendar.current.date(byAdding: .day, value: -15, to: Date()) ?? Date(),
             dueDate: Calendar.current.date(byAdding: .day, value: 10, to: Date()) ?? Date(),
-            totalAmount: 5750.00,
+            totalAmount: 5750.00, // Current usage
+            dueAmount: 4200.00, // Amount due to be paid (different from usage)
             creditLimit: 100000.00,
             transactions: sampleTransactions
         )
@@ -445,15 +447,15 @@ class PDFTransactionParser {
         let statementDate = extractStatementDate(from: text) ?? Date()
         let dueDate = extractDueDate(from: text) ?? Date()
         
-        // Extract total amount
-        let totalAmount = extractTotalAmount(from: text) ?? 0.0
+        // Extract due amount (what needs to be paid)
+        let dueAmount = extractTotalAmount(from: text) ?? 0.0
         
         // Extract credit limit and available credit limit
         let creditLimit = extractCreditLimit(from: text)
         let availableCreditLimit = extractAvailableCreditLimit(from: text)
         
         // Calculate current usage: Credit Limit - Available Credit Limit
-        var currentUsage = totalAmount // Default to total amount
+        var currentUsage = dueAmount // Default to due amount if calculation fails
         if let limit = creditLimit, let available = availableCreditLimit {
             currentUsage = limit - available
             print("DEBUG: Calculated current usage: ₹\(limit) - ₹\(available) = ₹\(currentUsage)")
@@ -468,7 +470,7 @@ class PDFTransactionParser {
         print("DEBUG: Credit Limit: ₹\(creditLimit ?? 0)")
         print("DEBUG: Available Limit: ₹\(availableCreditLimit ?? 0)")
         print("DEBUG: Current Usage: ₹\(currentUsage)")
-        print("DEBUG: Total Amount: ₹\(totalAmount)")
+        print("DEBUG: Due Amount: ₹\(dueAmount)")
         print("DEBUG: Transactions: \(transactions.count)")
         
         return CreditCardBillInfo(
@@ -476,7 +478,8 @@ class PDFTransactionParser {
             cardNumber: cardNumber,
             statementDate: statementDate,
             dueDate: dueDate,
-            totalAmount: currentUsage, // Use current usage instead of total amount
+            totalAmount: currentUsage, // Current usage/balance
+            dueAmount: dueAmount, // Amount due to be paid
             creditLimit: creditLimit,
             transactions: transactions
         )
@@ -639,10 +642,17 @@ class PDFTransactionParser {
     }
     
     private func extractTotalAmount(from text: String) -> Double? {
+        // Axis Bank specific patterns - look for the payment due amount
         let patterns = [
+            // Pattern for "21,473.43 Dr" format from Axis Bank statements
+            "Total Payment Due[\\s\\S]*?([\\d,]+\\.\\d{2})\\s+Dr",
+            "Payment Due[\\s\\S]*?([\\d,]+\\.\\d{2})\\s+Dr",
+            // Generic patterns
             "Total Amount Due[:\\s]+(?:Rs\\.?|₹)\\s*([\\d,]+\\.\\d{2})",
             "Amount Due[:\\s]+(?:Rs\\.?|₹)\\s*([\\d,]+\\.\\d{2})",
-            "Outstanding[:\\s]+(?:Rs\\.?|₹)\\s*([\\d,]+\\.\\d{2})"
+            "Outstanding[:\\s]+(?:Rs\\.?|₹)\\s*([\\d,]+\\.\\d{2})",
+            // Direct pattern for the specific format in your PDF
+            "([\\d,]+\\.\\d{2})\\s+Dr\\s+([\\d,]+\\.\\d{2})\\s+Dr"
         ]
         
         for pattern in patterns {
@@ -650,10 +660,13 @@ class PDFTransactionParser {
                let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) {
                 let amountString = String(text[Range(match.range(at: 1), in: text)!])
                     .replacingOccurrences(of: ",", with: "")
-                return Double(amountString)
+                let amount = Double(amountString)
+                print("DEBUG: Extracted due amount using pattern '\(pattern)': \(amountString) -> \(amount ?? 0)")
+                return amount
             }
         }
         
+        print("DEBUG: No due amount found with any pattern")
         return nil
     }
     
