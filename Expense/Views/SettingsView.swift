@@ -96,6 +96,18 @@ struct ManageCategoriesView: View {
     }
 }
 
+enum CreditCardBank: String, CaseIterable {
+    case axis = "cc.statements@axisbank.com"
+    case icici = "credit_cards@icicibank.com"
+    
+    var displayName: String {
+        switch self {
+        case .axis: return "Axis Bank"
+        case .icici: return "ICICI Bank"
+        }
+    }
+}
+
 struct SettingsView: View {
     @EnvironmentObject var authManager: AuthenticationManager
     @EnvironmentObject var expenseViewModel: ExpenseViewModel
@@ -118,6 +130,9 @@ struct SettingsView: View {
     @State private var errorMessage = ""
     @State private var showingDeleteConfirmation = false
     @State private var isDeletingData = false
+    @State private var selectedBank: CreditCardBank = .axis
+    @State private var lastFullCheck: Date?
+    @State private var isIncrementalCheck = false
     @State private var showGmailTokenSheet = false
     @State private var gmailTokenInput = ""
     @State private var gmailClientId: String = GmailOAuthManager.shared.clientId ?? ""
@@ -723,7 +738,85 @@ struct SettingsView: View {
     
     private func loadCreditCardBills() {
         Task {
-            await loadCreditCardBills()
+            await loadCreditCardBillsIncremental()
+        }
+    }
+    
+    @MainActor
+    private func loadCreditCardBillsIncremental() async {
+        isLoadingBills = true
+        isIncrementalCheck = true
+        billLoadingProgress = "🔍 Checking for new statements..."
+        
+        defer {
+            isLoadingBills = false
+            isIncrementalCheck = false
+            billLoadingProgress = ""
+        }
+        
+        do {
+            print("DEBUG: 🚀 Starting incremental credit card bill check")
+            
+            // Check if it's time for a full check (every 15 days)
+            let shouldDoFullCheck = shouldPerformFullCheck()
+            
+            if shouldDoFullCheck {
+                print("DEBUG: 📅 Performing full check (15+ days since last full check)")
+                billLoadingProgress = "📅 Full check - scanning for new cards..."
+                await performFullCreditCardCheck()
+                lastFullCheck = Date()
+                UserDefaults.standard.set(lastFullCheck, forKey: "lastFullCreditCardCheck")
+                return
+            }
+            
+            // Get existing credit card accounts and their latest statement dates
+            let creditCardAccounts = expenseViewModel.accounts.filter { 
+                $0.accountType == AccountType.creditCard.rawValue 
+            }
+            
+            if creditCardAccounts.isEmpty {
+                print("DEBUG: 📭 No credit card accounts found, performing full check")
+                billLoadingProgress = "📭 No cards found - full scan..."
+                await performFullCreditCardCheck()
+                return
+            }
+            
+            var totalNewStatements = 0
+            
+            // Check each existing card for new statements
+            for account in creditCardAccounts {
+                let latestStatementDate = getLatestStatementDate(for: account)
+                let bankEmail = getBankEmailFromAccount(account)
+                let bankName = getBankNameFromAccount(account)
+                
+                print("DEBUG: 🏦 Checking \(account.wrappedAccountName) - Latest: \(latestStatementDate)")
+                billLoadingProgress = "📧 Checking \(bankName) for new statements..."
+                
+                let newStatementsCount = await checkForNewStatements(
+                    account: account,
+                    bankEmail: bankEmail,
+                    bankName: bankName,
+                    since: latestStatementDate
+                )
+                
+                totalNewStatements += newStatementsCount
+            }
+            
+            if totalNewStatements > 0 {
+                billLoadingProgress = "✅ Found \(totalNewStatements) new statements"
+                print("DEBUG: ✅ Incremental check complete - \(totalNewStatements) new statements processed")
+            } else {
+                billLoadingProgress = "✅ All statements up to date"
+                print("DEBUG: ✅ Incremental check complete - no new statements")
+            }
+            
+            // Show result for 2 seconds
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            
+        } catch {
+            print("DEBUG: ❌ Error in incremental check: \(error)")
+            billLoadingProgress = "❌ Error checking statements"
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
         }
     }
     
@@ -920,7 +1013,169 @@ struct SettingsView: View {
         }
     }
     
+    // MARK: - Incremental Credit Card Processing Helper Methods
     
+    private func shouldPerformFullCheck() -> Bool {
+        guard let lastCheck = UserDefaults.standard.object(forKey: "lastFullCreditCardCheck") as? Date else {
+            return true // Never done a full check
+        }
+        
+        let daysSinceLastCheck = Calendar.current.dateComponents([.day], from: lastCheck, to: Date()).day ?? 0
+        return daysSinceLastCheck >= 15
+    }
+    
+    private func getLatestStatementDate(for account: CDAccount) -> Date {
+        let metadata = account.metadataDictionary
+        
+        // Look for the latest statement date in metadata
+        if let latestDateString = metadata["latestStatementDate"],
+           let latestDate = ISO8601DateFormatter().date(from: latestDateString) {
+            return latestDate
+        }
+        
+        // Fallback: look through all statement dates and find the latest
+        var latestDate = Calendar.current.date(byAdding: .month, value: -6, to: Date()) ?? Date()
+        
+        for (key, value) in metadata {
+            if key.contains("statementDate") || key.contains("Statement") {
+                if let dateString = value as? String,
+                   let date = ISO8601DateFormatter().date(from: dateString) {
+                    if date > latestDate {
+                        latestDate = date
+                    }
+                }
+            }
+        }
+        
+        return latestDate
+    }
+    
+    private func getBankEmailFromAccount(_ account: CDAccount) -> String {
+        let accountName = account.wrappedAccountName.lowercased()
+        
+        if accountName.contains("axis") {
+            return "cc.statements@axisbank.com"
+        } else if accountName.contains("icici") {
+            return "credit_cards@icicibank.com"
+        }
+        
+        // Default to Axis Bank
+        return "cc.statements@axisbank.com"
+    }
+    
+    private func getBankNameFromAccount(_ account: CDAccount) -> String {
+        let accountName = account.wrappedAccountName.lowercased()
+        
+        if accountName.contains("axis") {
+            return "Axis Bank"
+        } else if accountName.contains("icici") {
+            return "ICICI Bank"
+        }
+        
+        return "Unknown Bank"
+    }
+    
+    private func checkForNewStatements(account: CDAccount, bankEmail: String, bankName: String, since: Date) async -> Int {
+        var newStatementsCount = 0
+        
+        let providers: [EmailServiceManager.EmailProvider] = [.outlook, .gmail]
+        
+        for provider in providers {
+            let providerName = provider == .outlook ? "Outlook" : "Gmail"
+            print("DEBUG: 🔍 Checking \(bankName) via \(providerName) since \(since)")
+            
+            // Temporarily switch to this provider
+            let originalProvider = EmailServiceManager.shared.preferredProvider
+            EmailServiceManager.shared.preferredProvider = provider
+            
+            defer {
+                EmailServiceManager.shared.preferredProvider = originalProvider
+            }
+            
+            let emailService = EmailServiceManager.shared.getEmailService()
+            
+            // Fetch emails with timeout
+            guard let emails = await withTimeout(seconds: 60, operation: {
+                try await emailService.fetchEmails(from: bankEmail)
+            }) else {
+                print("DEBUG: ⏰ \(bankName) via \(providerName) timed out")
+                continue
+            }
+            
+            // Filter emails to only those newer than the latest statement date
+            let newEmails = emails.filter { email in
+                guard let emailDate = ISO8601DateFormatter().date(from: email.receivedDateTime) else {
+                    return false
+                }
+                return emailDate > since
+            }
+            
+            print("DEBUG: 📧 Found \(newEmails.count) new emails from \(bankName) via \(providerName)")
+            
+            if newEmails.isEmpty {
+                continue
+            }
+            
+            // Process new emails
+            for email in newEmails {
+                guard let attachments = await withTimeout(seconds: 30, operation: {
+                    try await emailService.fetchAttachments(for: email.id)
+                }) else {
+                    continue
+                }
+                
+                let pdfAttachments = attachments.filter { attachment in
+                    attachment.contentType?.lowercased().contains("pdf") == true ||
+                    attachment.name?.lowercased().hasSuffix(".pdf") == true
+                }
+                
+                for attachment in pdfAttachments {
+                    if let pdfDataOptional = await withTimeout(seconds: 60, operation: {
+                        try await emailService.downloadAttachment(messageId: email.id, attachmentId: attachment.id)
+                    }), let pdfData = pdfDataOptional {
+                        await processPDFStatement(
+                            pdfData: pdfData,
+                            pdfFileName: attachment.name ?? "\(bankName)_Statement.pdf",
+                            email: email
+                        )
+                        newStatementsCount += 1
+                        
+                        // Update the latest statement date for this account
+                        await updateLatestStatementDate(for: account, email: email)
+                    }
+                }
+            }
+        }
+        
+        return newStatementsCount
+    }
+    
+    private func updateLatestStatementDate(for account: CDAccount, email: EmailMessage) async {
+        guard let emailDate = ISO8601DateFormatter().date(from: email.receivedDateTime) else {
+            return
+        }
+        
+        var metadata = account.metadataDictionary
+        metadata["latestStatementDate"] = ISO8601DateFormatter().string(from: emailDate)
+        
+        // Save updated metadata
+        if let jsonData = try? JSONSerialization.data(withJSONObject: metadata) {
+            account.metadata = jsonData
+            
+            do {
+                try expenseViewModel.viewContext.save()
+                print("DEBUG: ✅ Updated latest statement date for \(account.wrappedAccountName)")
+            } catch {
+                print("DEBUG: ❌ Failed to save latest statement date: \(error)")
+            }
+        }
+    }
+    
+    @MainActor
+    private func performFullCreditCardCheck() async {
+        // This is the original full check method
+        await loadCreditCardBills()
+    }
 }
 
 struct CollapsibleSection<Content: View>: View {
