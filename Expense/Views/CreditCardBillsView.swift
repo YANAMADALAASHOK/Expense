@@ -8,6 +8,8 @@ struct CreditCardBillsView: View {
     @State private var showingError = false
     @State private var errorMessage = ""
     @State private var showingDeleteAllAlert = false
+    @State private var selectedBillForPayment: CreditCardBill?
+    @State private var showingPaymentSheet = false
     
     var body: some View {
         NavigationView {
@@ -355,6 +357,11 @@ struct CardDetailView: View {
     @State private var bills: [CreditCardBill] = []
     @State private var isLoading = false
     @State private var showPaidBills = false
+    @State private var selectedBillForPayment: CreditCardBill?
+    @State private var showingPaymentSheet = false
+    @State private var selectedBillForDetail: CreditCardBill?
+    @State private var paymentAmount = ""
+    @State private var selectedPaymentAccount: CDAccount?
     
     var openBills: [CreditCardBill] {
         bills.filter { !$0.isPaid }.sorted { $0.statementDate > $1.statementDate }
@@ -365,8 +372,8 @@ struct CardDetailView: View {
     }
     
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
+        List {
+            Section {
                 // Card Summary
                 VStack(alignment: .leading, spacing: 12) {
                     HStack {
@@ -418,95 +425,131 @@ struct CardDetailView: View {
                         }
                     }
                 }
-                .padding()
-                .background(Color(.systemGray6))
-                .cornerRadius(12)
+                .listRowBackground(Color(.systemGray6))
+                .listRowSeparator(.hidden)
+            }
+            
+            
+            // Current Bills Section
+            if !openBills.isEmpty {
+                Section(header: 
+                    HStack {
+                        Text("Current Bills")
+                            .font(.headline)
+                            .foregroundColor(.red)
+                        Spacer()
+                        Text("Not Paid")
+                            .font(.caption)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 2)
+                            .background(Color.red.opacity(0.2))
+                            .foregroundColor(.red)
+                            .cornerRadius(4)
+                    }
+                ) {
+                    ForEach(openBills) { bill in
+                        CreditCardBillRow(bill: bill)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                selectedBillForDetail = bill
+                            }
+                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                Button {
+                                    print("DEBUG: Mark Paid button tapped for bill: \(bill.dueAmount)")
+                                    markBillAsManuallyPaid(bill: bill)
+                                } label: {
+                                    Label("Mark Paid", systemImage: "checkmark.circle.fill")
+                                }
+                                .tint(.green)
+                                
+                                Button {
+                                    print("DEBUG: Pay button tapped for bill: \(bill.dueAmount)")
+                                    selectedBillForPayment = bill
+                                } label: {
+                                    Label("Pay", systemImage: "creditcard.fill")
+                                }
+                                .tint(.blue)
+                            }
+                    }
+                }
+            }
                 
-                // Current Bill (Not Paid) Section
-                if !openBills.isEmpty {
-                    VStack(alignment: .leading, spacing: 12) {
+            // Paid Bills Section
+            if !paidBills.isEmpty {
+                Section(header: 
+                    Button(action: {
+                        withAnimation(.easeInOut(duration: 0.3)) {
+                            showPaidBills.toggle()
+                        }
+                    }) {
                         HStack {
-                            Text("Current Bill")
+                            Text("Paid Bills (\(paidBills.count))")
                                 .font(.headline)
-                                .foregroundColor(.red)
+                                .foregroundColor(.green)
                             
                             Spacer()
                             
-                            Text("Not Paid")
-                                .font(.caption)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 2)
-                                .background(Color.red.opacity(0.2))
-                                .foregroundColor(.red)
-                                .cornerRadius(4)
-                        }
-                        
-                        ForEach(openBills) { bill in
-                            NavigationLink(destination: BillDetailView(bill: bill, viewModel: viewModel)) {
-                                CreditCardBillRow(bill: bill)
-                            }
-                            .buttonStyle(PlainButtonStyle())
+                            Image(systemName: showPaidBills ? "chevron.up" : "chevron.down")
+                                .foregroundColor(.secondary)
+                                .font(.system(size: 12, weight: .medium))
                         }
                     }
-                    .padding()
-                    .background(Color(.systemGray6))
-                    .cornerRadius(12)
-                }
-                
-                // Paid Bills Section (Collapsible)
-                if !paidBills.isEmpty {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Button(action: {
-                            withAnimation(.easeInOut(duration: 0.3)) {
-                                showPaidBills.toggle()
-                            }
-                        }) {
-                            HStack {
-                                Text("Paid Bills")
-                                    .font(.headline)
-                                    .foregroundColor(.green)
-                                
-                                Spacer()
-                                
-                                Text("\(paidBills.count) bills")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                                
-                                Image(systemName: showPaidBills ? "chevron.up" : "chevron.down")
-                                    .foregroundColor(.secondary)
-                                    .font(.system(size: 12, weight: .medium))
-                            }
-                        }
-                        .buttonStyle(PlainButtonStyle())
-                        
-                        if showPaidBills {
-                            ForEach(paidBills) { bill in
-                                NavigationLink(destination: BillDetailView(bill: bill, viewModel: viewModel)) {
-                                    CreditCardBillRow(bill: bill)
+                    .buttonStyle(PlainButtonStyle())
+                ) {
+                    if showPaidBills {
+                        ForEach(paidBills) { bill in
+                            CreditCardBillRow(bill: bill)
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    selectedBillForDetail = bill
                                 }
-                                .buttonStyle(PlainButtonStyle())
-                            }
+                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                    Button {
+                                        print("DEBUG: Mark Unpaid button tapped for bill: \(bill.dueAmount)")
+                                        markBillAsUnpaid(bill: bill)
+                                    } label: {
+                                        Label("Mark Unpaid", systemImage: "xmark.circle.fill")
+                                    }
+                                    .tint(.orange)
+                                }
                         }
                     }
-                    .padding()
-                    .background(Color(.systemGray6))
-                    .cornerRadius(12)
                 }
+            }
                 
-                if bills.isEmpty && !isLoading {
+            // Empty state
+            if bills.isEmpty && !isLoading {
+                Section {
                     Text("No bills found for this card")
                         .foregroundColor(.secondary)
                         .italic()
                         .frame(maxWidth: .infinity, alignment: .center)
-                        .padding()
                 }
             }
-            .padding()
         }
         .navigationTitle("\(card.bankName)")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
             loadBillsForCard()
+        }
+        .sheet(item: $selectedBillForDetail) { bill in
+            NavigationView {
+                BillDetailView(bill: bill, viewModel: viewModel)
+            }
+        }
+        .sheet(item: $selectedBillForPayment) { bill in
+            PaymentSheet(
+                bill: bill,
+                viewModel: viewModel,
+                paymentAmount: $paymentAmount,
+                selectedAccount: $selectedPaymentAccount,
+                onPaymentComplete: { success, message in
+                    if success {
+                        loadBillsForCard() // Refresh bills after payment
+                    }
+                    selectedBillForPayment = nil
+                }
+            )
         }
     }
     
@@ -573,10 +616,34 @@ struct CardDetailView: View {
             let statementCreditLimit = statementData["creditLimit"].flatMap { Double($0) } ?? card.creditLimit
             let pdfFileName = statementData["pdfFileName"]
             
-            // Check if bill is paid (either manually marked or has payment transaction)
-            let isPaid = isSpecificBillPaid(statementData: statementData, account: card.account, statementDate: statementDate, dueAmount: dueAmount)
+            // For ICICI cards, try to get the correct total amount due
+            let actualDueAmount: Double
+            if card.bankName.uppercased().contains("ICICI") {
+                print("DEBUG: CardDetail - ICICI card detected, available fields: \(statementData.keys.sorted())")
+                
+                // For ICICI, try various field names for the correct due amount
+                actualDueAmount = statementData["totalAmountDue"].flatMap { Double($0) } ?? 
+                                 statementData["totalDue"].flatMap { Double($0) } ?? 
+                                 statementData["amountDue"].flatMap { Double($0) } ??
+                                 statementData["paymentDue"].flatMap { Double($0) } ??
+                                 statementData["minimumDue"].flatMap { Double($0) } ??
+                                 dueAmount // Use original dueAmount as fallback, not currentUsage
+                
+                print("DEBUG: CardDetail - ICICI field values:")
+                print("DEBUG: - dueAmount: ₹\(dueAmount)")
+                print("DEBUG: - currentUsage: ₹\(currentUsage)")
+                print("DEBUG: - totalAmountDue: \(statementData["totalAmountDue"] ?? "nil")")
+                print("DEBUG: - totalDue: \(statementData["totalDue"] ?? "nil")")
+                print("DEBUG: - amountDue: \(statementData["amountDue"] ?? "nil")")
+                print("DEBUG: - Final actualDueAmount: ₹\(actualDueAmount)")
+            } else {
+                actualDueAmount = dueAmount
+            }
             
-            print("DEBUG: CardDetail - Creating bill: \(statementDate), Amount: ₹\(dueAmount), Paid: \(isPaid)")
+            // Check if bill is paid (either manually marked or has payment transaction)
+            let isPaid = isSpecificBillPaid(statementData: statementData, account: card.account, statementDate: statementDate, dueAmount: actualDueAmount)
+            
+            print("DEBUG: CardDetail - Creating bill: \(statementDate), Amount: ₹\(actualDueAmount), Paid: \(isPaid)")
             
             let bill = CreditCardBill(
                 bankName: card.bankName,
@@ -584,7 +651,7 @@ struct CardDetailView: View {
                 statementDate: statementDate,
                 dueDate: dueDate,
                 totalAmount: currentUsage,
-                dueAmount: dueAmount,
+                dueAmount: actualDueAmount,
                 creditLimit: statementCreditLimit,
                 pdfFileName: pdfFileName,
                 isProcessed: true,
@@ -601,6 +668,19 @@ struct CardDetailView: View {
         for (index, bill) in bills.enumerated() {
             print("DEBUG: CardDetail - Bill \(index + 1): \(bill.statementDate), Amount: ₹\(bill.dueAmount), Paid: \(bill.isPaid)")
         }
+        
+        // Filter out duplicate bills (same statement date and amount)
+        bills = bills.reduce(into: [CreditCardBill]()) { result, bill in
+            let isDuplicate = result.contains { existingBill in
+                Calendar.current.isDate(existingBill.statementDate, inSameDayAs: bill.statementDate) &&
+                abs(existingBill.dueAmount - bill.dueAmount) < 0.01
+            }
+            if !isDuplicate {
+                result.append(bill)
+            }
+        }
+        
+        print("DEBUG: CardDetail - After deduplication: \(bills.count) unique bills")
         
         isLoading = false
     }
@@ -688,6 +768,127 @@ struct CardDetailView: View {
         
         print("DEBUG: CardDetail - No matching payment found for due amount ₹\(dueAmount)")
         return false
+    }
+    
+    private func markBillAsManuallyPaid(bill: CreditCardBill) {
+        print("DEBUG: 🔄 Starting markBillAsManuallyPaid for bill: ₹\(bill.dueAmount)")
+        
+        // Find the credit card account for this bill
+        let account = card.account
+        var metadata = account.metadataDictionary
+        let dateFormatter = ISO8601DateFormatter()
+        let statementKey = "statement_\(dateFormatter.string(from: bill.statementDate))"
+        
+        print("DEBUG: - Account: \(account.wrappedAccountName)")
+        print("DEBUG: - Statement Key: \(statementKey)")
+        print("DEBUG: - Metadata keys: \(metadata.keys.sorted())")
+        
+        // Check if this account has this bill
+        if let existingJsonString = metadata[statementKey] {
+            print("DEBUG: - Found metadata for statement key")
+            print("DEBUG: - JSON string: \(existingJsonString)")
+            
+            if let existingJsonData = existingJsonString.data(using: .utf8),
+               var existingBillData = try? JSONSerialization.jsonObject(with: existingJsonData) as? [String: String] {
+                print("DEBUG: - Successfully parsed JSON data: \(existingBillData)")
+                
+                if let dueAmount = existingBillData["dueAmount"] {
+                    let metadataAmount = Double(dueAmount) ?? 0
+                    let billAmount = bill.dueAmount
+                    let difference = abs(metadataAmount - billAmount)
+                    
+                    print("DEBUG: - Metadata amount: ₹\(metadataAmount)")
+                    print("DEBUG: - Bill amount: ₹\(billAmount)")
+                    print("DEBUG: - Difference: ₹\(difference)")
+                    
+                    if difference < 0.01 {
+                        print("DEBUG: - ✅ Amounts match, proceeding to mark as paid")
+                        
+                        // Mark as manually paid
+                        existingBillData["manuallyPaid"] = "true"
+                        existingBillData["paidDate"] = dateFormatter.string(from: Date())
+                        
+                        print("DEBUG: - Updated bill data: \(existingBillData)")
+                        
+                        // Convert back to JSON string
+                        if let updatedJsonData = try? JSONSerialization.data(withJSONObject: existingBillData),
+                           let updatedJsonString = String(data: updatedJsonData, encoding: .utf8) {
+                            metadata[statementKey] = updatedJsonString
+                            account.metadataDictionary = metadata
+                            
+                            print("DEBUG: 💳 Marked bill as PAID in metadata")
+                            print("DEBUG: - Statement Date: \(bill.statementDate)")
+                            print("DEBUG: - Amount: ₹\(bill.dueAmount)")
+                            print("DEBUG: - Paid Date: \(Date())")
+                            
+                            // Save the context
+                            do {
+                                try viewModel.viewContext.save()
+                                print("DEBUG: ✅ Successfully marked bill as manually paid and saved to Core Data")
+                                
+                                // Refresh the bills list
+                                loadBillsForCard()
+                            } catch {
+                                print("DEBUG: ❌ Failed to save after marking bill as paid: \(error)")
+                            }
+                        } else {
+                            print("DEBUG: ❌ Failed to convert updated data back to JSON")
+                        }
+                    } else {
+                        print("DEBUG: ❌ Amount mismatch - difference too large: ₹\(difference)")
+                    }
+                } else {
+                    print("DEBUG: ❌ No dueAmount found in metadata")
+                }
+            } else {
+                print("DEBUG: ❌ Failed to parse JSON data")
+            }
+        } else {
+            print("DEBUG: ❌ No metadata found for statement key: \(statementKey)")
+            print("DEBUG: - Available keys: \(metadata.keys.sorted())")
+        }
+    }
+    
+    private func markBillAsUnpaid(bill: CreditCardBill) {
+        // Find the credit card account for this bill
+        let account = card.account
+        var metadata = account.metadataDictionary
+        let dateFormatter = ISO8601DateFormatter()
+        let statementKey = "statement_\(dateFormatter.string(from: bill.statementDate))"
+        
+        // Check if this account has this bill
+        if let existingJsonString = metadata[statementKey],
+           let existingJsonData = existingJsonString.data(using: .utf8),
+           var existingBillData = try? JSONSerialization.jsonObject(with: existingJsonData) as? [String: String],
+           let dueAmount = existingBillData["dueAmount"],
+           abs(Double(dueAmount) ?? 0 - bill.dueAmount) < 0.01 {
+            
+            // Remove the manually paid flag
+            existingBillData.removeValue(forKey: "manuallyPaid")
+            existingBillData.removeValue(forKey: "paidDate")
+            
+            // Convert back to JSON string
+            if let updatedJsonData = try? JSONSerialization.data(withJSONObject: existingBillData),
+               let updatedJsonString = String(data: updatedJsonData, encoding: .utf8) {
+                metadata[statementKey] = updatedJsonString
+                account.metadataDictionary = metadata
+                
+                print("DEBUG: 🔄 Marked bill as UNPAID in metadata")
+                print("DEBUG: - Statement Date: \(bill.statementDate)")
+                print("DEBUG: - Amount: ₹\(bill.dueAmount)")
+                
+                // Save the context
+                do {
+                    try viewModel.viewContext.save()
+                    print("DEBUG: ✅ Successfully marked bill as unpaid and saved to Core Data")
+                    
+                    // Refresh the bills list
+                    loadBillsForCard()
+                } catch {
+                    print("DEBUG: ❌ Failed to save after marking bill as unpaid: \(error)")
+                }
+            }
+        }
     }
 }
 
@@ -1254,6 +1455,7 @@ struct PaymentSheet: View {
             }
         }
     }
+    
 }
 
 #Preview {

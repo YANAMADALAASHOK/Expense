@@ -90,7 +90,6 @@ class PDFTransactionParser {
                     "axis", "AXIS", "Axis", "axisbank", "AXISBANK"
                 ])
             } else if content.contains("axis") {
-                print("DEBUG: Detected Axis Bank PDF, prioritizing Axis passwords")
                 passwords.append(contentsOf: [
                     // Axis Bank passwords first
                     "axis", "AXIS", "Axis", "axisbank", "AXISBANK",
@@ -532,8 +531,6 @@ class PDFTransactionParser {
     
     // MARK: - Axis Bank Standard Format Parser
     private func parseAxisBankStatement(_ text: String) -> CreditCardBillInfo? {
-        print("DEBUG: Starting Axis Bank standard format parsing")
-        
         // All Axis cards use the same format
         return parseAxisStandardFormat(text)
     }
@@ -560,20 +557,10 @@ class PDFTransactionParser {
         var currentUsage = dueAmount // Default to due amount if calculation fails
         if let limit = creditLimit, let available = availableCreditLimit {
             currentUsage = limit - available
-            print("DEBUG: Axis - Calculated current usage: ₹\(limit) - ₹\(available) = ₹\(currentUsage)")
         }
         
         // Extract Axis format transactions
         let transactions = extractAxisStandardTransactions(from: text)
-        
-        print("DEBUG: Axis standard parsing completed:")
-        print("DEBUG: Bank: \(bankName)")
-        print("DEBUG: Card: ****\(cardNumber)")
-        print("DEBUG: Credit Limit: ₹\(creditLimit ?? 0)")
-        print("DEBUG: Available Limit: ₹\(availableCreditLimit ?? 0)")
-        print("DEBUG: Current Usage: ₹\(currentUsage)")
-        print("DEBUG: Due Amount: ₹\(dueAmount)")
-        print("DEBUG: Transactions: \(transactions.count)")
         
         return CreditCardBillInfo(
             bankName: bankName,
@@ -710,56 +697,62 @@ class PDFTransactionParser {
             }
         }
         
-        // Calculate current usage (ALWAYS use Credit Limit - Available Limit for accuracy)
+        // Extract "Total Amount due" from PDF (PRIORITY: Use actual PDF field, not calculated usage)
         var totalAmount: Double = 0.0
         
-        // PRIORITY: Calculate from Credit Limit - Available Limit (most accurate for current usage)
-        if availableLimit > 0 && creditLimit > availableLimit {
-            totalAmount = creditLimit - availableLimit
-            print("DEBUG: ICICI - Current usage calculated: ₹\(totalAmount) (Credit: ₹\(creditLimit) - Available: ₹\(availableLimit))")
-        }
-        
-        // Fallback: try to extract "Total Amount due" if calculation failed
-        if totalAmount == 0.0 {
-            print("DEBUG: ICICI - Calculation failed, searching for Total Amount due...")
-            if let totalAmountRange = text.range(of: "Total Amount due", options: .caseInsensitive) {
-                let afterTotalAmount = String(text[totalAmountRange.upperBound...])
-                // Look for `3,624.42 format
-                if let amountMatch = afterTotalAmount.range(of: #"`([\d,]+\.\d{2})"#, options: .regularExpression) {
-                    let amountText = String(afterTotalAmount[amountMatch])
-                    if let extractedAmount = amountText.range(of: #"([\d,]+\.\d{2})"#, options: .regularExpression) {
-                        let amountStr = String(amountText[extractedAmount]).replacingOccurrences(of: ",", with: "")
-                        if let amount = Double(amountStr) {
-                            totalAmount = amount
-                            print("DEBUG: ICICI - Total amount due found (fallback): ₹\(totalAmount)")
-                        }
+        print("DEBUG: ICICI - Searching for Total Amount due in PDF...")
+        if let totalAmountRange = text.range(of: "Total Amount due", options: .caseInsensitive) {
+            let afterTotalAmount = String(text[totalAmountRange.upperBound...])
+            print("DEBUG: ICICI - Found 'Total Amount due' section")
+            // Look for `3,624.42 format
+            if let amountMatch = afterTotalAmount.range(of: #"`([\d,]+\.\d{2})"#, options: .regularExpression) {
+                let amountText = String(afterTotalAmount[amountMatch])
+                if let extractedAmount = amountText.range(of: #"([\d,]+\.\d{2})"#, options: .regularExpression) {
+                    let amountStr = String(amountText[extractedAmount]).replacingOccurrences(of: ",", with: "")
+                    if let amount = Double(amountStr) {
+                        totalAmount = amount
+                        print("DEBUG: ICICI - Total amount due extracted from PDF: ₹\(totalAmount)")
                     }
                 }
             }
         }
         
-        // Fallback: try other patterns
+        // Calculate current usage for reference (but don't use for bill amount)
+        var currentUsage: Double = 0.0
+        if availableLimit > 0 && creditLimit > availableLimit {
+            currentUsage = creditLimit - availableLimit
+            print("DEBUG: ICICI - Current usage calculated: ₹\(currentUsage) (Credit: ₹\(creditLimit) - Available: ₹\(availableLimit))")
+        }
+        
+        // If Total Amount due not found, try alternative patterns
         if totalAmount == 0.0 {
-            print("DEBUG: ICICI - Trying fallback total amount patterns...")
-            let balancePatterns = [
-                #"`([\d,]+\.\d{2})"#,  // Any amount with backtick
-                #"Amount due[^`]*`([\d,]+\.\d{2})"#,
-                #"Outstanding[^`]*`([\d,]+\.\d{2})"#
+            print("DEBUG: ICICI - 'Total Amount due' not found, trying alternative patterns...")
+            let totalDuePatterns = [
+                #"Total.*due[^`]*`([\d,]+\.\d{2})"#,
+                #"Amount.*due[^`]*`([\d,]+\.\d{2})"#,
+                #"Outstanding.*balance[^`]*`([\d,]+\.\d{2})"#,
+                #"Total.*outstanding[^`]*`([\d,]+\.\d{2})"#
             ]
             
-            for pattern in balancePatterns {
-                if let balanceMatch = text.range(of: pattern, options: [.regularExpression, .caseInsensitive]) {
-                    let balanceText = String(text[balanceMatch])
-                    if let amountMatch = balanceText.range(of: #"([\d,]+\.\d{2})"#, options: .regularExpression) {
-                        let amountStr = String(balanceText[amountMatch]).replacingOccurrences(of: ",", with: "")
+            for pattern in totalDuePatterns {
+                if let match = text.range(of: pattern, options: [.regularExpression, .caseInsensitive]) {
+                    let matchText = String(text[match])
+                    if let amountMatch = matchText.range(of: #"([\d,]+\.\d{2})"#, options: .regularExpression) {
+                        let amountStr = String(matchText[amountMatch]).replacingOccurrences(of: ",", with: "")
                         if let amount = Double(amountStr), amount > 0 {
                             totalAmount = amount
-                            print("DEBUG: ICICI - Outstanding balance (fallback): ₹\(totalAmount)")
+                            print("DEBUG: ICICI - Total amount due found with pattern: ₹\(totalAmount)")
                             break
                         }
                     }
                 }
             }
+        }
+        
+        // Final fallback: use current usage if no total due found
+        if totalAmount == 0.0 {
+            totalAmount = currentUsage
+            print("DEBUG: ICICI - Using current usage as fallback for total due: ₹\(totalAmount)")
         }
         
         // Extract minimum due amount with ICICI-specific patterns
@@ -883,13 +876,19 @@ class PDFTransactionParser {
             cardNumber: cardNumber,
             statementDate: statementDate,
             dueDate: dueDate,
-            totalAmount: totalAmount,
-            dueAmount: dueAmount,
+            totalAmount: currentUsage > 0 ? currentUsage : totalAmount, // Use current usage for account balance
+            dueAmount: totalAmount,   // Use total amount due for bill payment (₹3,818.92)
             creditLimit: creditLimit,
             transactions: transactions
         )
         
-        print("DEBUG: ICICI parsing completed - Card: \(cardNumber), Limit: ₹\(creditLimit), Outstanding: ₹\(totalAmount)")
+        print("DEBUG: ICICI parsing completed - Card: \(cardNumber)")
+        print("DEBUG: - Credit Limit: ₹\(creditLimit)")
+        print("DEBUG: - Available Limit: ₹\(availableLimit)")
+        print("DEBUG: - Current Usage (calculated): ₹\(currentUsage)")
+        print("DEBUG: - Total Amount Due (from PDF): ₹\(totalAmount)")
+        print("DEBUG: - Account Balance (using): ₹\(currentUsage > 0 ? currentUsage : totalAmount)")
+        print("DEBUG: - Bill Amount (using): ₹\(totalAmount)")
         
         return billInfo
     }
@@ -1965,9 +1964,6 @@ class PDFTransactionParser {
     private func extractAxisStandardTransactions(from text: String) -> [CreditCardTransaction] {
         var transactions: [CreditCardTransaction] = []
         
-        print("DEBUG: Starting Axis standard transaction extraction")
-        print("DEBUG: Text length: \(text.count) characters")
-        
         // Look for transaction section in the statement
         let lines = text.components(separatedBy: .newlines)
         var inTransactionSection = false
@@ -1983,7 +1979,6 @@ class PDFTransactionParser {
                trimmedLine.contains("SPENDS OVERVIEW") ||
                trimmedLine.contains("Date SerNo. Transaction Details") ||
                (trimmedLine.contains("Date") && trimmedLine.contains("Description") && trimmedLine.contains("Amount")) {
-                print("DEBUG: Found Axis transaction section header: \(trimmedLine)")
                 inTransactionSection = true
                 continue
             }
@@ -1992,34 +1987,25 @@ class PDFTransactionParser {
             if inTransactionSection && (trimmedLine.contains("PAYMENT SUMMARY") || 
                                        trimmedLine.contains("TOTAL") ||
                                        trimmedLine.isEmpty && transactionLines.count > 0) {
-                print("DEBUG: End of Axis transaction section detected")
                 break
             }
             
             // Collect transaction lines
             if inTransactionSection && !trimmedLine.isEmpty {
                 transactionLines.append(trimmedLine)
-                print("DEBUG: Axis transaction line: \(trimmedLine)")
             }
         }
-        
-        print("DEBUG: Found \(transactionLines.count) potential Axis transaction lines")
         
         // Parse each transaction line using Axis format
         for line in transactionLines {
             if let transaction = parseAxisTransactionLine(line) {
-                print("DEBUG: Parsed Axis transaction: \(transaction.description) - ₹\(transaction.amount)")
                 transactions.append(transaction)
             }
         }
-        
-        print("DEBUG: Successfully extracted \(transactions.count) Axis transactions")
         return transactions
     }
     
     private func parseAxisTransactionLine(_ line: String) -> CreditCardTransaction? {
-        print("DEBUG: Parsing Axis transaction line: '\(line)'")
-        
         let trimmedLine = line.trimmingCharacters(in: .whitespacesAndNewlines)
         
         // Parse standard Axis Bank format
@@ -2049,7 +2035,6 @@ class PDFTransactionParser {
         // Try to extract date from the beginning of the line
         let words = line.components(separatedBy: .whitespaces)
         guard words.count >= 3 else { 
-            print("DEBUG: Line has too few components: \(words.count)")
             return nil 
         }
         
@@ -2061,7 +2046,6 @@ class PDFTransactionParser {
                 dateFormatter.dateFormat = formatter
                 if let parsedDate = dateFormatter.date(from: potentialDate) {
                     date = parsedDate
-                    print("DEBUG: Found date: \(potentialDate) -> \(parsedDate)")
                     
                     // Everything after date until amount is description
                     let remainingWords = Array(words[(i+1)...])
@@ -2079,7 +2063,6 @@ class PDFTransactionParser {
                            (word.contains(".") || word.contains(",")) { // Must have decimal or comma
                             amount = parsedAmount
                             amountIndex = index
-                            print("DEBUG: Found amount: \(word) -> \(parsedAmount)")
                             break
                         }
                     }
@@ -2101,10 +2084,7 @@ class PDFTransactionParser {
         // Clean up description
         description = description.trimmingCharacters(in: .whitespacesAndNewlines)
         
-        print("DEBUG: Extracted - Date: \(date?.description ?? "nil"), Description: '\(description)', Amount: \(amount)")
-        
         guard let transactionDate = date, !description.isEmpty else {
-            print("DEBUG: Failed to parse transaction - missing date or description")
             return nil
         }
         

@@ -798,7 +798,7 @@ struct SettingsView: View {
                 creditCardAccount.id = UUID()
                 creditCardAccount.accountName = accountName
                 creditCardAccount.accountType = AccountType.creditCard.rawValue
-                creditCardAccount.balance = billInfo.totalAmount
+                creditCardAccount.balance = -billInfo.totalAmount // Use current usage for account balance
                 creditCardAccount.creditLimit = billInfo.creditLimit ?? 0
                 
                 print("DEBUG: ✅ Created new account: \(accountName)")
@@ -846,7 +846,7 @@ struct SettingsView: View {
             
             // Update balance
             let finalAccount = expenseViewModel.viewContext.object(with: creditCardAccount.objectID) as! CDAccount
-            finalAccount.balance = billInfo.totalAmount
+            finalAccount.balance = -billInfo.totalAmount // Use current usage for account balance
             
             // Save bill metadata for UI display
             saveBillMetadata(account: finalAccount, billInfo: billInfo, pdfFileName: pdfFileName)

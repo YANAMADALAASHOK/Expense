@@ -115,14 +115,28 @@ struct InsuranceView: View {
         UserDefaults.standard.removeObject(forKey: lastProcessedKey)
     }
     
-    private func savePolicies() {
-        let insuranceManager = InsuranceManager.shared
-        insuranceManager.savePolicies(viewModel.insurancePolicies)
+    private func loadPolicies() {
+        // Load policies using ExpenseViewModel's method
+        if let data = UserDefaults.standard.data(forKey: "InsurancePoliciesStore"),
+           let policies = try? JSONDecoder().decode([InsurancePolicy].self, from: data) {
+            viewModel.insurancePolicies = policies
+            print("DEBUG: Insurance - Loaded \(policies.count) policies from UserDefaults")
+            for policy in policies {
+                print("DEBUG: Insurance - Policy: \(policy.name), Amount: ₹\(policy.premiumAmount), Active: \(policy.isActive)")
+            }
+        } else {
+            print("DEBUG: Insurance - No policies found in UserDefaults")
+        }
     }
     
-    private func loadPolicies() {
-        let insuranceManager = InsuranceManager.shared
-        viewModel.insurancePolicies = insuranceManager.loadPolicies()
+    private func savePolicies() {
+        // Save policies directly to UserDefaults
+        if let data = try? JSONEncoder().encode(viewModel.insurancePolicies) {
+            UserDefaults.standard.set(data, forKey: "InsurancePoliciesStore")
+            print("DEBUG: Insurance - Saved \(viewModel.insurancePolicies.count) policies to UserDefaults")
+        } else {
+            print("DEBUG: Insurance - Failed to encode policies for saving")
+        }
     }
 }
 

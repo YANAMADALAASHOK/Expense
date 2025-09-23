@@ -33,100 +33,21 @@ class ExpenseViewModel: ObservableObject {
     private let preferredICICIKey = "PreferredAccount_icici"
     
     init(context: NSManagedObjectContext) {
+        print("🔄 DEBUG: ExpenseViewModel init called - \(Date()) - Thread: \(Thread.current)")
+        print("🔄 DEBUG: Call stack: \(Thread.callStackSymbols.prefix(5))")
         self.viewContext = context
         loadCustomCategories()
         loadSubcategories()
+        loadInsurancePolicies()
         loadExcludedTransactions()
         loadPendingTransactions()
         loadEmailIngestionState()
-        loadInsurancePolicies()
         
         // Load last sync time from UserDefaults
         if let savedDate = UserDefaults.standard.object(forKey: "lastSyncTime") as? Date {
             self.lastSyncTime = savedDate
         }
 
-    // MARK: - Preferred Accounts (Axis/ICICI) by key
-    // bankKey should be "axis" or "icici"
-    func setPreferredAccount(bankKey: String, account: CDAccount?) {
-        let key = (bankKey.lowercased() == "axis") ? preferredAxisKey : preferredICICIKey
-        if let acc = account {
-            if let id = acc.id {
-                UserDefaults.standard.set(id.uuidString, forKey: key)
-            } else {
-                UserDefaults.standard.removeObject(forKey: key)
-                print("[PreferredAccount] Attempted to save account without UUID for bankKey=\(bankKey)")
-            }
-        } else {
-            UserDefaults.standard.removeObject(forKey: key)
-        }
-    }
-    func preferredAccountId(bankKey: String) -> UUID? {
-        let key = (bankKey.lowercased() == "axis") ? preferredAxisKey : preferredICICIKey
-        guard let idStr = UserDefaults.standard.string(forKey: key), let uuid = UUID(uuidString: idStr) else { return nil }
-        return uuid
-    }
-    func getPreferredAccount(bankKey: String) -> CDAccount? {
-        guard let id = preferredAccountId(bankKey: bankKey) else { return nil }
-        return accounts.first { acct in
-            if let aid = acct.id { return aid == id }
-            return false
-        }
-    }
-    
-    // MARK: - Insurance Policies Persistence (moved inside class)
-    func loadInsurancePolicies() {
-        if let data = UserDefaults.standard.data(forKey: insurancePoliciesKey),
-           let items = try? JSONDecoder().decode([InsurancePolicy].self, from: data) {
-            insurancePolicies = items
-        }
-    }
-    func saveInsurancePolicies() {
-        if let data = try? JSONEncoder().encode(insurancePolicies) {
-            UserDefaults.standard.set(data, forKey: insurancePoliciesKey)
-        }
-    }
-    func addInsurancePolicy(_ policy: InsurancePolicy) {
-        insurancePolicies.append(policy)
-        saveInsurancePolicies()
-        objectWillChange.send()
-    }
-    func updateInsurancePolicy(_ policy: InsurancePolicy) {
-        if let idx = insurancePolicies.firstIndex(where: { $0.id == policy.id }) {
-            insurancePolicies[idx] = policy
-            saveInsurancePolicies()
-            objectWillChange.send()
-        }
-    }
-    func deleteInsurancePolicy(_ policy: InsurancePolicy) {
-        insurancePolicies.removeAll { $0.id == policy.id }
-        saveInsurancePolicies()
-        objectWillChange.send()
-    }
-    /// Debits due insurance premiums today and records Utilities transactions
-    func processDueInsurancePremiums(on date: Date = Date()) {
-        let calendar = Calendar.current
-        let todayDay = calendar.component(.day, from: date)
-        let currentMonth = calendar.component(.month, from: date)
-        let currentYear = calendar.component(.year, from: date)
-        var changed = false
-        for i in insurancePolicies.indices {
-            guard insurancePolicies[i].isActive else { continue }
-            let p = insurancePolicies[i]
-            guard p.dayOfMonth == todayDay else { continue }
-            if let last = p.lastPaidAt {
-                let m = calendar.component(.month, from: last)
-                let y = calendar.component(.year, from: last)
-                if m == currentMonth && y == currentYear { continue }
-            }
-            guard let acc = accounts.first(where: { $0.id == p.accountId }) else { continue }
-            addTransaction(amount: p.premiumAmount, category: .utilities, isCredit: false, account: acc, notes: "Insurance: \(p.name)", date: date)
-            insurancePolicies[i].lastPaidAt = date
-            changed = true
-        }
-        if changed { saveInsurancePolicies() }
-    }
-        
         // Add observer for Core Data changes
         NotificationCenter.default.addObserver(
             self,
@@ -172,6 +93,107 @@ class ExpenseViewModel: ObservableObject {
                 }
             }
         }
+    }
+
+    // MARK: - Preferred Accounts (Axis/ICICI) by key
+    // bankKey should be "axis" or "icici"
+    func setPreferredAccount(bankKey: String, account: CDAccount?) {
+        let key = (bankKey.lowercased() == "axis") ? preferredAxisKey : preferredICICIKey
+        if let acc = account {
+            if let id = acc.id {
+                UserDefaults.standard.set(id.uuidString, forKey: key)
+            } else {
+                UserDefaults.standard.removeObject(forKey: key)
+                print("[PreferredAccount] Attempted to save account without UUID for bankKey=\(bankKey)")
+            }
+        } else {
+            UserDefaults.standard.removeObject(forKey: key)
+        }
+    }
+    func preferredAccountId(bankKey: String) -> UUID? {
+        let key = (bankKey.lowercased() == "axis") ? preferredAxisKey : preferredICICIKey
+        guard let idStr = UserDefaults.standard.string(forKey: key), let uuid = UUID(uuidString: idStr) else { return nil }
+        return uuid
+    }
+    func getPreferredAccount(bankKey: String) -> CDAccount? {
+        guard let id = preferredAccountId(bankKey: bankKey) else { return nil }
+        return accounts.first { acct in
+            if let aid = acct.id { return aid == id }
+            return false
+        }
+    }
+    
+    // MARK: - Insurance Policies Persistence (moved inside class)
+    private var hasLoadedInsurancePolicies = false
+    
+    func loadInsurancePolicies() {
+        // Avoid repeated loading if already loaded
+        if hasLoadedInsurancePolicies {
+            print("DEBUG: ExpenseViewModel - Insurance policies already loaded, skipping")
+            return
+        }
+        
+        print("DEBUG: ExpenseViewModel - Loading insurance policies from key: \(insurancePoliciesKey)")
+        if let data = UserDefaults.standard.data(forKey: insurancePoliciesKey),
+           let items = try? JSONDecoder().decode([InsurancePolicy].self, from: data) {
+            insurancePolicies = items
+            print("DEBUG: ExpenseViewModel - Loaded \(items.count) insurance policies")
+            for policy in items {
+                print("DEBUG: ExpenseViewModel - Policy: \(policy.name), Amount: ₹\(policy.premiumAmount), Active: \(policy.isActive)")
+            }
+        } else {
+            print("DEBUG: ExpenseViewModel - No insurance policies found in UserDefaults")
+            insurancePolicies = []
+        }
+        hasLoadedInsurancePolicies = true
+    }
+    func saveInsurancePolicies() {
+        if let data = try? JSONEncoder().encode(insurancePolicies) {
+            UserDefaults.standard.set(data, forKey: insurancePoliciesKey)
+            print("DEBUG: ExpenseViewModel - Saved \(insurancePolicies.count) insurance policies to UserDefaults")
+        } else {
+            print("DEBUG: ExpenseViewModel - Failed to encode insurance policies for saving")
+        }
+    }
+    func addInsurancePolicy(_ policy: InsurancePolicy) {
+        insurancePolicies.append(policy)
+        saveInsurancePolicies()
+        objectWillChange.send()
+    }
+    func updateInsurancePolicy(_ policy: InsurancePolicy) {
+        if let idx = insurancePolicies.firstIndex(where: { $0.id == policy.id }) {
+            insurancePolicies[idx] = policy
+            saveInsurancePolicies()
+            objectWillChange.send()
+        }
+    }
+    func deleteInsurancePolicy(_ policy: InsurancePolicy) {
+        insurancePolicies.removeAll { $0.id == policy.id }
+        saveInsurancePolicies()
+        objectWillChange.send()
+    }
+    /// Debits due insurance premiums today and records Utilities transactions
+    func processDueInsurancePremiums(on date: Date = Date()) {
+        let calendar = Calendar.current
+        let todayDay = calendar.component(.day, from: date)
+        let currentMonth = calendar.component(.month, from: date)
+        let currentYear = calendar.component(.year, from: date)
+        var changed = false
+        for i in insurancePolicies.indices {
+            guard insurancePolicies[i].isActive else { continue }
+            let p = insurancePolicies[i]
+            guard p.dayOfMonth == todayDay else { continue }
+            if let last = p.lastPaidAt {
+                let m = calendar.component(.month, from: last)
+                let y = calendar.component(.year, from: last)
+                if m == currentMonth && y == currentYear { continue }
+            }
+            guard let acc = accounts.first(where: { $0.id == p.accountId }) else { continue }
+            addTransaction(amount: p.premiumAmount, category: .utilities, isCredit: false, account: acc, notes: "Insurance: \(p.name)", date: date)
+            insurancePolicies[i].lastPaidAt = date
+            changed = true
+        }
+        if changed { saveInsurancePolicies() }
     }
     
     deinit {
@@ -235,11 +257,17 @@ class ExpenseViewModel: ObservableObject {
     }
 
     // MARK: - Excluded Transactions (Dashboard)
+    private var hasLoadedExcludedTransactions = false
+    
     private func loadExcludedTransactions() {
+        if hasLoadedExcludedTransactions {
+            return
+        }
         if let raw = UserDefaults.standard.array(forKey: "ExcludedTransactions") as? [String] {
             let ids = raw.compactMap { UUID(uuidString: $0) }
             excludedTransactionIds = Set(ids)
         }
+        hasLoadedExcludedTransactions = true
     }
 
     private func saveExcludedTransactions() {
@@ -278,16 +306,27 @@ class ExpenseViewModel: ObservableObject {
     }
     
     // MARK: - Category Management
+    private var hasLoadedCustomCategories = false
+    private var hasLoadedSubcategories = false
+    
     private func loadCustomCategories() {
+        if hasLoadedCustomCategories {
+            return
+        }
         if let savedCategories = UserDefaults.standard.stringArray(forKey: "CustomCategories") {
             customCategories = savedCategories
         }
+        hasLoadedCustomCategories = true
     }
     private func loadSubcategories() {
+        if hasLoadedSubcategories {
+            return
+        }
         if let data = UserDefaults.standard.data(forKey: "SubcategoriesByParent"),
            let dict = try? JSONDecoder().decode([String: [String]].self, from: data) {
             subcategoriesByParent = dict
         }
+        hasLoadedSubcategories = true
     }
     private func saveSubcategories() {
         if let data = try? JSONEncoder().encode(subcategoriesByParent) {
@@ -1173,13 +1212,19 @@ class ExpenseViewModel: ObservableObject {
     }
     
     // MARK: - Email Ingestion State
+    private var hasLoadedEmailIngestionState = false
+    
     private func loadEmailIngestionState() {
+        if hasLoadedEmailIngestionState {
+            return
+        }
         if let arr = UserDefaults.standard.array(forKey: "ProcessedEmailMessageIds") as? [String] {
             processedEmailMessageIds = Set(arr)
         }
         if let ts = UserDefaults.standard.object(forKey: "LastEmailReceivedAt") as? Date {
             lastEmailReceivedAt = ts
         }
+        hasLoadedEmailIngestionState = true
     }
     func persistEmailIngestionState() {
         UserDefaults.standard.set(Array(processedEmailMessageIds), forKey: "ProcessedEmailMessageIds")
@@ -1322,7 +1367,12 @@ class ExpenseViewModel: ObservableObject {
     }
 
     // MARK: - Pending Transactions
+    private var hasLoadedPendingTransactions = false
+    
     private func loadPendingTransactions() {
+        if hasLoadedPendingTransactions {
+            return
+        }
         if let data = UserDefaults.standard.data(forKey: "PendingTransactions"),
            let items = try? JSONDecoder().decode([PendingTransactionItem].self, from: data) {
             pendingTransactions = items
@@ -1330,6 +1380,7 @@ class ExpenseViewModel: ObservableObject {
         } else {
             print("[ExpenseViewModel] No pending transactions found in UserDefaults")
         }
+        hasLoadedPendingTransactions = true
     }
     func savePendingTransactions() {
         if let data = try? JSONEncoder().encode(pendingTransactions) {

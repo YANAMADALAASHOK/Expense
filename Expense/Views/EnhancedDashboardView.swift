@@ -7,6 +7,8 @@ struct EnhancedDashboardView: View {
     @StateObject private var currencySettings = CurrencySettings.shared
     @State private var selectedTimeRange: TimeRange = .month
     @State private var showingInsights = false
+    @State private var pendingBillsAmount: Double = 0
+    @State private var upcomingInsuranceAmount: Double = 0
     
     var body: some View {
         NavigationView {
@@ -24,9 +26,16 @@ struct EnhancedDashboardView: View {
                     // Spending Chart
                     SpendingChartView(transactions: viewModel.dashboardTransactions, timeRange: selectedTimeRange)
                     
+                    // Upcoming Bills Section
+                    UpcomingBillsSection(
+                        pendingBillsAmount: pendingBillsAmount,
+                        upcomingInsuranceAmount: upcomingInsuranceAmount,
+                        currencySettings: currencySettings,
+                        viewModel: viewModel
+                    )
                     
                     // Recent Transactions
-                    RecentTransactionsSection(transactions: viewModel.dashboardTransactions)
+                    RecentTransactionsSection(transactions: viewModel.dashboardTransactions, viewModel: viewModel)
                     
                     // Insights Button
                     InsightsButton(showingInsights: $showingInsights)
@@ -37,10 +46,132 @@ struct EnhancedDashboardView: View {
             .background(DesignSystem.Colors.background)
             .navigationTitle("Dashboard")
             .navigationBarTitleDisplayMode(.large)
+            .onAppear {
+                calculatePendingBills()
+                calculateUpcomingInsurance()
+            }
+            .refreshable {
+                calculatePendingBills()
+                calculateUpcomingInsurance()
+            }
             .sheet(isPresented: $showingInsights) {
                 FinancialInsightsView(viewModel: viewModel)
             }
         }
+    }
+    
+    private func calculatePendingBills() {
+        // Calculate total pending credit card bills
+        let creditCardAccounts = viewModel.accounts.filter { $0.wrappedAccountType == .creditCard }
+        var totalPending: Double = 0
+        
+        print("DEBUG: Dashboard - Starting bill calculation for \(creditCardAccounts.count) credit card accounts")
+        
+        for account in creditCardAccounts {
+            let metadata = account.metadataDictionary
+            let billHistoryKeys = metadata.keys.filter { $0.hasPrefix("statement_") }
+            
+            print("DEBUG: Dashboard - Account: \(account.wrappedAccountName), Bills found: \(billHistoryKeys.count)")
+            
+            // Find the latest unpaid bill
+            let dateFormatter = ISO8601DateFormatter()
+            var latestStatementDate: Date?
+            var latestBillAmount: Double = 0
+            var latestBillKey: String?
+            
+            for key in billHistoryKeys {
+                if let statementJsonString = metadata[key],
+                   let statementJsonData = statementJsonString.data(using: .utf8),
+                   let statementData = try? JSONSerialization.jsonObject(with: statementJsonData) as? [String: String],
+                   let statementDateString = statementData["statementDate"],
+                   let statementDate = dateFormatter.date(from: statementDateString) {
+                    
+                    let dueAmount = statementData["dueAmount"].flatMap { Double($0) } ?? 0.0
+                    let isManuallyPaid = statementData["manuallyPaid"] == "true"
+                    
+                    print("DEBUG: Dashboard - Bill: \(statementDate), Amount: ₹\(dueAmount), Manually Paid: \(isManuallyPaid)")
+                    
+                    // Check if this is the latest statement and not manually paid
+                    if (latestStatementDate == nil || statementDate > latestStatementDate!) &&
+                       !isManuallyPaid {
+                        latestStatementDate = statementDate
+                        latestBillAmount = dueAmount
+                        latestBillKey = key
+                        print("DEBUG: Dashboard - Updated latest unpaid bill: ₹\(dueAmount)")
+                    }
+                }
+            }
+            
+            // Only add if this is truly the latest bill (unpaid)
+            if let latestDate = latestStatementDate, let latestKey = latestBillKey {
+                // Check if this is the most recent statement for this account
+                let allDates = billHistoryKeys.compactMap { key -> Date? in
+                    guard let statementJsonString = metadata[key],
+                          let statementJsonData = statementJsonString.data(using: .utf8),
+                          let statementData = try? JSONSerialization.jsonObject(with: statementJsonData) as? [String: String],
+                          let statementDateString = statementData["statementDate"] else { return nil }
+                    return dateFormatter.date(from: statementDateString)
+                }
+                
+                if let maxDate = allDates.max(), Calendar.current.isDate(latestDate, inSameDayAs: maxDate) {
+                    totalPending += latestBillAmount
+                    print("DEBUG: Dashboard - Added to total: ₹\(latestBillAmount) for account \(account.wrappedAccountName)")
+                } else {
+                    print("DEBUG: Dashboard - Skipped (not latest): ₹\(latestBillAmount) for account \(account.wrappedAccountName)")
+                }
+            } else {
+                print("DEBUG: Dashboard - No unpaid bills found for account \(account.wrappedAccountName)")
+            }
+        }
+        
+        pendingBillsAmount = totalPending
+        print("DEBUG: Dashboard - Final calculated pending bills: ₹\(totalPending)")
+    }
+    
+    private func calculateUpcomingInsurance() {
+        // Use insurance policies from viewModel and calculate next month's premiums
+        let policies = viewModel.insurancePolicies
+        
+        let calendar = Calendar.current
+        let today = Date()
+        let currentDay = calendar.component(.day, from: today)
+        let currentMonth = calendar.component(.month, from: today)
+        let currentYear = calendar.component(.year, from: today)
+        
+        var nextMonthTotal: Double = 0
+        
+        for policy in policies where policy.isActive {
+            // Calculate next due date
+            var targetMonth = currentMonth
+            var targetYear = currentYear
+            
+            // If we've passed this month's due date, show next month
+            if currentDay > policy.dayOfMonth {
+                targetMonth += 1
+                if targetMonth > 12 {
+                    targetMonth = 1
+                    targetYear += 1
+                }
+            }
+            
+            // Check if the next due date is within the next 30 days
+            let dateComponents = DateComponents(year: targetYear, month: targetMonth, day: policy.dayOfMonth)
+            if let nextDueDate = calendar.date(from: dateComponents) {
+                let daysUntilDue = calendar.dateComponents([.day], from: today, to: nextDueDate).day ?? 0
+                
+                print("DEBUG: Dashboard - Policy: \(policy.name), Due in \(daysUntilDue) days, Amount: ₹\(policy.premiumAmount)")
+                
+                // Include if due within next 30 days
+                if daysUntilDue >= 0 && daysUntilDue <= 30 {
+                    nextMonthTotal += policy.premiumAmount
+                    print("DEBUG: Dashboard - Added policy \(policy.name) to total")
+                }
+            }
+        }
+        
+        upcomingInsuranceAmount = nextMonthTotal
+        print("DEBUG: Dashboard - Insurance policies count: \(policies.count)")
+        print("DEBUG: Dashboard - Calculated upcoming insurance: ₹\(nextMonthTotal)")
     }
 
 }
@@ -480,6 +611,7 @@ struct CategoryBreakdownView: View {
 // MARK: - Recent Transactions Section
 struct RecentTransactionsSection: View {
     let transactions: [CDTransaction]
+    let viewModel: ExpenseViewModel
     
     var body: some View {
         VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
@@ -491,7 +623,7 @@ struct RecentTransactionsSection: View {
                 Spacer()
                 
                 NavigationLink("View All") {
-                    TransactionView(viewModel: ExpenseViewModel(context: PersistenceController.shared.container.viewContext))
+                    TransactionView(viewModel: viewModel)
                 }
                 .font(DesignSystem.Typography.labelMedium)
                 .foregroundColor(DesignSystem.Colors.primary)
@@ -711,5 +843,336 @@ struct InsightCard: View {
         }
         .padding(DesignSystem.Spacing.md)
         .cardStyle()
+    }
+}
+
+// MARK: - Upcoming Bills Section
+struct UpcomingBillsSection: View {
+    let pendingBillsAmount: Double
+    let upcomingInsuranceAmount: Double
+    @ObservedObject var currencySettings: CurrencySettings
+    @ObservedObject var viewModel: ExpenseViewModel
+    @State private var showingBillDetails = false
+    
+    private var totalBillsAmount: Double {
+        pendingBillsAmount + upcomingInsuranceAmount
+    }
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
+            HStack {
+                Text("Upcoming Bills")
+                    .font(DesignSystem.Typography.headlineSmall)
+                    .foregroundColor(DesignSystem.Colors.onSurface)
+                
+                Spacer()
+                
+                // Total Amount
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text("Total")
+                        .font(DesignSystem.Typography.labelSmall)
+                        .foregroundColor(DesignSystem.Colors.onSurfaceVariant)
+                    
+                    Text(totalBillsAmount, format: .currency(code: currencySettings.selectedCurrency.rawValue))
+                        .font(DesignSystem.Typography.titleMedium)
+                        .fontWeight(.bold)
+                        .foregroundColor(DesignSystem.Colors.error)
+                }
+            }
+            
+            HStack(spacing: DesignSystem.Spacing.md) {
+                // Pending Credit Card Bills
+                BillCard(
+                    title: "Pending Bills",
+                    amount: pendingBillsAmount,
+                    icon: "creditcard.fill",
+                    color: DesignSystem.Colors.error,
+                    currencySettings: currencySettings
+                )
+                
+                // Upcoming Insurance
+                BillCard(
+                    title: "Next Insurance",
+                    amount: upcomingInsuranceAmount,
+                    icon: "shield.fill",
+                    color: DesignSystem.Colors.primary,
+                    currencySettings: currencySettings
+                )
+            }
+        }
+        .padding(DesignSystem.Spacing.md)
+        .cardStyle()
+        .onTapGesture {
+            showingBillDetails = true
+        }
+        .sheet(isPresented: $showingBillDetails) {
+            BillDetailsView(
+                pendingBillsAmount: pendingBillsAmount,
+                upcomingInsuranceAmount: upcomingInsuranceAmount,
+                viewModel: viewModel,
+                currencySettings: currencySettings
+            )
+        }
+    }
+}
+
+// MARK: - Bill Card
+struct BillCard: View {
+    let title: String
+    let amount: Double
+    let icon: String
+    let color: Color
+    @ObservedObject var currencySettings: CurrencySettings
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
+            HStack {
+                Image(systemName: icon)
+                    .font(.title2)
+                    .foregroundColor(color)
+                Spacer()
+            }
+            
+            Text(title)
+                .font(DesignSystem.Typography.labelMedium)
+                .foregroundColor(DesignSystem.Colors.onSurfaceVariant)
+            
+            Text(amount, format: .currency(code: currencySettings.selectedCurrency.rawValue))
+                .font(DesignSystem.Typography.titleMedium)
+                .fontWeight(.semibold)
+                .foregroundColor(DesignSystem.Colors.onSurface)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(DesignSystem.Spacing.md)
+        .background(DesignSystem.Colors.surfaceVariant.opacity(0.3))
+        .cornerRadius(DesignSystem.CornerRadius.md)
+    }
+}
+
+// MARK: - Bill Details View
+struct BillDetailsView: View {
+    let pendingBillsAmount: Double
+    let upcomingInsuranceAmount: Double
+    @ObservedObject var viewModel: ExpenseViewModel
+    @ObservedObject var currencySettings: CurrencySettings
+    @Environment(\.dismiss) private var dismiss
+    
+    private var totalAmount: Double {
+        pendingBillsAmount + upcomingInsuranceAmount
+    }
+    
+    private var pendingCreditCards: [(name: String, amount: Double)] {
+        let creditCardAccounts = viewModel.accounts.filter { $0.wrappedAccountType == .creditCard }
+        var pendingCards: [(name: String, amount: Double)] = []
+        
+        for account in creditCardAccounts {
+            let metadata = account.metadataDictionary
+            let billHistoryKeys = metadata.keys.filter { $0.hasPrefix("statement_") }
+            
+            let dateFormatter = ISO8601DateFormatter()
+            var latestStatementDate: Date?
+            var latestBillAmount: Double = 0
+            
+            for key in billHistoryKeys {
+                if let statementJsonString = metadata[key],
+                   let statementJsonData = statementJsonString.data(using: .utf8),
+                   let statementData = try? JSONSerialization.jsonObject(with: statementJsonData) as? [String: String],
+                   let statementDateString = statementData["statementDate"],
+                   let statementDate = dateFormatter.date(from: statementDateString) {
+                    
+                    let dueAmount = statementData["dueAmount"].flatMap { Double($0) } ?? 0.0
+                    let isManuallyPaid = statementData["manuallyPaid"] == "true"
+                    
+                    if (latestStatementDate == nil || statementDate > latestStatementDate!) &&
+                       !isManuallyPaid {
+                        latestStatementDate = statementDate
+                        latestBillAmount = dueAmount
+                    }
+                }
+            }
+            
+            // Verify this is the most recent statement for this account
+            if let latestDate = latestStatementDate, latestBillAmount > 0 {
+                let allDates = billHistoryKeys.compactMap { key -> Date? in
+                    guard let statementJsonString = metadata[key],
+                          let statementJsonData = statementJsonString.data(using: .utf8),
+                          let statementData = try? JSONSerialization.jsonObject(with: statementJsonData) as? [String: String],
+                          let statementDateString = statementData["statementDate"] else { return nil }
+                    return dateFormatter.date(from: statementDateString)
+                }
+                
+                if let maxDate = allDates.max(), Calendar.current.isDate(latestDate, inSameDayAs: maxDate) {
+                    pendingCards.append((name: account.wrappedAccountName, amount: latestBillAmount))
+                }
+            }
+        }
+        
+        return pendingCards
+    }
+    
+    private var upcomingInsurancePolicies: [(name: String, amount: Double, dueDate: Date)] {
+        let policies = viewModel.insurancePolicies
+        let calendar = Calendar.current
+        let today = Date()
+        let currentDay = calendar.component(.day, from: today)
+        let currentMonth = calendar.component(.month, from: today)
+        let currentYear = calendar.component(.year, from: today)
+        
+        var upcomingPolicies: [(name: String, amount: Double, dueDate: Date)] = []
+        
+        for policy in policies where policy.isActive {
+            var targetMonth = currentMonth
+            var targetYear = currentYear
+            
+            if currentDay > policy.dayOfMonth {
+                targetMonth += 1
+                if targetMonth > 12 {
+                    targetMonth = 1
+                    targetYear += 1
+                }
+            }
+            
+            let dateComponents = DateComponents(year: targetYear, month: targetMonth, day: policy.dayOfMonth)
+            if let nextDueDate = calendar.date(from: dateComponents) {
+                let daysUntilDue = calendar.dateComponents([.day], from: today, to: nextDueDate).day ?? 0
+                
+                if daysUntilDue >= 0 && daysUntilDue <= 30 {
+                    upcomingPolicies.append((name: policy.name, amount: policy.premiumAmount, dueDate: nextDueDate))
+                }
+            }
+        }
+        
+        return upcomingPolicies.sorted { $0.dueDate < $1.dueDate }
+    }
+    
+    var body: some View {
+        NavigationView {
+            ScrollView {
+                VStack(spacing: DesignSystem.Spacing.lg) {
+                    // Total Summary
+                    VStack(spacing: DesignSystem.Spacing.md) {
+                        Text("Total Upcoming Bills")
+                            .font(DesignSystem.Typography.headlineMedium)
+                            .foregroundColor(DesignSystem.Colors.onSurface)
+                        
+                        Text(totalAmount, format: .currency(code: currencySettings.selectedCurrency.rawValue))
+                            .font(DesignSystem.Typography.displaySmall)
+                            .fontWeight(.bold)
+                            .foregroundColor(DesignSystem.Colors.error)
+                    }
+                    .padding(DesignSystem.Spacing.lg)
+                    .frame(maxWidth: .infinity)
+                    .background(DesignSystem.Colors.error.opacity(0.1))
+                    .cornerRadius(DesignSystem.CornerRadius.lg)
+                    
+                    // Pending Credit Card Bills
+                    if !pendingCreditCards.isEmpty {
+                        VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
+                            HStack {
+                                Image(systemName: "creditcard.fill")
+                                    .foregroundColor(DesignSystem.Colors.error)
+                                Text("Pending Credit Card Bills")
+                                    .font(DesignSystem.Typography.headlineSmall)
+                                    .foregroundColor(DesignSystem.Colors.onSurface)
+                                Spacer()
+                                Text(pendingBillsAmount, format: .currency(code: currencySettings.selectedCurrency.rawValue))
+                                    .font(DesignSystem.Typography.titleMedium)
+                                    .fontWeight(.semibold)
+                                    .foregroundColor(DesignSystem.Colors.error)
+                            }
+                            
+                            ForEach(pendingCreditCards, id: \.name) { card in
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(card.name)
+                                            .font(DesignSystem.Typography.bodyMedium)
+                                            .foregroundColor(DesignSystem.Colors.onSurface)
+                                        Text("Pending Payment")
+                                            .font(DesignSystem.Typography.labelSmall)
+                                            .foregroundColor(DesignSystem.Colors.onSurfaceVariant)
+                                    }
+                                    
+                                    Spacer()
+                                    
+                                    Text(card.amount, format: .currency(code: currencySettings.selectedCurrency.rawValue))
+                                        .font(DesignSystem.Typography.titleSmall)
+                                        .fontWeight(.medium)
+                                        .foregroundColor(DesignSystem.Colors.error)
+                                }
+                                .padding(DesignSystem.Spacing.md)
+                                .background(DesignSystem.Colors.surface)
+                                .cornerRadius(DesignSystem.CornerRadius.sm)
+                            }
+                        }
+                        .padding(DesignSystem.Spacing.md)
+                        .cardStyle()
+                    }
+                    
+                    // Upcoming Insurance Premiums
+                    if !upcomingInsurancePolicies.isEmpty {
+                        VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
+                            HStack {
+                                Image(systemName: "shield.fill")
+                                    .foregroundColor(DesignSystem.Colors.primary)
+                                Text("Upcoming Insurance Premiums")
+                                    .font(DesignSystem.Typography.headlineSmall)
+                                    .foregroundColor(DesignSystem.Colors.onSurface)
+                                Spacer()
+                                Text(upcomingInsuranceAmount, format: .currency(code: currencySettings.selectedCurrency.rawValue))
+                                    .font(DesignSystem.Typography.titleMedium)
+                                    .fontWeight(.semibold)
+                                    .foregroundColor(DesignSystem.Colors.primary)
+                            }
+                            
+                            ForEach(upcomingInsurancePolicies, id: \.name) { policy in
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(policy.name)
+                                            .font(DesignSystem.Typography.bodyMedium)
+                                            .foregroundColor(DesignSystem.Colors.onSurface)
+                                        Text("Due: \(policy.dueDate, style: .date)")
+                                            .font(DesignSystem.Typography.labelSmall)
+                                            .foregroundColor(DesignSystem.Colors.onSurfaceVariant)
+                                    }
+                                    
+                                    Spacer()
+                                    
+                                    Text(policy.amount, format: .currency(code: currencySettings.selectedCurrency.rawValue))
+                                        .font(DesignSystem.Typography.titleSmall)
+                                        .fontWeight(.medium)
+                                        .foregroundColor(DesignSystem.Colors.primary)
+                                }
+                                .padding(DesignSystem.Spacing.md)
+                                .background(DesignSystem.Colors.surface)
+                                .cornerRadius(DesignSystem.CornerRadius.sm)
+                            }
+                        }
+                        .padding(DesignSystem.Spacing.md)
+                        .cardStyle()
+                    }
+                    
+                    // Empty State
+                    if pendingCreditCards.isEmpty && upcomingInsurancePolicies.isEmpty {
+                        ContentUnavailableView(
+                            "No Upcoming Bills",
+                            systemImage: "checkmark.circle.fill",
+                            description: Text("You're all caught up! No pending bills or upcoming insurance premiums.")
+                        )
+                        .foregroundColor(DesignSystem.Colors.success)
+                    }
+                }
+                .padding(DesignSystem.Spacing.md)
+            }
+            .background(DesignSystem.Colors.background)
+            .navigationTitle("Upcoming Bills")
+            .navigationBarTitleDisplayMode(.large)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
     }
 } 

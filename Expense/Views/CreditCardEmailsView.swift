@@ -509,11 +509,13 @@ struct CreditCardEmailsView: View {
                 metadata["lastDueAmount"] = String(billInfo.dueAmount)
                 metadata["creditLimit"] = String(billInfo.creditLimit ?? 0)
                 
-                // Update account balance and credit limit
-                creditCardAccount.balance = -billInfo.totalAmount // Negative balance for credit cards
+                // Update account balance and credit limit (use current usage from parser, not bill amount)
+                // For ICICI cards, use the calculated current usage from the parser
+                let currentUsage = billInfo.totalAmount // This will be the current usage for display
+                creditCardAccount.balance = -currentUsage // Negative balance for credit cards (current usage)
                 creditCardAccount.creditLimit = billInfo.creditLimit ?? 0
                 
-                print("DEBUG: Updated account balance to: \(creditCardAccount.balance)")
+                print("DEBUG: Updated account balance to: \(creditCardAccount.balance) (current usage)")
                 print("DEBUG: Updated credit limit to: \(creditCardAccount.creditLimit)")
             } else {
                 print("DEBUG: Skipping account balance update - older statement")
@@ -528,7 +530,7 @@ struct CreditCardEmailsView: View {
             creditCardAccount.id = UUID()
             creditCardAccount.accountName = accountName
             creditCardAccount.accountType = AccountType.creditCard.rawValue
-            creditCardAccount.balance = -billInfo.totalAmount // Negative balance for credit cards
+            creditCardAccount.balance = -billInfo.totalAmount // Negative balance for credit cards (current usage)
             creditCardAccount.creditLimit = billInfo.creditLimit ?? 0
             
             // Set metadata

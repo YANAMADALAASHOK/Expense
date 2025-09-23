@@ -25,7 +25,6 @@ struct AccountsView: View {
     @State private var isUpdatingNAVs = false
     @State private var showingAddInsurance = false
     @State private var editingInsurance: InsurancePolicy?
-    @State private var insurancePolicies: [InsurancePolicy] = []
     @State private var isFetchingStatements = false
     @State private var fetchingProgress = ""
     @State private var selectedBank: CreditCardBank = .axis
@@ -378,49 +377,39 @@ extension AccountsView {
     
     // Insurance management methods
     private func loadInsurancePolicies() {
-        let insuranceManager = InsuranceManager.shared
-        insurancePolicies = insuranceManager.loadPolicies()
+        // Insurance policies are now managed by ExpenseViewModel
+        // No need to load separately
     }
     
     private func processInsurancePremiums() {
-        let insuranceManager = InsuranceManager.shared
-        insuranceManager.processInsurancePremiums(context: viewModel.viewContext, accounts: viewModel.accounts)
+        // Insurance premiums are now managed by ExpenseViewModel
+        // No need to process separately
     }
     
     private func addInsurancePolicy(_ policy: InsurancePolicy) {
-        insurancePolicies.append(policy)
-        saveInsurancePolicies()
+        viewModel.addInsurancePolicy(policy)
     }
     
     private func updateInsurancePolicy(_ policy: InsurancePolicy) {
-        if let index = insurancePolicies.firstIndex(where: { $0.id == policy.id }) {
-            insurancePolicies[index] = policy
-            saveInsurancePolicies()
-        }
+        viewModel.updateInsurancePolicy(policy)
     }
     
     private func deleteInsurancePolicy(_ policy: InsurancePolicy) {
-        insurancePolicies.removeAll { $0.id == policy.id }
-        saveInsurancePolicies()
+        viewModel.deleteInsurancePolicy(policy)
         
         // Clean up the last processed date
-        let lastProcessedKey = "insurance_\(policy.id)_lastProcessed"
-        UserDefaults.standard.removeObject(forKey: lastProcessedKey)
-    }
-    
-    private func saveInsurancePolicies() {
-        let insuranceManager = InsuranceManager.shared
-        insuranceManager.savePolicies(insurancePolicies)
+        let key = "lastProcessedInsurance_\(policy.id)"
+        UserDefaults.standard.removeObject(forKey: key)
     }
     
     @ViewBuilder
     private var insurancesSection: some View {
         Section("Insurance Policies") {
-            if insurancePolicies.isEmpty {
+            if viewModel.insurancePolicies.isEmpty {
                 Text("No insurance policies added yet")
                     .foregroundColor(.secondary)
             } else {
-                ForEach(insurancePolicies) { policy in
+                ForEach(viewModel.insurancePolicies) { policy in
                     InsurancePolicyRowView(
                         policy: policy,
                         accounts: viewModel.accounts
@@ -1124,11 +1113,11 @@ extension AccountsView {
                     metadata["creditLimit"] = String(billInfo.creditLimit ?? 0)
                     metadata["lastCurrentUsage"] = String(billInfo.totalAmount)
                     
-                    // Simple formula: Current Usage = Credit Limit - Available Credit Limit
-                    creditCardAccount.balance = billInfo.totalAmount
+                    // Use current usage for account balance
+                    creditCardAccount.balance = -billInfo.totalAmount
                     creditCardAccount.creditLimit = billInfo.creditLimit ?? 0
                     
-                    print("DEBUG: ✅ Updated balance from newer bill: ₹\(billInfo.totalAmount)")
+                    print("DEBUG: ✅ Updated balance from newer bill: ₹\(billInfo.totalAmount) (current usage)")
                 } else {
                     print("DEBUG: ❌ Skipping balance update - bill is older: \(billInfo.statementDate)")
                 }
@@ -1141,11 +1130,11 @@ extension AccountsView {
                 creditCardAccount.id = UUID()
                 creditCardAccount.accountName = accountName
                 creditCardAccount.accountType = AccountType.creditCard.rawValue
-                // Simple formula: Current Usage = Credit Limit - Available Credit Limit
-                creditCardAccount.balance = billInfo.totalAmount
+                // Use current usage for account balance
+                creditCardAccount.balance = -billInfo.totalAmount
                 creditCardAccount.creditLimit = billInfo.creditLimit ?? 0
                 
-                print("DEBUG: ✅ Created new account with balance: ₹\(billInfo.totalAmount)")
+                print("DEBUG: ✅ Created new account with balance: ₹\(billInfo.totalAmount) (current usage)")
                 
                 var metadata: [String: String] = [:]
                 
@@ -1254,8 +1243,8 @@ extension AccountsView {
             // Only update balance if this is a current bill (not historical)
             let finalAccount = viewModel.viewContext.object(with: creditCardAccount.objectID) as! CDAccount
             if isCurrentBill {
-                finalAccount.balance = billInfo.totalAmount
-                print("DEBUG: ✅ Balance updated to: ₹\(billInfo.totalAmount) (from bill dated \(billInfo.statementDate))")
+                finalAccount.balance = -billInfo.totalAmount
+                print("DEBUG: ✅ Balance updated to: ₹\(billInfo.totalAmount) (current usage from bill dated \(billInfo.statementDate))")
             } else {
                 print("DEBUG: 📜 Balance NOT updated - historical bill (current balance: ₹\(finalAccount.balance))")
             }

@@ -148,15 +148,11 @@ struct AccountBackup: Codable {
 // MARK: - Export View
 struct ExportView: View {
     @StateObject private var exportManager = ExportManager.shared
-    @StateObject private var viewModel: ExpenseViewModel
+    @EnvironmentObject var viewModel: ExpenseViewModel
     @State private var selectedExportType: ExportType = .csv
-    @State private var selectedDateRange: DateRange = .lastMonth()
-    @State private var showingShareSheet = false
     @State private var exportedFileURL: URL?
-    
-    init(context: NSManagedObjectContext) {
-        self._viewModel = StateObject(wrappedValue: ExpenseViewModel(context: context))
-    }
+    @State private var selectedDateRange = DateRange.lastMonth()
+    @State private var showingShareSheet = false
     
     var body: some View {
         NavigationView {
