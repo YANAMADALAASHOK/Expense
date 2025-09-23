@@ -1,6 +1,34 @@
 import SwiftUI
 import CoreData
 
+// MARK: - Account Section Types
+enum AccountSection: String, CaseIterable, Identifiable {
+    case balanceSummary = "balanceSummary"
+    case assets = "assets"
+    case liabilities = "liabilities"
+    case insurances = "insurances"
+    
+    var id: String { rawValue }
+    
+    var displayName: String {
+        switch self {
+        case .balanceSummary: return "Balance Summary"
+        case .assets: return "Assets"
+        case .liabilities: return "Liabilities"
+        case .insurances: return "Insurances"
+        }
+    }
+    
+    var icon: String {
+        switch self {
+        case .balanceSummary: return "chart.pie"
+        case .assets: return "arrow.up.circle.fill"
+        case .liabilities: return "arrow.down.circle.fill"
+        case .insurances: return "shield.fill"
+        }
+    }
+}
+
 extension DateFormatter {
     static let shortDateTime: DateFormatter = {
         let formatter = DateFormatter()
@@ -30,6 +58,10 @@ struct AccountsView: View {
     @State private var selectedBank: CreditCardBank = .axis
     @State private var showingCardDetailsForm = false
     @State private var selectedCardAccount: CDAccount?
+    
+    // Section reordering states
+    @State private var isEditMode = false
+    @State private var sectionOrder: [AccountSection] = []
     
     enum CreditCardBank: String, CaseIterable {
         case axis = "cc.statements@axisbank.com"
@@ -79,11 +111,46 @@ struct AccountsView: View {
     var body: some View {
         NavigationView {
             ZStack {
-                List {
-                    Section { BalanceSummarySection(accounts: viewModel.accounts) }
-                    assetsSection
-                    liabilitiesSection
-                    insurancesSection
+                Group {
+                    if isEditMode {
+                        // Edit mode with List for proper drag and drop
+                        List {
+                            ForEach(sectionOrder, id: \.id) { section in
+                                VStack(alignment: .leading, spacing: 12) {
+                                    HStack {
+                                        Image(systemName: section.icon)
+                                            .foregroundColor(.blue)
+                                            .frame(width: 20)
+                                        Text(section.displayName)
+                                            .font(.headline)
+                                            .foregroundColor(.primary)
+                                        Spacer()
+                                        Image(systemName: "line.3.horizontal")
+                                            .foregroundColor(.gray)
+                                    }
+                                    .padding(.vertical, 8)
+                                    .background(Color(.systemGray6))
+                                    .cornerRadius(8)
+                                    
+                                    sectionView(for: section)
+                                        .disabled(true)
+                                        .opacity(0.6)
+                                }
+                                .listRowSeparator(.hidden)
+                                .listRowBackground(Color.clear)
+                            }
+                            .onMove(perform: moveSections)
+                        }
+                        .listStyle(PlainListStyle())
+                        .environment(\.editMode, .constant(.active))
+                    } else {
+                        // Normal mode with regular List
+                        List {
+                            ForEach(sectionOrder, id: \.id) { section in
+                                sectionView(for: section)
+                            }
+                        }
+                    }
                 }
                 .background(Color(.systemGroupedBackground))
                 
@@ -114,6 +181,18 @@ struct AccountsView: View {
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
                     HStack {
+                        Button(action: {
+                            withAnimation(.easeInOut(duration: 0.3)) {
+                                if isEditMode {
+                                    saveSectionOrder()
+                                }
+                                isEditMode.toggle()
+                            }
+                        }) {
+                            Text(isEditMode ? "Done" : "Edit")
+                                .foregroundColor(.blue)
+                        }
+                        
                         Button(action: refreshData) {
                             Image(systemName: "arrow.clockwise")
                                 .rotationEffect(.degrees(isRefreshing ? 360 : 0))
@@ -141,6 +220,7 @@ struct AccountsView: View {
                 refreshData()
             }
             .onAppear {
+                loadSectionOrder()
                 viewModel.fetchAccounts()
                 
                 // Setup daily scheduler for 12am credit card statement checks
@@ -393,6 +473,38 @@ extension AccountsView {
     private func loadInsurancePolicies() {
         // Insurance policies are now managed by ExpenseViewModel
         // No need to load separately
+    }
+    
+    // MARK: - Section Order Management
+    private func loadSectionOrder() {
+        if let savedOrder = UserDefaults.standard.array(forKey: "AccountSectionOrder") as? [String] {
+            sectionOrder = savedOrder.compactMap { AccountSection(rawValue: $0) }
+        } else {
+            sectionOrder = AccountSection.allCases
+        }
+    }
+    
+    private func saveSectionOrder() {
+        let orderStrings = sectionOrder.map { $0.rawValue }
+        UserDefaults.standard.set(orderStrings, forKey: "AccountSectionOrder")
+    }
+    
+    private func moveSections(from source: IndexSet, to destination: Int) {
+        sectionOrder.move(fromOffsets: source, toOffset: destination)
+    }
+    
+    @ViewBuilder
+    private func sectionView(for section: AccountSection) -> some View {
+        switch section {
+        case .balanceSummary:
+            Section { BalanceSummarySection(accounts: viewModel.accounts) }
+        case .assets:
+            assetsSection
+        case .liabilities:
+            liabilitiesSection
+        case .insurances:
+            insurancesSection
+        }
     }
     
     private func processInsurancePremiums() {

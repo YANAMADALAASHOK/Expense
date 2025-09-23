@@ -1,6 +1,40 @@
 import SwiftUI
 import Charts
 
+// MARK: - Dashboard Section Types
+enum DashboardSection: String, CaseIterable, Identifiable {
+    case netWorth = "netWorth"
+    case summaryCards = "summaryCards"
+    case spendingChart = "spendingChart"
+    case upcomingBills = "upcomingBills"
+    case recentTransactions = "recentTransactions"
+    case insights = "insights"
+    
+    var id: String { rawValue }
+    
+    var displayName: String {
+        switch self {
+        case .netWorth: return "Net Worth"
+        case .summaryCards: return "Summary Cards"
+        case .spendingChart: return "Spending Chart"
+        case .upcomingBills: return "Upcoming Bills"
+        case .recentTransactions: return "Recent Transactions"
+        case .insights: return "Insights"
+        }
+    }
+    
+    var icon: String {
+        switch self {
+        case .netWorth: return "chart.line.uptrend.xyaxis"
+        case .summaryCards: return "square.grid.2x2"
+        case .spendingChart: return "chart.bar"
+        case .upcomingBills: return "calendar.badge.exclamationmark"
+        case .recentTransactions: return "list.bullet"
+        case .insights: return "lightbulb"
+        }
+    }
+}
+
 // MARK: - Enhanced Dashboard View
 struct EnhancedDashboardView: View {
     @ObservedObject var viewModel: ExpenseViewModel
@@ -12,6 +46,10 @@ struct EnhancedDashboardView: View {
     @State private var customEndDate = Date()
     @State private var pendingBillsAmount: Double = 0
     @State private var upcomingInsuranceAmount: Double = 0
+    
+    // Section reordering states
+    @State private var isEditMode = false
+    @State private var sectionOrder: [DashboardSection] = []
     
     // Computed property for filtered transactions
     private var filteredTransactions: [CDTransaction] {
@@ -140,15 +178,30 @@ struct EnhancedDashboardView: View {
         return cat == TransactionCategory.selfTransfer.rawValue
     }
     
-    var body: some View {
-        NavigationView {
-            ScrollView {
-                VStack(spacing: DesignSystem.Spacing.lg) {
-                    // Header with Net Worth
-                    NetWorthCard(viewModel: viewModel, currencySettings: currencySettings)
-                    
-                    
-            // Summary Cards (respect dashboard exclusions)
+    // MARK: - Section Order Management
+    private func loadSectionOrder() {
+        if let savedOrder = UserDefaults.standard.array(forKey: "DashboardSectionOrder") as? [String] {
+            sectionOrder = savedOrder.compactMap { DashboardSection(rawValue: $0) }
+        } else {
+            sectionOrder = DashboardSection.allCases
+        }
+    }
+    
+    private func saveSectionOrder() {
+        let orderStrings = sectionOrder.map { $0.rawValue }
+        UserDefaults.standard.set(orderStrings, forKey: "DashboardSectionOrder")
+    }
+    
+    private func moveSections(from source: IndexSet, to destination: Int) {
+        sectionOrder.move(fromOffsets: source, toOffset: destination)
+    }
+    
+    @ViewBuilder
+    private func sectionView(for section: DashboardSection) -> some View {
+        switch section {
+        case .netWorth:
+            NetWorthCard(viewModel: viewModel, currencySettings: currencySettings)
+        case .summaryCards:
             SummaryCardsGrid(
                 viewModel: viewModel,
                 timeRange: selectedTimeRange,
@@ -160,31 +213,87 @@ struct EnhancedDashboardView: View {
                 expenseTransactions: expenseTransactions,
                 allTransactions: allTransactions
             )
-                    
-                    // Spending Chart
-                    SpendingChartView(transactions: filteredTransactions, timeRange: selectedTimeRange)
-                    
-                    // Upcoming Bills Section
-                    UpcomingBillsSection(
-                        pendingBillsAmount: pendingBillsAmount,
-                        upcomingInsuranceAmount: upcomingInsuranceAmount,
-                        currencySettings: currencySettings,
-                        viewModel: viewModel
-                    )
-                    
-                    // Recent Transactions
-                    RecentTransactionsSection(transactions: filteredTransactions, viewModel: viewModel)
-                    
-                    // Insights Button
-                    InsightsButton(showingInsights: $showingInsights)
+        case .spendingChart:
+            SpendingChartView(transactions: filteredTransactions, timeRange: selectedTimeRange)
+        case .upcomingBills:
+            UpcomingBillsSection(
+                pendingBillsAmount: pendingBillsAmount,
+                upcomingInsuranceAmount: upcomingInsuranceAmount,
+                currencySettings: currencySettings,
+                viewModel: viewModel
+            )
+        case .recentTransactions:
+            RecentTransactionsSection(transactions: filteredTransactions, viewModel: viewModel)
+        case .insights:
+            InsightsButton(showingInsights: $showingInsights)
+        }
+    }
+    
+    var body: some View {
+        NavigationView {
+            Group {
+                if isEditMode {
+                    // Edit mode with List for proper drag and drop
+                    List {
+                        ForEach(sectionOrder, id: \.id) { section in
+                            VStack(alignment: .leading, spacing: 12) {
+                                HStack {
+                                    Image(systemName: section.icon)
+                                        .foregroundColor(.blue)
+                                        .frame(width: 20)
+                                    Text(section.displayName)
+                                        .font(.headline)
+                                        .foregroundColor(.primary)
+                                    Spacer()
+                                    Image(systemName: "line.3.horizontal")
+                                        .foregroundColor(.gray)
+                                }
+                                .padding(.vertical, 8)
+                                .background(Color(.systemGray6))
+                                .cornerRadius(8)
+                                
+                                sectionView(for: section)
+                                    .disabled(true)
+                                    .opacity(0.6)
+                            }
+                            .listRowSeparator(.hidden)
+                            .listRowBackground(Color.clear)
+                        }
+                        .onMove(perform: moveSections)
+                    }
+                    .listStyle(PlainListStyle())
+                    .environment(\.editMode, .constant(.active))
+                } else {
+                    // Normal mode with ScrollView
+                    ScrollView {
+                        VStack(spacing: DesignSystem.Spacing.lg) {
+                            ForEach(sectionOrder, id: \.id) { section in
+                                sectionView(for: section)
+                            }
+                        }
+                        .padding(.horizontal, DesignSystem.Spacing.md)
+                        .padding(.top, DesignSystem.Spacing.md)
+                    }
                 }
-                .padding(.horizontal, DesignSystem.Spacing.md)
-                .padding(.top, DesignSystem.Spacing.md)
             }
             .background(DesignSystem.Colors.background)
             .navigationTitle("Dashboard")
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button(action: {
+                        withAnimation(.easeInOut(duration: 0.3)) {
+                            if isEditMode {
+                                saveSectionOrder()
+                            }
+                            isEditMode.toggle()
+                        }
+                    }) {
+                        Text(isEditMode ? "Done" : "Edit")
+                            .foregroundColor(DesignSystem.Colors.primary)
+                    }
+                }
+                
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button(action: { showingDateFilter = true }) {
                         Image(systemName: "line.3.horizontal.decrease.circle")
@@ -193,6 +302,7 @@ struct EnhancedDashboardView: View {
                 }
             }
             .onAppear {
+                loadSectionOrder()
                 calculatePendingBills()
                 calculateUpcomingInsurance()
             }
