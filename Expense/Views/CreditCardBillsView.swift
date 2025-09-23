@@ -266,6 +266,103 @@ struct CreditCard: Identifiable {
     let totalBills: Int
     let unpaidBills: Int
     let account: CDAccount
+    
+    // Enhanced card details
+    var fullCardNumber: String {
+        // Try to get full card number from account metadata, fallback to masked
+        if let metadata = account.metadata,
+           let metadataString = String(data: metadata, encoding: .utf8),
+           let fullNumber = extractFullCardNumber(from: metadataString) {
+            return fullNumber
+        }
+        return "****\(cardNumber)"
+    }
+    
+    var expiryDate: String {
+        // Try to get expiry from account metadata
+        if let metadata = account.metadata,
+           let metadataString = String(data: metadata, encoding: .utf8),
+           let expiry = extractExpiryDate(from: metadataString) {
+            return expiry
+        }
+        return "MM/YY"
+    }
+    
+    var cvv: String {
+        // Try to get CVV from account metadata
+        if let metadata = account.metadata,
+           let metadataString = String(data: metadata, encoding: .utf8),
+           let cvvValue = extractCVV(from: metadataString) {
+            return cvvValue
+        }
+        return "***"
+    }
+    
+    private func extractFullCardNumber(from metadata: String) -> String? {
+        // Look for full card number in metadata
+        let patterns = [
+            "fullCardNumber\":\\s*\"([0-9\\s]+)\"",
+            "cardNumber\":\\s*\"([0-9\\s]+)\"",
+            "fullNumber\":\\s*\"([0-9\\s]+)\""
+        ]
+        
+        for pattern in patterns {
+            if let regex = try? NSRegularExpression(pattern: pattern),
+               let match = regex.firstMatch(in: metadata, range: NSRange(metadata.startIndex..., in: metadata)),
+               let range = Range(match.range(at: 1), in: metadata) {
+                return String(metadata[range]).replacingOccurrences(of: " ", with: "")
+            }
+        }
+        return nil
+    }
+    
+    private func extractExpiryDate(from metadata: String) -> String? {
+        // Look for expiry date in metadata
+        let patterns = [
+            "expiryDate\":\\s*\"([0-9]{2}/[0-9]{2})\"",
+            "expiry\":\\s*\"([0-9]{2}/[0-9]{2})\"",
+            "validThru\":\\s*\"([0-9]{2}/[0-9]{2})\""
+        ]
+        
+        for pattern in patterns {
+            if let regex = try? NSRegularExpression(pattern: pattern),
+               let match = regex.firstMatch(in: metadata, range: NSRange(metadata.startIndex..., in: metadata)),
+               let range = Range(match.range(at: 1), in: metadata) {
+                return String(metadata[range])
+            }
+        }
+        return nil
+    }
+    
+    private func extractCVV(from metadata: String) -> String? {
+        // Look for CVV in metadata
+        let patterns = [
+            "cvv\":\\s*\"([0-9]{3,4})\"",
+            "cvc\":\\s*\"([0-9]{3,4})\"",
+            "securityCode\":\\s*\"([0-9]{3,4})\""
+        ]
+        
+        for pattern in patterns {
+            if let regex = try? NSRegularExpression(pattern: pattern),
+               let match = regex.firstMatch(in: metadata, range: NSRange(metadata.startIndex..., in: metadata)),
+               let range = Range(match.range(at: 1), in: metadata) {
+                return String(metadata[range])
+            }
+        }
+        return nil
+    }
+    
+    // Helper function to add card details to account metadata
+    static func addCardDetails(to account: CDAccount, fullNumber: String, expiry: String, cvv: String) {
+        var metadata = account.metadataDictionary
+        metadata["fullCardNumber"] = fullNumber
+        metadata["expiryDate"] = expiry
+        metadata["cvv"] = cvv
+        
+        if let jsonData = try? JSONSerialization.data(withJSONObject: metadata) {
+            account.metadata = jsonData
+        }
+    }
 }
 
 struct CreditCardBill: Identifiable {
@@ -284,6 +381,8 @@ struct CreditCardBill: Identifiable {
 
 struct CreditCardRow: View {
     let card: CreditCard
+    @State private var showingCardDetails = false
+    @State private var showingShareSheet = false
     
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -301,7 +400,7 @@ struct CreditCardRow: View {
                 Spacer()
                 
                 VStack(alignment: .trailing, spacing: 4) {
-                    Text("₹\(card.currentBalance, specifier: "%.0f")")
+                    Text("₹\(String(format: "%.0f", card.currentBalance))")
                         .font(.title3)
                         .fontWeight(.semibold)
                         .foregroundColor(.primary)
@@ -331,7 +430,7 @@ struct CreditCardRow: View {
                     Text("Available Credit")
                         .font(.caption)
                         .foregroundColor(.secondary)
-                    Text("₹\(card.availableCredit, specifier: "%.0f")")
+                    Text("₹\(String(format: "%.0f", card.availableCredit))")
                         .font(.subheadline)
                         .foregroundColor(.green)
                 }
@@ -346,10 +445,357 @@ struct CreditCardRow: View {
                         .font(.subheadline)
                 }
             }
+            
+            // Card action buttons
+            HStack {
+                Button(action: {
+                    showingCardDetails = true
+                }) {
+                    HStack {
+                        Image(systemName: "creditcard")
+                        Text("Card Details")
+                    }
+                    .font(.caption)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(Color.blue.opacity(0.1))
+                    .foregroundColor(.blue)
+                    .cornerRadius(8)
+                }
+                
+                Button(action: {
+                    showingShareSheet = true
+                }) {
+                    HStack {
+                        Image(systemName: "square.and.arrow.up")
+                        Text("Share")
+                    }
+                    .font(.caption)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(Color.green.opacity(0.1))
+                    .foregroundColor(.green)
+                    .cornerRadius(8)
+                }
+                
+                Spacer()
+            }
         }
         .padding(.vertical, 4)
+        .sheet(isPresented: $showingCardDetails) {
+            CreditCardDetailsView(card: card)
+        }
+        .sheet(isPresented: $showingShareSheet) {
+            ShareSheet(activityItems: [createShareText()])
+        }
+    }
+    
+    private func createShareText() -> String {
+        return """
+        💳 \(card.bankName) Credit Card
+        
+        Card Number: \(card.fullCardNumber)
+        Expiry Date: \(card.expiryDate)
+        CVV: \(card.cvv)
+        
+        💰 Financial Details:
+        Credit Limit: ₹\(String(format: "%.0f", card.creditLimit))
+        Current Balance: ₹\(String(format: "%.0f", card.currentBalance))
+        Available Credit: ₹\(String(format: "%.0f", card.availableCredit))
+        
+        📊 Bills Status:
+        Total Bills: \(card.totalBills)
+        Unpaid Bills: \(card.unpaidBills)
+        
+        Generated from Expense Tracker App
+        """
     }
 }
+
+// MARK: - Credit Card Details View
+struct CreditCardDetailsView: View {
+    let card: CreditCard
+    @Environment(\.dismiss) var dismiss
+    @State private var showingShareSheet = false
+    @State private var isCardNumberVisible = false
+    @State private var isCVVVisible = false
+    
+    var body: some View {
+        NavigationView {
+            ScrollView {
+                VStack(spacing: 24) {
+                    // Card Visual
+                    CreditCardVisualView(
+                        card: card,
+                        showFullNumber: isCardNumberVisible,
+                        showCVV: isCVVVisible
+                    )
+                    
+                    // Card Details Section
+                    VStack(alignment: .leading, spacing: 16) {
+                        Text("Card Information")
+                            .font(.title2)
+                            .fontWeight(.bold)
+                        
+                        CardDetailRow(
+                            title: "Bank Name",
+                            value: card.bankName,
+                            icon: "building.2"
+                        )
+                        
+                        CardDetailRow(
+                            title: "Card Number",
+                            value: isCardNumberVisible ? card.fullCardNumber : "****\(card.cardNumber)",
+                            icon: "creditcard",
+                            isSecure: true,
+                            isVisible: isCardNumberVisible,
+                            onToggleVisibility: { isCardNumberVisible.toggle() }
+                        )
+                        
+                        CardDetailRow(
+                            title: "Expiry Date",
+                            value: card.expiryDate,
+                            icon: "calendar"
+                        )
+                        
+                        CardDetailRow(
+                            title: "CVV",
+                            value: isCVVVisible ? card.cvv : "***",
+                            icon: "lock.shield",
+                            isSecure: true,
+                            isVisible: isCVVVisible,
+                            onToggleVisibility: { isCVVVisible.toggle() }
+                        )
+                    }
+                    .padding(.horizontal)
+                    
+                    // Financial Details Section
+                    VStack(alignment: .leading, spacing: 16) {
+                        Text("Financial Information")
+                            .font(.title2)
+                            .fontWeight(.bold)
+                        
+                        CardDetailRow(
+                            title: "Credit Limit",
+                            value: "₹\(String(format: "%.0f", card.creditLimit))",
+                            icon: "chart.line.uptrend.xyaxis"
+                        )
+                        
+                        CardDetailRow(
+                            title: "Current Balance",
+                            value: "₹\(String(format: "%.0f", card.currentBalance))",
+                            icon: "indianrupeesign.circle"
+                        )
+                        
+                        CardDetailRow(
+                            title: "Available Credit",
+                            value: "₹\(String(format: "%.0f", card.availableCredit))",
+                            icon: "checkmark.circle.fill",
+                            valueColor: .green
+                        )
+                    }
+                    .padding(.horizontal)
+                    
+                    // Bills Status Section
+                    VStack(alignment: .leading, spacing: 16) {
+                        Text("Bills Status")
+                            .font(.title2)
+                            .fontWeight(.bold)
+                        
+                        CardDetailRow(
+                            title: "Total Bills",
+                            value: "\(card.totalBills)",
+                            icon: "doc.text"
+                        )
+                        
+                        CardDetailRow(
+                            title: "Unpaid Bills",
+                            value: "\(card.unpaidBills)",
+                            icon: "exclamationmark.triangle",
+                            valueColor: card.unpaidBills > 0 ? .red : .green
+                        )
+                    }
+                    .padding(.horizontal)
+                    
+                    // Share Button
+                    Button(action: {
+                        showingShareSheet = true
+                    }) {
+                        HStack {
+                            Image(systemName: "square.and.arrow.up")
+                            Text("Share Card Details")
+                        }
+                        .font(.headline)
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                        .background(Color.blue)
+                        .cornerRadius(12)
+                    }
+                    .padding(.horizontal)
+                }
+                .padding(.vertical)
+            }
+            .navigationTitle("Card Details")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                }
+            }
+        }
+        .sheet(isPresented: $showingShareSheet) {
+            ShareSheet(activityItems: [createDetailedShareText()])
+        }
+    }
+    
+    private func createDetailedShareText() -> String {
+        return """
+        💳 \(card.bankName) Credit Card Details
+        
+        🔢 Card Information:
+        Card Number: \(card.fullCardNumber)
+        Expiry Date: \(card.expiryDate)
+        CVV: \(card.cvv)
+        
+        💰 Financial Summary:
+        Credit Limit: ₹\(String(format: "%.0f", card.creditLimit))
+        Current Balance: ₹\(String(format: "%.0f", card.currentBalance))
+        Available Credit: ₹\(String(format: "%.0f", card.availableCredit))
+        
+        📊 Bills Overview:
+        Total Bills: \(card.totalBills)
+        Unpaid Bills: \(card.unpaidBills)
+        Status: \(card.unpaidBills > 0 ? "⚠️ Has pending bills" : "✅ All bills paid")
+        
+        📱 Shared from Expense Tracker App
+        Date: \(Date().formatted(date: .abbreviated, time: .shortened))
+        """
+    }
+}
+
+// MARK: - Supporting Views
+struct CreditCardVisualView: View {
+    let card: CreditCard
+    let showFullNumber: Bool
+    let showCVV: Bool
+    
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 16)
+                .fill(LinearGradient(
+                    colors: [Color.blue.opacity(0.8), Color.purple.opacity(0.6)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                ))
+                .frame(height: 200)
+            
+            VStack(alignment: .leading, spacing: 16) {
+                HStack {
+                    Text(card.bankName)
+                        .font(.headline)
+                        .foregroundColor(.white)
+                    Spacer()
+                    Text("CREDIT")
+                        .font(.caption)
+                        .fontWeight(.bold)
+                        .foregroundColor(.white.opacity(0.8))
+                }
+                
+                Spacer()
+                
+                Text(showFullNumber ? formatCardNumber(card.fullCardNumber) : "****  ****  ****  \(card.cardNumber)")
+                    .font(.title2)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.white)
+                    .tracking(2)
+                
+                HStack {
+                    VStack(alignment: .leading) {
+                        Text("VALID THRU")
+                            .font(.caption2)
+                            .foregroundColor(.white.opacity(0.7))
+                        Text(card.expiryDate)
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+                            .foregroundColor(.white)
+                    }
+                    
+                    Spacer()
+                    
+                    VStack(alignment: .trailing) {
+                        Text("CVV")
+                            .font(.caption2)
+                            .foregroundColor(.white.opacity(0.7))
+                        Text(showCVV ? card.cvv : "***")
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+                            .foregroundColor(.white)
+                    }
+                }
+            }
+            .padding(20)
+        }
+        .padding(.horizontal)
+    }
+    
+    private func formatCardNumber(_ number: String) -> String {
+        let cleaned = number.replacingOccurrences(of: " ", with: "")
+        var formatted = ""
+        for (index, character) in cleaned.enumerated() {
+            if index > 0 && index % 4 == 0 {
+                formatted += "  "
+            }
+            formatted += String(character)
+        }
+        return formatted
+    }
+}
+
+struct CardDetailRow: View {
+    let title: String
+    let value: String
+    let icon: String
+    var isSecure: Bool = false
+    var isVisible: Bool = false
+    var valueColor: Color = .primary
+    var onToggleVisibility: (() -> Void)? = nil
+    
+    var body: some View {
+        HStack {
+            Image(systemName: icon)
+                .foregroundColor(.blue)
+                .frame(width: 24)
+            
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                Text(value)
+                    .font(.body)
+                    .fontWeight(.medium)
+                    .foregroundColor(valueColor)
+            }
+            
+            Spacer()
+            
+            if isSecure, let toggle = onToggleVisibility {
+                Button(action: toggle) {
+                    Image(systemName: isVisible ? "eye.slash" : "eye")
+                        .foregroundColor(.blue)
+                }
+            }
+        }
+        .padding(.vertical, 8)
+        .padding(.horizontal, 16)
+        .background(Color(.systemGray6))
+        .cornerRadius(12)
+    }
+}
+
+// ShareSheet is already defined in ExportManager.swift
 
 struct CardDetailView: View {
     let card: CreditCard
@@ -392,7 +838,7 @@ struct CardDetailView: View {
                         Spacer()
                         
                         VStack(alignment: .trailing, spacing: 4) {
-                            Text("₹\(card.currentBalance, specifier: "%.2f")")
+                            Text("₹\(String(format: "%.2f", card.currentBalance))")
                                 .font(.title2)
                                 .fontWeight(.semibold)
                             
@@ -409,7 +855,7 @@ struct CardDetailView: View {
                             Text("Credit Limit")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
-                            Text("₹\(card.creditLimit, specifier: "%.2f")")
+                            Text("₹\(String(format: "%.2f", card.creditLimit))")
                                 .font(.subheadline)
                         }
                         
@@ -419,7 +865,7 @@ struct CardDetailView: View {
                             Text("Available Credit")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
-                            Text("₹\(card.availableCredit, specifier: "%.2f")")
+                            Text("₹\(String(format: "%.2f", card.availableCredit))")
                                 .font(.subheadline)
                                 .foregroundColor(.green)
                         }
@@ -909,7 +1355,7 @@ struct CreditCardBillRow: View {
                 Spacer()
                 
                 VStack(alignment: .trailing, spacing: 4) {
-                    Text("₹\(bill.dueAmount, specifier: "%.2f")")
+                    Text("₹\(String(format: "%.2f", bill.dueAmount))")
                         .font(.headline)
                         .foregroundColor(bill.isPaid ? .green : .red)
                     
@@ -973,12 +1419,12 @@ struct BillDetailView: View {
                         
                         VStack(alignment: .trailing, spacing: 4) {
                             VStack(alignment: .trailing, spacing: 2) {
-                                Text("Due: ₹\(bill.dueAmount, specifier: "%.2f")")
+                                Text("Due: ₹\(String(format: "%.2f", bill.dueAmount))")
                                     .font(.title2)
                                     .fontWeight(.semibold)
                                     .foregroundColor(.red)
                                 
-                                Text("Used: ₹\(bill.totalAmount, specifier: "%.2f")")
+                                Text("Used: ₹\(String(format: "%.2f", bill.totalAmount))")
                                     .font(.subheadline)
                                     .foregroundColor(.secondary)
                             }
@@ -1023,7 +1469,7 @@ struct BillDetailView: View {
                                 Text("Credit Limit")
                                     .font(.caption)
                                     .foregroundColor(.secondary)
-                                Text("₹\(bill.creditLimit, specifier: "%.2f")")
+                                Text("₹\(String(format: "%.2f", bill.creditLimit))")
                                     .font(.subheadline)
                             }
                             
@@ -1033,7 +1479,7 @@ struct BillDetailView: View {
                                 Text("Available Credit")
                                     .font(.caption)
                                     .foregroundColor(.secondary)
-                                Text("₹\(bill.creditLimit - bill.totalAmount, specifier: "%.2f")")
+                                Text("₹\(String(format: "%.2f", bill.creditLimit - bill.totalAmount))")
                                     .font(.subheadline)
                                     .foregroundColor(.green)
                             }
@@ -1075,7 +1521,7 @@ struct BillDetailView: View {
                             HStack {
                                 Image(systemName: "creditcard")
                                     .font(.title3)
-                                Text("Pay Bill - ₹\(bill.dueAmount, specifier: "%.2f")")
+                                Text("Pay Bill - ₹\(String(format: "%.2f", bill.dueAmount))")
                                     .font(.headline)
                             }
                             .foregroundColor(.white)
@@ -1183,7 +1629,7 @@ struct BillTransactionRowView: View {
             Spacer()
             
             VStack(alignment: .trailing, spacing: 4) {
-                Text("₹\(transaction.amount, specifier: "%.2f")")
+                Text("₹\(String(format: "%.2f", transaction.amount))")
                     .font(.subheadline)
                     .fontWeight(.medium)
                 
@@ -1274,7 +1720,7 @@ struct PaymentSheet: View {
                                 HStack {
                                     Text(account.wrappedAccountName)
                                     Spacer()
-                                    Text("₹\(account.balance, specifier: "%.2f")")
+                                    Text("₹\(String(format: "%.2f", account.balance))")
                                         .foregroundColor(.secondary)
                                 }
                                 .tag(account as CDAccount?)

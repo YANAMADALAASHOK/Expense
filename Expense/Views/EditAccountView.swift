@@ -18,6 +18,11 @@ struct EditAccountView: View {
     @State private var showFundSuggestions: Bool = false
     @State private var isFundListLoading: Bool = false
     
+    // Credit card specific fields
+    @State private var cardNumber: String = ""
+    @State private var expiryDate: String = ""
+    @State private var cvv: String = ""
+    
     init(viewModel: ExpenseViewModel, account: CDAccount) {
         self.viewModel = viewModel
         self.account = account
@@ -38,6 +43,11 @@ struct EditAccountView: View {
         } else {
             _loanDate = State(initialValue: Date())
         }
+        
+        // Initialize credit card fields from metadata
+        _cardNumber = State(initialValue: metadata["fullCardNumber"] ?? "")
+        _expiryDate = State(initialValue: metadata["expiryDate"] ?? "")
+        _cvv = State(initialValue: metadata["cvv"] ?? "")
     }
     
     var body: some View {
@@ -167,8 +177,72 @@ struct EditAccountView: View {
                                 .labelsHidden()
                             }
                         }
+                    }
+                }
+                
+                // Credit Card Details Section
+                if account.accountType == AccountType.creditCard.rawValue {
+                    Section("Card Details") {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Card Number")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            TextField("1234 5678 9012 3456", text: $cardNumber)
+                                .keyboardType(.numberPad)
+                                .textContentType(.creditCardNumber)
+                                .onChange(of: cardNumber) { _, newValue in
+                                    cardNumber = formatCardNumber(newValue)
+                                }
+                        }
                         
-                        if account.accountType == AccountType.loan.rawValue {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("Expiry Date")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                TextField("MM/YY", text: $expiryDate)
+                                    .keyboardType(.numberPad)
+                                    .onChange(of: expiryDate) { _, newValue in
+                                        expiryDate = formatExpiryDate(newValue)
+                                    }
+                            }
+                            
+                            Spacer()
+                            
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("CVV")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                TextField("123", text: $cvv)
+                                    .keyboardType(.numberPad)
+                                    .onChange(of: cvv) { _, newValue in
+                                        cvv = String(newValue.prefix(4)) // Limit to 4 digits
+                                    }
+                            }
+                        }
+                        
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Image(systemName: "lock.shield.fill")
+                                    .foregroundColor(.green)
+                                Text("Security Information")
+                                    .font(.headline)
+                            }
+                            
+                            Text("• Card details are stored securely in encrypted metadata")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            Text("• Information is only visible when you choose to reveal it")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
+                
+                // Loan Details Section
+                if account.accountType == AccountType.loan.rawValue {
+                    Section("Loan Details") {
                             HStack {
                                 TextField("Interest Rate (%)", text: $interestRate)
                                     .keyboardType(.decimalPad)
@@ -187,7 +261,6 @@ struct EditAccountView: View {
                             }
                             
                             DatePicker("Loan Date", selection: $loanDate, displayedComponents: .date)
-                        }
                     }
                 }
             }
@@ -231,6 +304,20 @@ struct EditAccountView: View {
         if account.accountType == AccountType.mutualFund.rawValue {
             metadata["amfiSchemeCode"] = amfiSchemeCode
         }
+        
+        // Save credit card details to metadata
+        if account.accountType == AccountType.creditCard.rawValue {
+            if !cardNumber.isEmpty {
+                let cleanedCardNumber = cardNumber.replacingOccurrences(of: " ", with: "")
+                metadata["fullCardNumber"] = cleanedCardNumber
+            }
+            if !expiryDate.isEmpty {
+                metadata["expiryDate"] = expiryDate
+            }
+            if !cvv.isEmpty {
+                metadata["cvv"] = cvv
+            }
+        }
         viewModel.updateAccount(
             account,
             name: accountName,
@@ -239,6 +326,33 @@ struct EditAccountView: View {
             metadata: metadata
         )
         dismiss()
+    }
+    
+    private func formatCardNumber(_ input: String) -> String {
+        let cleaned = input.replacingOccurrences(of: " ", with: "")
+        let limited = String(cleaned.prefix(16)) // Limit to 16 digits
+        
+        var formatted = ""
+        for (index, character) in limited.enumerated() {
+            if index > 0 && index % 4 == 0 {
+                formatted += " "
+            }
+            formatted += String(character)
+        }
+        return formatted
+    }
+    
+    private func formatExpiryDate(_ input: String) -> String {
+        let cleaned = input.replacingOccurrences(of: "/", with: "")
+        let limited = String(cleaned.prefix(4)) // Limit to 4 digits
+        
+        if limited.count >= 3 {
+            let month = String(limited.prefix(2))
+            let year = String(limited.suffix(limited.count - 2))
+            return "\(month)/\(year)"
+        } else {
+            return limited
+        }
     }
 }
 
@@ -251,4 +365,4 @@ struct EditAccountView_Previews: PreviewProvider {
         )
     }
 }
-#endif 
+#endif

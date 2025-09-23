@@ -28,6 +28,8 @@ struct AccountsView: View {
     @State private var isFetchingStatements = false
     @State private var fetchingProgress = ""
     @State private var selectedBank: CreditCardBank = .axis
+    @State private var showingCardDetailsForm = false
+    @State private var selectedCardAccount: CDAccount?
     
     enum CreditCardBank: String, CaseIterable {
         case axis = "cc.statements@axisbank.com"
@@ -199,6 +201,11 @@ struct AccountsView: View {
                     onDelete: deleteInsurancePolicy
                 )
             }
+            .sheet(isPresented: $showingCardDetailsForm) {
+                if let account = selectedCardAccount {
+                    AddCardDetailsView(account: account, viewModel: viewModel)
+                }
+            }
         }
     }
     
@@ -323,11 +330,18 @@ extension AccountsView {
             
             ForEach(creditCards) { account in
                 AccountRow(account: account)
-                    .onTapGesture { openTransactions(for: account) }
                     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                         Button { openTransactions(for: account) } label: { Label("Transactions", systemImage: "list.bullet") }.tint(.blue)
                         Button { selectedAccount = account } label: { Label("Edit", systemImage: "pencil") }.tint(.orange)
                         Button(role: .destructive) { viewModel.deleteAccount(account) } label: { Label("Delete", systemImage: "trash") }
+                    }
+                    .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                        Button { 
+                            selectedCardAccount = account
+                            showingCardDetailsForm = true
+                        } label: { 
+                            Label("Add Card Details", systemImage: "creditcard.fill") 
+                        }.tint(.green)
                     }
             }
         } label: {
