@@ -11,9 +11,13 @@ struct DashboardView: View {
                 VStack(alignment: .leading, spacing: 24) {
                     // Summary Cards
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 150))], spacing: 16) {
-                        SummaryCard(title: "Net Worth", value: viewModel.accounts.reduce(0) { $0 + ($1.wrappedAccountType.isAsset ? $1.balance : -$1.balance) }, icon: "scalemass.fill", color: .green)
+                        SummaryCard(title: "Net Worth", value: {
+                            let assets = viewModel.accounts.filter { $0.wrappedAccountType.isAsset }.reduce(0) { $0 + $1.balance }
+                            let liabilities = viewModel.accounts.filter { !$0.wrappedAccountType.isAsset }.reduce(0) { $0 + abs($1.balance) }
+                            return assets - liabilities
+                        }(), icon: "scalemass.fill", color: .green)
                         SummaryCard(title: "Total Assets", value: viewModel.accounts.filter { $0.wrappedAccountType.isAsset }.reduce(0) { $0 + $1.balance }, icon: "arrow.up.circle.fill", color: .blue)
-                        SummaryCard(title: "Total Liabilities", value: viewModel.accounts.filter { !$0.wrappedAccountType.isAsset }.reduce(0) { $0 + $1.balance }, icon: "arrow.down.circle.fill", color: .red)
+                        SummaryCard(title: "Total Liabilities", value: viewModel.accounts.filter { !$0.wrappedAccountType.isAsset }.reduce(0) { $0 + abs($1.balance) }, icon: "arrow.down.circle.fill", color: .red)
                         SummaryCard(title: "Pending Bills", value: pendingBillsAmount, icon: "creditcard.fill", color: .orange)
                         SummaryCard(title: "Next Insurance", value: upcomingInsuranceAmount, icon: "shield.fill", color: .purple)
                     }

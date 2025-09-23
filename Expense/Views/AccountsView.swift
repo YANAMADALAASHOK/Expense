@@ -62,12 +62,12 @@ struct AccountsView: View {
     private var loans: [CDAccount] {
         liabilityAccounts.filter { $0.accountType == AccountType.loan.rawValue }
     }
-    private var loansOutstanding: Double { loans.reduce(0) { $0 + $1.balance } }
+    private var loansOutstanding: Double { loans.reduce(0) { $0 + abs($1.balance) } }
     
     private var creditCards: [CDAccount] {
         liabilityAccounts.filter { $0.accountType == AccountType.creditCard.rawValue }
     }
-    private var creditCardsOutstanding: Double { creditCards.reduce(0) { $0 + $1.balance } }
+    private var creditCardsOutstanding: Double { creditCards.reduce(0) { $0 + abs($1.balance) } }
     
     private var personalLoansGiven: [CDAccount] {
         assetAccounts.filter { $0.accountType == AccountType.personalLoanGiven.rawValue }
@@ -1171,8 +1171,8 @@ extension AccountsView {
                 print("DEBUG: Automated - Created new account: \(accountName)")
             }
             
-            // Save the account first to ensure it's properly persisted in the context
-            try viewModel.viewContext.save()
+            // Save the account first with batching to reduce Firestore writes
+            try viewModel.performBatchedSave()
             
             // Refresh the account from the context to ensure it's properly managed
             viewModel.viewContext.refresh(creditCardAccount, mergeChanges: true)
@@ -1253,8 +1253,11 @@ extension AccountsView {
             saveBillMetadata(account: finalAccount, billInfo: billInfo, pdfFileName: pdfFileName)
             
             
-            // Save context
-            try viewModel.viewContext.save()
+            // Save context with batching to reduce Firestore writes
+            try viewModel.performBatchedSave()
+            
+            // Force sync after processing is complete
+            viewModel.forceSyncPendingSaves()
             
             print("DEBUG: Automated - Processed \(billInfo.bankName) ****\(billInfo.cardNumber): \(newTransactionsCount) new transactions")
             
@@ -1308,15 +1311,15 @@ private struct BalanceSummarySection: View {
     }
     
     var totalLiabilities: Double {
-        accounts.filter { !$0.wrappedAccountType.isAsset }.reduce(0) { $0 + $1.balance }
+        accounts.filter { !$0.wrappedAccountType.isAsset }.reduce(0) { $0 + abs($1.balance) }
     }
     
     var creditCardBalance: Double {
-        accounts.filter { $0.accountType == AccountType.creditCard.rawValue }.reduce(0) { $0 + $1.balance }
+        accounts.filter { $0.accountType == AccountType.creditCard.rawValue }.reduce(0) { $0 + abs($1.balance) }
     }
     
     var loanBalance: Double {
-        accounts.filter { $0.accountType == AccountType.loan.rawValue }.reduce(0) { $0 + $1.balance }
+        accounts.filter { $0.accountType == AccountType.loan.rawValue }.reduce(0) { $0 + abs($1.balance) }
     }
     
     var totalLoanAmount: Double {

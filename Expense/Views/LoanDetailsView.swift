@@ -196,7 +196,7 @@ struct LoanDetailsView: View {
                     } else {
                         LazyVStack(spacing: 8) {
                             ForEach(account.transactionsArray.prefix(5)) { transaction in
-                                TransactionRowView(transaction: transaction)
+                                LoanTransactionRowView(transaction: transaction)
                             }
                         }
                     }
@@ -237,7 +237,7 @@ struct InfoRow: View {
     }
 }
 
-struct TransactionRowView: View {
+struct LoanTransactionRowView: View {
     let transaction: CDTransaction
     @StateObject private var currencySettings = CurrencySettings.shared
     

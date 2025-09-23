@@ -608,28 +608,6 @@ struct CreditCardEmailsView: View {
             }
         }
         
-        print("DEBUG: Transaction processing summary:")
-        print("DEBUG: - New transactions added: \(newTransactionsCount)")
-        print("DEBUG: - Duplicate transactions skipped: \(duplicateTransactionsCount)")
-        print("DEBUG: - Total transactions in statement: \(billInfo.transactions.count)")
-        
-        // Save context
-        do {
-            try context.save()
-            print("DEBUG: Successfully saved credit card account and transactions")
-            print("DEBUG: Account name: \(creditCardAccount.wrappedAccountName)")
-            print("DEBUG: Account type: \(creditCardAccount.wrappedAccountType)")
-            print("DEBUG: Account balance: \(creditCardAccount.balance)")
-            print("DEBUG: Transactions added: \(billInfo.transactions.count)")
-            
-            // Refresh the ExpenseViewModel's accounts
-            DispatchQueue.main.async {
-                self.viewModel.fetchAccounts()
-                print("DEBUG: Refreshed accounts in ExpenseViewModel")
-            }
-        } catch {
-            print("DEBUG: Failed to save credit card data: \(error)")
-        }
     }
 }
 

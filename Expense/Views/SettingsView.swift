@@ -804,8 +804,8 @@ struct SettingsView: View {
                 print("DEBUG: ✅ Created new account: \(accountName)")
             }
             
-            // Save the account first
-            try expenseViewModel.viewContext.save()
+            // Save the account first with batching to reduce Firestore writes
+            try expenseViewModel.performBatchedSave()
             expenseViewModel.viewContext.refresh(creditCardAccount, mergeChanges: true)
             
             // Add all transactions from this bill
@@ -851,8 +851,11 @@ struct SettingsView: View {
             // Save bill metadata for UI display
             saveBillMetadata(account: finalAccount, billInfo: billInfo, pdfFileName: pdfFileName)
             
-            // Save context
-            try expenseViewModel.viewContext.save()
+            // Save context with batching to reduce Firestore writes
+            try expenseViewModel.performBatchedSave()
+            
+            // Force sync after processing is complete
+            expenseViewModel.forceSyncPendingSaves()
             
             print("DEBUG: Processed \(billInfo.bankName) ****\(billInfo.cardNumber): \(billInfo.transactions.count) transactions")
             

@@ -5,10 +5,140 @@ import Charts
 struct EnhancedDashboardView: View {
     @ObservedObject var viewModel: ExpenseViewModel
     @StateObject private var currencySettings = CurrencySettings.shared
-    @State private var selectedTimeRange: TimeRange = .month
+    @State private var selectedTimeRange: TimeRange = .currentMonth
     @State private var showingInsights = false
+    @State private var showingDateFilter = false
+    @State private var customStartDate = Date()
+    @State private var customEndDate = Date()
     @State private var pendingBillsAmount: Double = 0
     @State private var upcomingInsuranceAmount: Double = 0
+    
+    // Computed property for filtered transactions
+    private var filteredTransactions: [CDTransaction] {
+        let calendar = Calendar.current
+        let now = Date()
+        
+        let filtered: [CDTransaction]
+        switch selectedTimeRange {
+        case .currentWeek:
+            let startOfWeek = calendar.dateInterval(of: .weekOfYear, for: now)?.start ?? now
+            filtered = viewModel.dashboardTransactions.filter { $0.date ?? now >= startOfWeek }
+        case .lastWeek:
+            let lastWeekStart = calendar.date(byAdding: .weekOfYear, value: -1, to: calendar.dateInterval(of: .weekOfYear, for: now)?.start ?? now) ?? now
+            let lastWeekEnd = calendar.date(byAdding: .day, value: 6, to: lastWeekStart) ?? now
+            filtered = viewModel.dashboardTransactions.filter { 
+                guard let date = $0.date else { return false }
+                return date >= lastWeekStart && date <= lastWeekEnd
+            }
+        case .currentMonth:
+            let startOfMonth = calendar.dateInterval(of: .month, for: now)?.start ?? now
+            filtered = viewModel.dashboardTransactions.filter { $0.date ?? now >= startOfMonth }
+        case .lastMonth:
+            let lastMonthStart = calendar.date(byAdding: .month, value: -1, to: calendar.dateInterval(of: .month, for: now)?.start ?? now) ?? now
+            let lastMonthEnd = calendar.date(byAdding: .day, value: -1, to: calendar.dateInterval(of: .month, for: now)?.start ?? now) ?? now
+            filtered = viewModel.dashboardTransactions.filter { 
+                guard let date = $0.date else { return false }
+                return date >= lastMonthStart && date <= lastMonthEnd
+            }
+        case .currentYear:
+            let startOfYear = calendar.dateInterval(of: .year, for: now)?.start ?? now
+            filtered = viewModel.dashboardTransactions.filter { $0.date ?? now >= startOfYear }
+        case .lastYear:
+            let lastYearStart = calendar.date(byAdding: .year, value: -1, to: calendar.dateInterval(of: .year, for: now)?.start ?? now) ?? now
+            let lastYearEnd = calendar.date(byAdding: .day, value: -1, to: calendar.dateInterval(of: .year, for: now)?.start ?? now) ?? now
+            filtered = viewModel.dashboardTransactions.filter { 
+                guard let date = $0.date else { return false }
+                return date >= lastYearStart && date <= lastYearEnd
+            }
+        case .custom:
+            filtered = viewModel.dashboardTransactions.filter { 
+                guard let date = $0.date else { return false }
+                return date >= customStartDate && date <= customEndDate
+            }
+        }
+        
+        // Filter out self-transfers
+        return filtered.filter { transaction in
+            let cat = transaction.wrappedCategory
+            return cat != TransactionCategory.selfTransfer.rawValue
+        }
+    }
+    
+    // Helper computed properties for specific transaction lists
+    private var incomeTransactions: [CDTransaction] {
+        // For income, use salary cycle: 27th of previous month to 27th of current month
+        let calendar = Calendar.current
+        let now = Date()
+        
+        // Get 27th of current month
+        let currentMonth27th = calendar.date(bySetting: .day, value: 27, of: now) ?? now
+        
+        // Get 27th of previous month
+        let previousMonth = calendar.date(byAdding: .month, value: -1, to: now) ?? now
+        let previousMonth27th = calendar.date(bySetting: .day, value: 27, of: previousMonth) ?? previousMonth
+        
+        // Filter income transactions within the salary cycle
+        let salaryPeriodTransactions = viewModel.dashboardTransactions.filter { transaction in
+            guard let transactionDate = transaction.date else { return false }
+            
+            // If we're past 27th of current month, use current 27th to next 27th
+            if now >= currentMonth27th {
+                let nextMonth = calendar.date(byAdding: .month, value: 1, to: now) ?? now
+                let nextMonth27th = calendar.date(bySetting: .day, value: 27, of: nextMonth) ?? nextMonth
+                return transactionDate >= currentMonth27th && transactionDate < nextMonth27th
+            } else {
+                // If we're before 27th of current month, use previous 27th to current 27th
+                return transactionDate >= previousMonth27th && transactionDate < currentMonth27th
+            }
+        }
+        
+        // Filter for income transactions and exclude self-transfers
+        return salaryPeriodTransactions.filter { transaction in
+            let isIncome = transaction.isCredit && isIncomeCategory(transaction)
+            let isNotSelfTransfer = !isSelfTransfer(transaction)
+            return isIncome && isNotSelfTransfer
+        }
+    }
+    
+    private var expenseTransactions: [CDTransaction] {
+        // Only include actual debit transactions (money going out)
+        return filteredTransactions.filter { !$0.isCredit }
+    }
+    
+    private var allTransactions: [CDTransaction] {
+        return filteredTransactions
+    }
+    
+    // Calculation methods
+    private func calculateIncome(for timeRange: TimeRange) -> Double {
+        return incomeTransactions.reduce(0) { $0 + $1.amount }
+    }
+    
+    private func calculateExpenses(for timeRange: TimeRange) -> Double {
+        // expenseTransactions already contains only debit transactions
+        return expenseTransactions.reduce(0) { $0 + $1.amount }
+    }
+    
+    private func calculateSavings(for timeRange: TimeRange) -> Double {
+        return calculateIncome(for: timeRange) - calculateExpenses(for: timeRange)
+    }
+    
+    private func calculateTransactionCount(for timeRange: TimeRange) -> Int {
+        return allTransactions.count
+    }
+    
+    private func isIncomeCategory(_ transaction: CDTransaction) -> Bool {
+        // Only treat explicit Salary (or categories containing the word "Income") as income
+        let cat = transaction.wrappedCategory
+        if cat == TransactionCategory.salary.rawValue { return true }
+        if cat.localizedCaseInsensitiveContains("income") { return true }
+        return false
+    }
+    
+    private func isSelfTransfer(_ transaction: CDTransaction) -> Bool {
+        let cat = transaction.wrappedCategory
+        return cat == TransactionCategory.selfTransfer.rawValue
+    }
     
     var body: some View {
         NavigationView {
@@ -17,14 +147,22 @@ struct EnhancedDashboardView: View {
                     // Header with Net Worth
                     NetWorthCard(viewModel: viewModel, currencySettings: currencySettings)
                     
-                    // Time Range Selector
-                    TimeRangeSelector(selectedRange: $selectedTimeRange)
                     
             // Summary Cards (respect dashboard exclusions)
-            SummaryCardsGrid(viewModel: viewModel, timeRange: selectedTimeRange)
+            SummaryCardsGrid(
+                viewModel: viewModel,
+                timeRange: selectedTimeRange,
+                incomeAmount: calculateIncome(for: selectedTimeRange),
+                expenseAmount: calculateExpenses(for: selectedTimeRange),
+                savingsAmount: calculateSavings(for: selectedTimeRange),
+                transactionCount: calculateTransactionCount(for: selectedTimeRange),
+                incomeTransactions: incomeTransactions,
+                expenseTransactions: expenseTransactions,
+                allTransactions: allTransactions
+            )
                     
                     // Spending Chart
-                    SpendingChartView(transactions: viewModel.dashboardTransactions, timeRange: selectedTimeRange)
+                    SpendingChartView(transactions: filteredTransactions, timeRange: selectedTimeRange)
                     
                     // Upcoming Bills Section
                     UpcomingBillsSection(
@@ -35,7 +173,7 @@ struct EnhancedDashboardView: View {
                     )
                     
                     // Recent Transactions
-                    RecentTransactionsSection(transactions: viewModel.dashboardTransactions, viewModel: viewModel)
+                    RecentTransactionsSection(transactions: filteredTransactions, viewModel: viewModel)
                     
                     // Insights Button
                     InsightsButton(showingInsights: $showingInsights)
@@ -46,6 +184,14 @@ struct EnhancedDashboardView: View {
             .background(DesignSystem.Colors.background)
             .navigationTitle("Dashboard")
             .navigationBarTitleDisplayMode(.large)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button(action: { showingDateFilter = true }) {
+                        Image(systemName: "line.3.horizontal.decrease.circle")
+                            .foregroundColor(DesignSystem.Colors.primary)
+                    }
+                }
+            }
             .onAppear {
                 calculatePendingBills()
                 calculateUpcomingInsurance()
@@ -56,6 +202,13 @@ struct EnhancedDashboardView: View {
             }
             .sheet(isPresented: $showingInsights) {
                 FinancialInsightsView(viewModel: viewModel)
+            }
+            .sheet(isPresented: $showingDateFilter) {
+                DateFilterSheet(
+                    selectedTimeRange: $selectedTimeRange,
+                    customStartDate: $customStartDate,
+                    customEndDate: $customEndDate
+                )
             }
         }
     }
@@ -182,7 +335,9 @@ struct NetWorthCard: View {
     @ObservedObject var currencySettings: CurrencySettings
     
     var netWorth: Double {
-        viewModel.accounts.reduce(0) { $0 + ($1.wrappedAccountType.isAsset ? $1.balance : -$1.balance) }
+        let assets = viewModel.accounts.filter { $0.wrappedAccountType.isAsset }.reduce(0) { $0 + $1.balance }
+        let liabilities = viewModel.accounts.filter { !$0.wrappedAccountType.isAsset }.reduce(0) { $0 + abs($1.balance) }
+        return assets - liabilities
     }
     
     var body: some View {
@@ -217,7 +372,7 @@ struct NetWorthCard: View {
                 
                 AssetLiabilityItem(
                     title: "Liabilities",
-                    amount: viewModel.accounts.filter { !$0.wrappedAccountType.isAsset }.reduce(0) { $0 + $1.balance },
+                    amount: viewModel.accounts.filter { !$0.wrappedAccountType.isAsset }.reduce(0) { $0 + abs($1.balance) },
                     color: DesignSystem.Colors.error,
                     currencySettings: currencySettings
                 )
@@ -250,114 +405,91 @@ struct AssetLiabilityItem: View {
     }
 }
 
-// MARK: - Time Range Selector
-struct TimeRangeSelector: View {
-    @Binding var selectedRange: TimeRange
-    
-    var body: some View {
-        HStack(spacing: DesignSystem.Spacing.sm) {
-            ForEach(TimeRange.allCases, id: \.self) { range in
-                Button(action: { selectedRange = range }) {
-                    Text(range.displayName)
-                        .font(DesignSystem.Typography.labelMedium)
-                        .padding(.horizontal, DesignSystem.Spacing.md)
-                        .padding(.vertical, DesignSystem.Spacing.sm)
-                        .background(selectedRange == range ? DesignSystem.Colors.primary : DesignSystem.Colors.surfaceVariant)
-                        .foregroundColor(selectedRange == range ? DesignSystem.Colors.onPrimary : DesignSystem.Colors.onSurfaceVariant)
-                        .cornerRadius(DesignSystem.CornerRadius.md)
-                }
-            }
-        }
-    }
-}
 
 // MARK: - Summary Cards Grid
 struct SummaryCardsGrid: View {
     @ObservedObject var viewModel: ExpenseViewModel
     let timeRange: TimeRange
+    let incomeAmount: Double
+    let expenseAmount: Double
+    let savingsAmount: Double
+    let transactionCount: Int
+    let incomeTransactions: [CDTransaction]
+    let expenseTransactions: [CDTransaction]
+    let allTransactions: [CDTransaction]
     @StateObject private var currencySettings = CurrencySettings.shared
+    @State private var showingIncomeTransactions = false
+    @State private var showingExpenseTransactions = false
+    @State private var showingAllTransactions = false
     
     var body: some View {
         LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: DesignSystem.Spacing.md) {
-            EnhancedSummaryCard(
-                title: "Income",
-                value: calculateIncome(for: timeRange),
-                icon: "arrow.up.circle.fill",
-                color: DesignSystem.Colors.success,
-                currencySettings: currencySettings
-            )
+            Button(action: { showingIncomeTransactions = true }) {
+                EnhancedSummaryCard(
+                    title: "Income",
+                    value: incomeAmount,
+                    icon: "arrow.up.circle.fill",
+                    color: DesignSystem.Colors.success,
+                    currencySettings: currencySettings
+                )
+            }
+            .buttonStyle(PlainButtonStyle())
+            .sheet(isPresented: $showingIncomeTransactions) {
+                TransactionListView(
+                    title: "Income Transactions",
+                    transactions: incomeTransactions,
+                    viewModel: viewModel
+                )
+            }
             
-            EnhancedSummaryCard(
-                title: "Expenses",
-                value: calculateExpenses(for: timeRange),
-                icon: "arrow.down.circle.fill",
-                color: DesignSystem.Colors.error,
-                currencySettings: currencySettings
-            )
+            Button(action: { showingExpenseTransactions = true }) {
+                EnhancedSummaryCard(
+                    title: "Expenses",
+                    value: expenseAmount,
+                    icon: "arrow.down.circle.fill",
+                    color: DesignSystem.Colors.error,
+                    currencySettings: currencySettings
+                )
+            }
+            .buttonStyle(PlainButtonStyle())
+            .sheet(isPresented: $showingExpenseTransactions) {
+                TransactionListView(
+                    title: "Expense Transactions",
+                    transactions: expenseTransactions,
+                    viewModel: viewModel
+                )
+            }
             
             EnhancedSummaryCard(
                 title: "Savings",
-                value: calculateSavings(for: timeRange),
+                value: savingsAmount,
                 icon: "banknote.fill",
                 color: DesignSystem.Colors.info,
                 currencySettings: currencySettings
             )
             
-            EnhancedSummaryCard(
-                title: "Transactions",
-                value: Double(calculateTransactionCount(for: timeRange)),
-                icon: "list.bullet",
-                color: DesignSystem.Colors.warning,
-                currencySettings: currencySettings,
-                isCurrency: false
-            )
+            Button(action: { showingAllTransactions = true }) {
+                EnhancedSummaryCard(
+                    title: "Transactions",
+                    value: Double(transactionCount),
+                    icon: "list.bullet.circle.fill",
+                    color: DesignSystem.Colors.primary,
+                    currencySettings: currencySettings,
+                    isCurrency: false
+                )
+            }
+            .buttonStyle(PlainButtonStyle())
+            .sheet(isPresented: $showingAllTransactions) {
+                TransactionListView(
+                    title: "All Transactions",
+                    transactions: allTransactions,
+                    viewModel: viewModel
+                )
+            }
         }
     }
     
-    private func calculateIncome(for timeRange: TimeRange) -> Double {
-        let filteredTransactions = filterTransactionsByTimeRange(viewModel.dashboardTransactions, timeRange: timeRange)
-        return filteredTransactions
-            .filter { $0.isCredit && isIncomeCategory($0) }
-            .reduce(0) { $0 + $1.amount }
-    }
-    
-    private func calculateExpenses(for timeRange: TimeRange) -> Double {
-        let filteredTransactions = filterTransactionsByTimeRange(viewModel.dashboardTransactions, timeRange: timeRange)
-        return filteredTransactions.filter { !$0.isCredit }.reduce(0) { $0 + $1.amount }
-    }
-    
-    private func calculateSavings(for timeRange: TimeRange) -> Double {
-        return calculateIncome(for: timeRange) - calculateExpenses(for: timeRange)
-    }
-    
-    private func calculateTransactionCount(for timeRange: TimeRange) -> Int {
-        return filterTransactionsByTimeRange(viewModel.dashboardTransactions, timeRange: timeRange).count
-    }
-    
-    private func filterTransactionsByTimeRange(_ transactions: [CDTransaction], timeRange: TimeRange) -> [CDTransaction] {
-        let calendar = Calendar.current
-        let now = Date()
-        
-        switch timeRange {
-        case .week:
-            let weekAgo = calendar.date(byAdding: .weekOfYear, value: -1, to: now) ?? now
-            return transactions.filter { $0.date ?? now >= weekAgo }
-        case .month:
-            let monthAgo = calendar.date(byAdding: .month, value: -1, to: now) ?? now
-            return transactions.filter { $0.date ?? now >= monthAgo }
-        case .year:
-            let yearAgo = calendar.date(byAdding: .year, value: -1, to: now) ?? now
-            return transactions.filter { $0.date ?? now >= yearAgo }
-        }
-    }
-
-    private func isIncomeCategory(_ transaction: CDTransaction) -> Bool {
-        // Only treat explicit Salary (or categories containing the word "Income") as income
-        let cat = transaction.wrappedCategory
-        if cat == TransactionCategory.salary.rawValue { return true }
-        if cat.localizedCaseInsensitiveContains("income") { return true }
-        return false
-    }
+    // All methods and computed properties are now defined above the body
 }
 
 // MARK: - Enhanced Summary Card
@@ -474,20 +606,23 @@ struct SpendingChartView: View {
         
         let numberOfPoints: Int
         switch timeRange {
-        case .week: numberOfPoints = 7
-        case .month: numberOfPoints = 30
-        case .year: numberOfPoints = 12
+        case .currentWeek, .lastWeek: numberOfPoints = 7
+        case .currentMonth, .lastMonth: numberOfPoints = 30
+        case .currentYear, .lastYear: numberOfPoints = 12
+        case .custom: numberOfPoints = 30 // Default for custom range
         }
         
         for i in 0..<numberOfPoints {
             let date: Date
             switch timeRange {
-            case .week:
+            case .currentWeek, .lastWeek:
                 date = calendar.date(byAdding: .day, value: -i, to: now) ?? now
-            case .month:
+            case .currentMonth, .lastMonth:
                 date = calendar.date(byAdding: .day, value: -i, to: now) ?? now
-            case .year:
+            case .currentYear, .lastYear:
                 date = calendar.date(byAdding: .month, value: -i, to: now) ?? now
+            case .custom:
+                date = calendar.date(byAdding: .day, value: -i, to: now) ?? now
             }
             
             let dayTransactions = transactions.filter { transaction in
@@ -578,9 +713,8 @@ struct CategoryBreakdownView: View {
     }
     
     private var categoryData: [CategoryDataPoint] {
-        // Filter by selected time range and include only expenses
-        let filtered = filterTransactionsByTimeRange(transactions, timeRange: timeRange)
-        let expenseTransactions = filtered.filter { !$0.isCredit }
+        // Use already filtered transactions and include only expenses
+        let expenseTransactions = transactions.filter { !$0.isCredit && !isSelfTransfer($0) }
         let grouped = Dictionary(grouping: expenseTransactions) { $0.category ?? "Uncategorized" }
         
         return grouped.map { category, transactions in
@@ -590,22 +724,13 @@ struct CategoryBreakdownView: View {
             )
         }.sorted { $0.amount > $1.amount }
     }
-
-    private func filterTransactionsByTimeRange(_ transactions: [CDTransaction], timeRange: TimeRange) -> [CDTransaction] {
-        let calendar = Calendar.current
-        let now = Date()
-        switch timeRange {
-        case .week:
-            let weekAgo = calendar.date(byAdding: .weekOfYear, value: -1, to: now) ?? now
-            return transactions.filter { ($0.date ?? now) >= weekAgo }
-        case .month:
-            let monthAgo = calendar.date(byAdding: .month, value: -1, to: now) ?? now
-            return transactions.filter { ($0.date ?? now) >= monthAgo }
-        case .year:
-            let yearAgo = calendar.date(byAdding: .year, value: -1, to: now) ?? now
-            return transactions.filter { ($0.date ?? now) >= yearAgo }
-        }
+    
+    private func isSelfTransfer(_ transaction: CDTransaction) -> Bool {
+        let cat = transaction.wrappedCategory
+        return cat == TransactionCategory.selfTransfer.rawValue
     }
+
+    // This duplicate function is removed - using the main one in EnhancedDashboardView
 }
 
 // MARK: - Recent Transactions Section
@@ -677,15 +802,23 @@ struct InsightsButton: View {
 
 // MARK: - Supporting Models
 enum TimeRange: CaseIterable {
-    case week
-    case month
-    case year
+    case currentWeek
+    case lastWeek
+    case currentMonth
+    case lastMonth
+    case currentYear
+    case lastYear
+    case custom
     
     var displayName: String {
         switch self {
-        case .week: return "Week"
-        case .month: return "Month"
-        case .year: return "Year"
+        case .currentWeek: return "This Week"
+        case .lastWeek: return "Last Week"
+        case .currentMonth: return "This Month"
+        case .lastMonth: return "Last Month"
+        case .currentYear: return "This Year"
+        case .lastYear: return "Last Year"
+        case .custom: return "Custom Range"
         }
     }
 }
@@ -698,6 +831,108 @@ struct ChartDataPoint {
 struct CategoryDataPoint: Equatable {
     let category: String
     let amount: Double
+}
+
+// MARK: - Date Filter Sheet
+struct DateFilterSheet: View {
+    @Binding var selectedTimeRange: TimeRange
+    @Binding var customStartDate: Date
+    @Binding var customEndDate: Date
+    @Environment(\.dismiss) private var dismiss
+    
+    var body: some View {
+        NavigationView {
+            VStack(spacing: DesignSystem.Spacing.lg) {
+                VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
+                    Text("Filter Transactions")
+                        .font(DesignSystem.Typography.headlineSmall)
+                        .fontWeight(.semibold)
+                    
+                    Text("Select a time period to view your financial data")
+                        .font(DesignSystem.Typography.bodyMedium)
+                        .foregroundColor(DesignSystem.Colors.onSurfaceVariant)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 2), spacing: DesignSystem.Spacing.md) {
+                    ForEach(TimeRange.allCases.filter { $0 != .custom }, id: \.self) { range in
+                        Button(action: {
+                            selectedTimeRange = range
+                            dismiss()
+                        }) {
+                            VStack(spacing: DesignSystem.Spacing.sm) {
+                                Image(systemName: iconForTimeRange(range))
+                                    .font(.title2)
+                                    .foregroundColor(selectedTimeRange == range ? DesignSystem.Colors.onPrimary : DesignSystem.Colors.primary)
+                                
+                                Text(range.displayName)
+                                    .font(DesignSystem.Typography.labelMedium)
+                                    .fontWeight(.medium)
+                                    .foregroundColor(selectedTimeRange == range ? DesignSystem.Colors.onPrimary : DesignSystem.Colors.onSurface)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(DesignSystem.Spacing.md)
+                            .background(selectedTimeRange == range ? DesignSystem.Colors.primary : DesignSystem.Colors.surfaceVariant)
+                            .cornerRadius(DesignSystem.CornerRadius.lg)
+                        }
+                    }
+                }
+                
+                // Custom Date Range Section
+                VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
+                    HStack {
+                        Image(systemName: "calendar.badge.clock")
+                            .foregroundColor(DesignSystem.Colors.primary)
+                        Text("Custom Date Range")
+                            .font(DesignSystem.Typography.titleSmall)
+                            .fontWeight(.semibold)
+                    }
+                    
+                    VStack(spacing: DesignSystem.Spacing.sm) {
+                        DatePicker("Start Date", selection: $customStartDate, displayedComponents: .date)
+                            .datePickerStyle(.compact)
+                        
+                        DatePicker("End Date", selection: $customEndDate, displayedComponents: .date)
+                            .datePickerStyle(.compact)
+                        
+                        Button("Apply Custom Range") {
+                            selectedTimeRange = .custom
+                            dismiss()
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(DesignSystem.Spacing.sm)
+                        .background(DesignSystem.Colors.primary)
+                        .foregroundColor(DesignSystem.Colors.onPrimary)
+                        .cornerRadius(DesignSystem.CornerRadius.md)
+                    }
+                    .padding(DesignSystem.Spacing.md)
+                    .background(DesignSystem.Colors.surfaceVariant)
+                    .cornerRadius(DesignSystem.CornerRadius.md)
+                }
+                
+                Spacer()
+            }
+            .padding(DesignSystem.Spacing.lg)
+            .navigationTitle("Date Filter")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+    
+    private func iconForTimeRange(_ range: TimeRange) -> String {
+        switch range {
+        case .currentWeek, .lastWeek: return "calendar.day.timeline.left"
+        case .currentMonth, .lastMonth: return "calendar"
+        case .currentYear, .lastYear: return "calendar.badge.plus"
+        case .custom: return "calendar.badge.clock"
+        }
+    }
 }
 
 // MARK: - Financial Insights View
@@ -1174,5 +1409,97 @@ struct BillDetailsView: View {
                 }
             }
         }
+    }
+}
+
+// MARK: - Transaction List View
+struct TransactionListView: View {
+    let title: String
+    let transactions: [CDTransaction]
+    @ObservedObject var viewModel: ExpenseViewModel
+    @StateObject private var currencySettings = CurrencySettings.shared
+    @Environment(\.dismiss) private var dismiss
+    
+    var sortedTransactions: [CDTransaction] {
+        transactions.sorted { ($0.date ?? Date.distantPast) > ($1.date ?? Date.distantPast) }
+    }
+    
+    var body: some View {
+        NavigationView {
+            List {
+                if transactions.isEmpty {
+                    ContentUnavailableView(
+                        "No Transactions",
+                        systemImage: "tray.fill",
+                        description: Text("No transactions found for the selected period.")
+                    )
+                } else {
+                    Section {
+                        Text("Total: \(transactions.reduce(0) { $0 + $1.amount }, format: .currency(code: currencySettings.selectedCurrency.rawValue))")
+                            .font(.headline)
+                            .foregroundColor(.primary)
+                    }
+                    
+                    Section("Transactions (\(transactions.count))") {
+                        ForEach(sortedTransactions) { transaction in
+                            TransactionRowView(transaction: transaction)
+                        }
+                    }
+                }
+            }
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.large)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Transaction Row View
+struct TransactionRowView: View {
+    let transaction: CDTransaction
+    @StateObject private var currencySettings = CurrencySettings.shared
+    
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(transaction.wrappedNotes)
+                    .font(.body)
+                    .fontWeight(.medium)
+                    .lineLimit(1)
+                
+                HStack {
+                    Text(TransactionCategory(rawValue: transaction.wrappedCategory).displayName)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    
+                    Spacer()
+                    
+                    Text(transaction.wrappedDate, style: .date)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+            
+            Spacer()
+            
+            VStack(alignment: .trailing) {
+                Text(transaction.amount, format: .currency(code: currencySettings.selectedCurrency.rawValue))
+                    .font(.body)
+                    .fontWeight(.semibold)
+                    .foregroundColor(transaction.isCredit ? .green : .primary)
+                
+                if let account = transaction.account {
+                    Text(account.wrappedAccountName)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                }
+            }
+        }
+        .padding(.vertical, 2)
     }
 } 

@@ -8,7 +8,73 @@ class ExpenseViewModel: ObservableObject {
     private var isDeletingAccount = false
     @Published var deletionStatus: String = ""
     @Published var isDeletingFromCloud = false
+    
+    // Rate limiting for Firestore writes
+    private var lastFirestoreWrite: Date = Date.distantPast
+    private let firestoreWriteDelay: TimeInterval = 0.5 // 500ms between writes
+    private let firestoreQueue = DispatchQueue(label: "firestore.writes", qos: .background)
     private var cloudSyncDisabledUntil: Date?
+    
+    // Rate-limited Firestore write helper
+    private func performRateLimitedFirestoreWrite<T>(_ operation: @escaping () async throws -> T) async throws -> T {
+        let now = Date()
+        let timeSinceLastWrite = now.timeIntervalSince(lastFirestoreWrite)
+        
+        if timeSinceLastWrite < firestoreWriteDelay {
+            let delayNeeded = firestoreWriteDelay - timeSinceLastWrite
+            print("DEBUG: Rate limiting Firestore write, waiting \(Int(delayNeeded * 1000))ms")
+            try await Task.sleep(nanoseconds: UInt64(delayNeeded * 1_000_000_000))
+        }
+        
+        lastFirestoreWrite = Date()
+        
+        // Retry logic for resource exhaustion
+        var retryCount = 0
+        let maxRetries = 3
+        
+        while retryCount < maxRetries {
+            do {
+                return try await operation()
+            } catch {
+                let errorString = error.localizedDescription
+                if errorString.contains("Resource exhausted") || errorString.contains("Write stream exhausted") {
+                    retryCount += 1
+                    let backoffDelay = Double(retryCount) * 2.0 // Exponential backoff: 2s, 4s, 6s
+                    print("DEBUG: Firestore resource exhausted, retry \(retryCount)/\(maxRetries) after \(backoffDelay)s")
+                    
+                    if retryCount < maxRetries {
+                        try await Task.sleep(nanoseconds: UInt64(backoffDelay * 1_000_000_000))
+                        continue
+                    }
+                }
+                throw error
+            }
+        }
+        
+        fatalError("Should not reach here")
+    }
+    
+    // Batch Core Data saves to reduce Firestore sync frequency
+    private var pendingCoreDataSaves = 0
+    private let maxPendingSaves = 5 // Batch up to 5 saves before syncing
+    
+    func performBatchedSave() throws {
+        try viewContext.save()
+        pendingCoreDataSaves += 1
+        
+        // Only sync to cloud after accumulating several saves
+        if pendingCoreDataSaves >= maxPendingSaves {
+            pendingCoreDataSaves = 0
+            syncToCloud() // This will be rate-limited
+        }
+    }
+    
+    func forceSyncPendingSaves() {
+        if pendingCoreDataSaves > 0 {
+            pendingCoreDataSaves = 0
+            syncToCloud()
+        }
+    }
     
     @Published var accounts: [CDAccount] = []
     @Published var recentTransactions: [CDTransaction] = []
@@ -399,21 +465,25 @@ class ExpenseViewModel: ObservableObject {
             deletionStatus = "🌩️ Deleting \(accountName) from cloud..."
             
             do {
-                // Delete from accounts collection
-                try await db.collection("accounts").document(accountId).delete()
+                // Delete from accounts collection with rate limiting
+                try await performRateLimitedFirestoreWrite {
+                    try await self.db.collection("accounts").document(accountId).delete()
+                }
                 print("DEBUG: Deleted from accounts collection: \(accountName)")
                 
-                // Delete transactions from transactions collection
-                let transactionQuery = db.collection("transactions").whereField("accountId", isEqualTo: accountId)
+                // Delete transactions from transactions collection with rate limiting
+                let transactionQuery = self.db.collection("transactions").whereField("accountId", isEqualTo: accountId)
                 let transactionSnapshot = try await transactionQuery.getDocuments()
                 
                 if !transactionSnapshot.documents.isEmpty {
-                    let batch = db.batch()
-                    for document in transactionSnapshot.documents {
-                        batch.deleteDocument(document.reference)
+                    try await performRateLimitedFirestoreWrite {
+                        let batch = self.db.batch()
+                        for document in transactionSnapshot.documents {
+                            batch.deleteDocument(document.reference)
+                        }
+                        try await batch.commit()
                     }
-                    try await batch.commit()
-                    print("DEBUG: Deleted \(transactionSnapshot.documents.count) transactions from cloud")
+                    print("DEBUG: Deleted \(transactionSnapshot.documents.count) transactions from Firestore")
                 }
                 
                 // CRITICAL: Update user's backup data without the deleted account
@@ -431,13 +501,15 @@ class ExpenseViewModel: ObservableObject {
                     let exportData = try self.exportData()
                     let jsonObject = try JSONSerialization.jsonObject(with: exportData) as? [String: Any]
                     
-                    let docRef = db.collection("users").document(userId)
-                    let payload: [String: Any] = [
-                        "data": jsonObject ?? [:],
-                        "lastSynced": Date()
-                    ]
-                    
-                    try await docRef.setData(payload)
+                    try await performRateLimitedFirestoreWrite {
+                        let docRef = self.db.collection("users").document(userId)
+                        let payload: [String: Any] = [
+                            "data": jsonObject ?? [:],
+                            "lastSynced": Date()
+                        ]
+                        
+                        try await docRef.setData(payload)
+                    }
                     print("DEBUG: Updated user backup without deleted account")
                 }
                 
@@ -1691,34 +1763,47 @@ class ExpenseViewModel: ObservableObject {
             return
         }
         
+        Task {
+            do {
+                let data = try exportData()
+                try await syncToCloudAsync(data: data)
+            } catch {
+                print("Error preparing data for sync: \(error)")
+            }
+        }
+    }
+    
+    private func syncToCloudAsync(data: Data) async throws {
+        guard let userId = AuthenticationManager.shared.currentUser?.id,
+              !AuthenticationManager.shared.currentUser!.isGuest else { return }
+        
+        guard let jsonObject = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+        
+        let timestamp = Date()
+        
+        var payload: [String: Any] = [
+            "data": jsonObject,
+            "lastSynced": timestamp
+        ]
+        
+        // Add device info
+        payload["deviceInfo"] = [
+            "platform": "iOS",
+            "version": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
+        ]
+        
         do {
-            let data = try exportData()
-            guard let jsonObject = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
-            
-            let timestamp = Date()
-            let docRef = db.collection("users").document(userId)
-            
-            var payload: [String: Any] = [
-                "data": jsonObject,
-                "lastSynced": timestamp
-            ]
-            if let rulesData = try? JSONEncoder().encode(AICategorizationManager.shared.getUserRules()),
-               let rulesJson = try? JSONSerialization.jsonObject(with: rulesData) as? [[String: Any]] {
-                payload["rules"] = rulesJson
+            try await performRateLimitedFirestoreWrite {
+                let docRef = self.db.collection("users").document(userId)
+                try await docRef.setData(payload)
             }
-
-            docRef.setData(payload, merge: true) { [weak self] error in
-                if let error = error {
-                    print("Error syncing data: \(error)")
-                } else {
-                    DispatchQueue.main.async {
-                        self?.lastSyncTime = timestamp
-                        UserDefaults.standard.set(timestamp, forKey: "lastSyncTime")
-                    }
-                }
+            DispatchQueue.main.async {
+                self.lastSyncTime = timestamp
             }
+            print("✅ Data synced to cloud successfully")
         } catch {
-            print("Error preparing data for sync: \(error)")
+            print("❌ Failed to sync to cloud: \(error)")
+            throw error
         }
     }
     
@@ -2159,26 +2244,27 @@ class ExpenseViewModel: ObservableObject {
             return
         }
         
-        let db = Firestore.firestore()
-        
         // Delete all collections for the user
         let collections = ["accounts", "transactions", "budgets", "settings"]
-        let group = DispatchGroup()
-        var success = true
         
-        for collection in collections {
-            group.enter()
-            db.collection(collection).document(userId).delete { error in
-                if let error = error {
-                    print("Error deleting \(collection): \(error)")
-                    success = false
+        Task {
+            do {
+                for collection in collections {
+                    try await performRateLimitedFirestoreWrite {
+                        try await self.db.collection(collection).document(userId).delete()
+                    }
+                    print("DEBUG: Deleted \(collection) collection")
                 }
-                group.leave()
+                
+                DispatchQueue.main.async {
+                    completion(true)
+                }
+            } catch {
+                print("Error deleting collections: \(error)")
+                DispatchQueue.main.async {
+                    completion(false)
+                }
             }
-        }
-        
-        group.notify(queue: .main) {
-            completion(success)
         }
     }
 }
