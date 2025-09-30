@@ -8,7 +8,6 @@ struct LoanDetailsView: View {
     
     @State private var showingPaymentSheet = false
     @State private var showingEditSheet = false
-    @State private var showingInterestCalculation = false
     
     var loanDetails: LoanDetails? {
         loanManager.getLoanDetails(account)
@@ -61,51 +60,78 @@ struct LoanDetailsView: View {
                                 }
                             }
                             
-                            if let emi = details.emiAmount, emi > 0 {
+                            // Enhanced loan information display
+                            if details.isEMILoan {
                                 Divider()
                                 
                                 HStack {
                                     VStack(alignment: .leading, spacing: 8) {
-                                        Text("Monthly EMI")
+                                        Text("EMI Amount")
                                             .font(.caption)
                                             .foregroundColor(.secondary)
-                                        Text(emi, format: .currency(code: currencySettings.selectedCurrency.rawValue))
+                                        Text(details.effectiveEMI, format: .currency(code: currencySettings.selectedCurrency.rawValue))
                                             .font(.headline)
                                             .foregroundColor(.blue)
                                     }
                                     Spacer()
                                     VStack(alignment: .trailing, spacing: 8) {
-                                        Text("Calculated EMI")
+                                        Text("Payments Left")
                                             .font(.caption)
                                             .foregroundColor(.secondary)
-                                        Text(details.calculatedEMI, format: .currency(code: currencySettings.selectedCurrency.rawValue))
+                                        Text("\(details.calculatedRemainingPayments)")
                                             .font(.headline)
-                                            .foregroundColor(.blue)
+                                            .foregroundColor(.orange)
                                     }
                                 }
+                                
+                                Divider()
+                                
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 8) {
+                                        Text("Loan Progress")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                        Text("\(Int(details.loanProgress * 100))%")
+                                            .font(.headline)
+                                            .foregroundColor(.green)
+                                    }
+                                    Spacer()
+                                    VStack(alignment: .trailing, spacing: 8) {
+                                        Text("Tenure")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                        Text("\(details.calculatedMonthsElapsed)/\(details.loanTenure) months")
+                                            .font(.headline)
+                                    }
+                                }
+                                
+                                // Progress bar
+                                ProgressView(value: details.loanProgress)
+                                    .progressViewStyle(LinearProgressViewStyle(tint: .green))
+                                    .scaleEffect(x: 1, y: 0.8)
+                                    .padding(.vertical, 4)
                             }
                         
-                        if details.calculatedInterest > 0 {
-                            Divider()
-                            
-                            HStack {
-                                VStack(alignment: .leading, spacing: 8) {
-                                    Text("Accrued Interest")
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                    Text(details.calculatedInterest, format: .currency(code: currencySettings.selectedCurrency.rawValue))
-                                        .font(.headline)
-                                        .foregroundColor(.orange)
-                                }
-                                Spacer()
-                                VStack(alignment: .trailing, spacing: 8) {
-                                    Text("Total with Interest")
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                    Text(details.totalAmountWithInterest, format: .currency(code: currencySettings.selectedCurrency.rawValue))
-                                        .font(.headline)
-                                        .foregroundColor(account.wrappedAccountType.isAsset ? .green : .red)
-                                }
+                        // Interest information
+                        Divider()
+                        
+                        HStack {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("Interest Paid")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                Text(details.totalInterestAccumulated, format: .currency(code: currencySettings.selectedCurrency.rawValue))
+                                    .font(.headline)
+                                    .foregroundColor(.red)
+                            }
+                            Spacer()
+                            VStack(alignment: .trailing, spacing: 8) {
+                                Text(details.isEMILoan ? "Total with Interest" : "Next Interest")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                Text(details.isEMILoan ? details.totalAmountWithInterest : details.calculatedInterest, format: .currency(code: currencySettings.selectedCurrency.rawValue))
+                                    .font(.headline)
+                                    .foregroundColor(details.isEMILoan ? (account.wrappedAccountType.isAsset ? .green : .red) : .orange)
                             }
                         }
                     }
@@ -116,47 +142,21 @@ struct LoanDetailsView: View {
                 .shadow(radius: 2)
                 
                 // Action Buttons
-                VStack(spacing: 12) {
-                    if account.wrappedAccountType == .loan {
-                        Button(action: { showingPaymentSheet = true }) {
-                            HStack {
-                                Image(systemName: "creditcard.fill")
-                                Text("Make Payment")
-                            }
-                            .frame(maxWidth: .infinity)
-                            .padding()
-                            .background(Color.blue)
-                            .foregroundColor(.white)
-                            .cornerRadius(10)
-                        }
-                    }
-                    
-                    Button(action: { showingInterestCalculation = true }) {
+                if account.wrappedAccountType == .loan {
+                    Button(action: { showingPaymentSheet = true }) {
                         HStack {
-                            Image(systemName: "percent")
-                            Text("Calculate Interest")
+                            Image(systemName: "creditcard.fill")
+                            Text("Make Payment")
                         }
                         .frame(maxWidth: .infinity)
                         .padding()
-                        .background(Color.orange)
-                        .foregroundColor(.white)
-                        .cornerRadius(10)
-                    }
-                    
-                    Button(action: { showingEditSheet = true }) {
-                        HStack {
-                            Image(systemName: "pencil")
-                            Text("Edit Loan")
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding()
-                        .background(Color.gray)
+                        .background(Color.blue)
                         .foregroundColor(.white)
                         .cornerRadius(10)
                     }
                 }
                 
-                // Loan Information
+                // Enhanced Loan Information
                 if let details = loanDetails {
                     VStack(spacing: 16) {
                         HStack {
@@ -166,11 +166,42 @@ struct LoanDetailsView: View {
                         }
                         
                         VStack(spacing: 12) {
-                            InfoRow(title: "Loan Date", value: details.loanDate.formatted(date: .abbreviated, time: .omitted))
-                            InfoRow(title: "Last Interest Calculation", value: details.lastInterestCalculationDate.formatted(date: .abbreviated, time: .omitted))
-                            InfoRow(title: "Next Calculation", value: details.nextInterestCalculationDate.formatted(date: .abbreviated, time: .omitted))
-                            InfoRow(title: "Days Until Next", value: "\(details.daysUntilNextCalculation) days")
-                            InfoRow(title: "Interest Frequency", value: "Monthly")
+                            InfoRow(title: "Loan Start Date", value: details.loanDate.formatted(date: .abbreviated, time: .omitted))
+                            InfoRow(title: "Original Tenure", value: "\(details.loanTenure) months")
+                            InfoRow(title: "Months Elapsed", value: "\(details.calculatedMonthsElapsed) months")
+                            InfoRow(title: "Interest Rate", value: String(format: "%.2f%% per annum", details.interestRate))
+                            
+                            // Next Interest Date (for all loans)
+                            InfoRow(title: "Next Interest Date", value: "\(details.nextInterestGenerationDate.formatted(date: .abbreviated, time: .omitted)) (in \(details.daysUntilNextInterestGeneration) days)")
+                            
+                            if details.isEMILoan {
+                                InfoRow(title: "Repayment Type", value: "EMI")
+                                InfoRow(title: "Payments Remaining", value: "\(details.calculatedRemainingPayments)")
+                                InfoRow(title: "Loan Progress", value: "\(Int(details.loanProgress * 100))% completed")
+                                
+                                if let emiAmount = details.emiAmount {
+                                    InfoRow(title: "Monthly EMI", value: emiAmount.formatted(.currency(code: currencySettings.selectedCurrency.rawValue)))
+                                }
+                                
+                                // Next EMI Payment Date
+                                if let nextEMIDate = details.nextEMIPaymentDate {
+                                    if let daysUntilEMI = details.daysUntilNextEMIPayment {
+                                        InfoRow(title: "Next EMI Date", value: "\(nextEMIDate.formatted(date: .abbreviated, time: .omitted)) (in \(daysUntilEMI) days)")
+                                    } else {
+                                        InfoRow(title: "Next EMI Date", value: nextEMIDate.formatted(date: .abbreviated, time: .omitted))
+                                    }
+                                }
+                                
+                                if let emiDay = details.emiDayOfMonth {
+                                    InfoRow(title: "EMI Debit Day", value: "Day \(emiDay) of month")
+                                }
+                            } else {
+                                InfoRow(title: "Repayment Type", value: "Interest Only")
+                                InfoRow(title: "Last Interest Generated", value: details.lastInterestGeneratedText)
+                            }
+                            
+                            InfoRow(title: "Total Interest Paid", value: details.totalInterestAccumulated.formatted(.currency(code: currencySettings.selectedCurrency.rawValue)))
+                            
                             if let notes = details.notes, !notes.isEmpty {
                                 InfoRow(title: "Notes", value: notes)
                             }
@@ -206,18 +237,18 @@ struct LoanDetailsView: View {
         }
         .navigationTitle("Loan Details")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button(action: { showingEditSheet = true }) {
+                    Image(systemName: "pencil")
+                }
+            }
+        }
         .sheet(isPresented: $showingPaymentSheet) {
             LoanPaymentView(viewModel: viewModel, preSelectedLoan: account)
         }
         .sheet(isPresented: $showingEditSheet) {
-            if account.wrappedAccountType == .personalLoanGiven {
-                EditPersonalLoanGivenView(viewModel: viewModel, account: account)
-            } else {
-                EditAccountView(viewModel: viewModel, account: account)
-            }
-        }
-        .sheet(isPresented: $showingInterestCalculation) {
-            InterestCalculationView(account: account, loanManager: loanManager)
+            AddLoanView(viewModel: viewModel, editingAccount: account)
         }
     }
 }
@@ -292,7 +323,7 @@ struct InterestCalculationView: View {
                         VStack(spacing: 12) {
                             InfoRow(title: "Outstanding Amount", value: details.outstandingAmount.formatted(.currency(code: currencySettings.selectedCurrency.rawValue)))
                             InfoRow(title: "Interest Rate", value: String(format: "%.2f%% p.a.", details.interestRate))
-                            InfoRow(title: "Days Since Last Calculation", value: "\(Calendar.current.dateComponents([.day], from: details.lastInterestCalculationDate, to: Date()).day ?? 0)")
+                            InfoRow(title: "Interest Day of Month", value: details.interestDayOfMonth.map { "Day \($0)" } ?? "Not set")
                             InfoRow(title: "Calculated Interest", value: details.calculatedInterest.formatted(.currency(code: currencySettings.selectedCurrency.rawValue)))
                             InfoRow(title: "Total with Interest", value: details.totalAmountWithInterest.formatted(.currency(code: currencySettings.selectedCurrency.rawValue)))
                         }

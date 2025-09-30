@@ -236,6 +236,14 @@ struct SettingsView: View {
                     NavigationLink(destination: CreditCardBillsView(viewModel: expenseViewModel)) {
                         Label("View Processed Bills", systemImage: "creditcard")
                     }
+                    
+                    Button(action: {
+                        expenseViewModel.detectAndProcessBillPayments()
+                        errorMessage = "✅ Automatic bill payment detection completed"
+                        showingError = true
+                    }) {
+                        Label("Detect Bill Payments", systemImage: "magnifyingglass.circle")
+                    }
                 }
 
                 // Gmail Configuration Section
@@ -718,6 +726,11 @@ struct SettingsView: View {
                 billLoadingProgress = "✅ Completed! Processed \(totalProcessed) statements"
                 print("DEBUG: ✅ Bill loading complete - processed \(totalProcessed) new statements")
                 expenseViewModel.fetchAccounts()
+                
+                // Run automatic bill payment detection after successful loading
+                billLoadingProgress = "🔍 Detecting automatic bill payments..."
+                expenseViewModel.detectAndProcessBillPayments()
+                
                 errorMessage = "✅ Successfully loaded \(totalProcessed) credit card statements"
             } else {
                 billLoadingProgress = "ℹ️ No new statements found"
@@ -805,6 +818,10 @@ struct SettingsView: View {
             if totalNewStatements > 0 {
                 billLoadingProgress = "✅ Found \(totalNewStatements) new statements"
                 print("DEBUG: ✅ Incremental check complete - \(totalNewStatements) new statements processed")
+                
+                // Run automatic bill payment detection after finding new statements
+                billLoadingProgress = "🔍 Detecting automatic bill payments..."
+                expenseViewModel.detectAndProcessBillPayments()
             } else {
                 billLoadingProgress = "✅ All statements up to date"
                 print("DEBUG: ✅ Incremental check complete - no new statements")
@@ -873,11 +890,24 @@ struct SettingsView: View {
             
             print("DEBUG: Successfully parsed PDF: \(pdfFileName) - Found \(billInfo.transactions.count) transactions")
             
-            // Create or find existing credit card account
+            // Check if this bill already exists before processing
             let accountName = "\(billInfo.bankName) ****\(billInfo.cardNumber)"
             let existingAccount = expenseViewModel.accounts.first(where: { account in
                 account.wrappedAccountName == accountName && account.wrappedAccountType == AccountType.creditCard
             })
+            
+            if let existing = existingAccount {
+                let dateFormatter = ISO8601DateFormatter()
+                let statementKey = "statement_\(dateFormatter.string(from: billInfo.statementDate))"
+                let metadata = existing.metadataDictionary
+                
+                if metadata.keys.contains(statementKey) {
+                    print("DEBUG: ⏭️ Bill already exists for \(accountName) - Statement: \(billInfo.statementDate)")
+                    print("DEBUG: ⏭️ Skipping duplicate bill processing")
+                    try? FileManager.default.removeItem(at: tempURL)
+                    return
+                }
+            }
             
             let dateFormatter = ISO8601DateFormatter()
             
@@ -982,8 +1012,20 @@ struct SettingsView: View {
         // Create a unique key for this statement
         let statementKey = "statement_\(dateFormatter.string(from: billInfo.statementDate))"
         
+        // Check if bill already exists and preserve paid status
+        var existingPaidStatus: String?
+        var existingPaidDate: String?
+        
+        if let existingJsonString = metadata[statementKey],
+           let existingJsonData = existingJsonString.data(using: .utf8),
+           let existingBillData = try? JSONSerialization.jsonObject(with: existingJsonData) as? [String: String] {
+            existingPaidStatus = existingBillData["manuallyPaid"]
+            existingPaidDate = existingBillData["paidDate"]
+            print("DEBUG: 📋 Found existing bill - Paid status: \(existingPaidStatus ?? "nil")")
+        }
+        
         // Create bill data dictionary
-        let billData: [String: String] = [
+        var billData: [String: String] = [
             "statementDate": dateFormatter.string(from: billInfo.statementDate),
             "dueDate": dateFormatter.string(from: billInfo.dueDate),
             "dueAmount": String(billInfo.dueAmount),
@@ -994,6 +1036,16 @@ struct SettingsView: View {
             "pdfFileName": pdfFileName,
             "transactionCount": String(billInfo.transactions.count)
         ]
+        
+        // Preserve existing paid status if it exists
+        if let paidStatus = existingPaidStatus {
+            billData["manuallyPaid"] = paidStatus
+            print("DEBUG: ✅ Preserved paid status: \(paidStatus)")
+        }
+        if let paidDate = existingPaidDate {
+            billData["paidDate"] = paidDate
+            print("DEBUG: ✅ Preserved paid date: \(paidDate)")
+        }
         
         // Convert to JSON string
         if let jsonData = try? JSONSerialization.data(withJSONObject: billData),
@@ -1007,6 +1059,8 @@ struct SettingsView: View {
             print("DEBUG: - Key: \(statementKey)")
             print("DEBUG: - Due Amount: ₹\(billInfo.dueAmount)")
             print("DEBUG: - PDF: \(pdfFileName)")
+            let paidStatus = billData["manuallyPaid"] ?? "unpaid"
+            print("DEBUG: - Paid Status: \(paidStatus)")
             print("DEBUG: - Total metadata keys: \(metadata.keys.count)")
         } else {
             print("DEBUG: ❌ Failed to save bill metadata for statement: \(billInfo.statementDate)")

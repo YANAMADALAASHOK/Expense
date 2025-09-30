@@ -44,6 +44,7 @@ struct AccountsView: View {
     @State private var showingAddAccount = false
     @State private var showingAddMutualFund = false
     @State private var showingAddPersonalLoan = false
+    @State private var showingAddLoan = false
     @State private var showingLoanPayment = false
     @State private var showingAccountTransactions = false
     @State private var selectedAccount: CDAccount?
@@ -212,7 +213,8 @@ struct AccountsView: View {
                     AddAccountMenu(
                         showingAddAccount: $showingAddAccount,
                         showingAddMutualFund: $showingAddMutualFund,
-                        showingAddPersonalLoan: $showingAddPersonalLoan
+                        showingAddPersonalLoan: $showingAddPersonalLoan,
+                        showingAddLoan: $showingAddLoan
                     )
                 }
             }
@@ -246,6 +248,12 @@ struct AccountsView: View {
             }
             .sheet(isPresented: $showingAddPersonalLoan) {
                 AddPersonalLoanGivenView(viewModel: viewModel)
+                    .onDisappear {
+                        selectedAccountType = nil
+                    }
+            }
+            .sheet(isPresented: $showingAddLoan) {
+                AddLoanView(viewModel: viewModel)
                     .onDisappear {
                         selectedAccountType = nil
                     }
@@ -459,6 +467,7 @@ extension AccountsView {
         showingAddAccount = false
         showingAddMutualFund = false
         showingAddPersonalLoan = false
+        showingAddLoan = false
         showingLoanPayment = false
         selectedAccountForTransactions = account
         DispatchQueue.main.async { showingAccountTransactions = true }
@@ -1635,6 +1644,7 @@ private struct AddAccountMenu: View {
     @Binding var showingAddAccount: Bool
     @Binding var showingAddMutualFund: Bool
     @Binding var showingAddPersonalLoan: Bool
+    @Binding var showingAddLoan: Bool
     @State private var selectedAccountType: AccountType?
     
     var body: some View {
@@ -1661,7 +1671,7 @@ private struct AddAccountMenu: View {
                 Button(action: { 
                     selectedAccountType = .loan
                     DispatchQueue.main.async {
-                        showingAddAccount = true 
+                        showingAddLoan = true 
                     }
                 }) {
                     Label("Loan", systemImage: "indianrupeesign")

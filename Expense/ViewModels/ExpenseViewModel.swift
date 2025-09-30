@@ -262,14 +262,150 @@ class ExpenseViewModel: ObservableObject {
         if changed { saveInsurancePolicies() }
     }
     
+    /// Processes due loan EMIs today and debits from funding accounts
+    func processDueLoanEMIs(on date: Date = Date()) {
+        let calendar = Calendar.current
+        let todayDay = calendar.component(.day, from: date)
+        let currentMonth = calendar.component(.month, from: date)
+        let currentYear = calendar.component(.year, from: date)
+        
+        let loanAccounts = accounts.filter { $0.accountType == AccountType.loan.rawValue }
+        
+        for loanAccount in loanAccounts {
+            let metadata = loanAccount.metadataDictionary
+            
+            // Check if this is an EMI loan
+            guard metadata["repaymentType"] == "EMI",
+                  let emiDayString = metadata["emiDayOfMonth"],
+                  let emiDay = Int(emiDayString),
+                  let emiAmountString = metadata["emiAmount"],
+                  let emiAmount = Double(emiAmountString),
+                  let fundingAccountIdString = metadata["emiFundingAccountId"],
+                  let fundingAccountId = UUID(uuidString: fundingAccountIdString) else {
+                continue
+            }
+            
+            // Check if today is the EMI day
+            guard todayDay == emiDay else { continue }
+            
+            // Check if EMI already processed this month
+            let lastEMIKey = "lastEMIProcessed"
+            if let lastEMIString = metadata[lastEMIKey],
+               let lastEMIDate = ISO8601DateFormatter().date(from: lastEMIString) {
+                let lastMonth = calendar.component(.month, from: lastEMIDate)
+                let lastYear = calendar.component(.year, from: lastEMIDate)
+                if lastMonth == currentMonth && lastYear == currentYear {
+                    continue // Already processed this month
+                }
+            }
+            
+            // Find funding account
+            guard let fundingAccount = accounts.first(where: { $0.id == fundingAccountId }) else {
+                print("WARNING: Funding account not found for loan EMI: \(loanAccount.wrappedAccountName)")
+                continue
+            }
+            
+            // Check if funding account has sufficient balance
+            guard fundingAccount.balance >= emiAmount else {
+                print("WARNING: Insufficient balance in \(fundingAccount.wrappedAccountName) for EMI of ₹\(emiAmount)")
+                continue
+            }
+            
+            // Process the EMI payment using the fixed EMI amount
+            processLoanPayment(
+                amount: emiAmount,
+                fromAccount: fundingAccount,
+                toLoanAccount: loanAccount,
+                notes: "Auto EMI Payment (Fixed Amount)",
+                date: date
+            )
+            
+            // Update metadata to mark EMI as processed
+            var updatedMetadata = metadata
+            updatedMetadata[lastEMIKey] = ISO8601DateFormatter().string(from: date)
+            loanAccount.metadataDictionary = updatedMetadata
+            
+            print("✅ Auto EMI processed: ₹\(emiAmount) from \(fundingAccount.wrappedAccountName) to \(loanAccount.wrappedAccountName)")
+        }
+        
+        // Save any metadata changes
+        saveContext()
+    }
+    
+    /// Processes due loan interest generation today and adds to loan balance
+    func processDueLoanInterest(on date: Date = Date()) {
+        let calendar = Calendar.current
+        let todayDay = calendar.component(.day, from: date)
+        let currentMonth = calendar.component(.month, from: date)
+        let currentYear = calendar.component(.year, from: date)
+        
+        let loanAccounts = accounts.filter { $0.accountType == AccountType.loan.rawValue }
+        
+        for loanAccount in loanAccounts {
+            let metadata = loanAccount.metadataDictionary
+            
+            // Check if this loan has interest configuration
+            guard let interestDayString = metadata["interestDayOfMonth"],
+                  let interestDay = Int(interestDayString),
+                  let rateString = metadata["interestRate"],
+                  let rate = Double(rateString) else {
+                continue
+            }
+            
+            // Check if today is the interest generation day
+            guard todayDay == interestDay else { continue }
+            
+            // Check if interest already generated this month
+            let lastInterestKey = "lastInterestGenerated"
+            if let lastInterestString = metadata[lastInterestKey],
+               let lastInterestDate = ISO8601DateFormatter().date(from: lastInterestString) {
+                let lastMonth = calendar.component(.month, from: lastInterestDate)
+                let lastYear = calendar.component(.year, from: lastInterestDate)
+                if lastMonth == currentMonth && lastYear == currentYear {
+                    continue // Already processed this month
+                }
+            }
+            
+            // Calculate monthly interest on current balance
+            let currentBalance = loanAccount.balance
+            let monthlyRate = rate / 12.0 / 100.0
+            let interestAmount = currentBalance * monthlyRate
+            
+            // Add interest to loan balance (increases debt)
+            loanAccount.balance += interestAmount
+            
+            // Create interest transaction
+            addTransaction(
+                amount: interestAmount,
+                category: .interest,
+                isCredit: false, // Debit because it increases loan debt
+                account: loanAccount,
+                notes: "Monthly Interest @ \(rate)% p.a.",
+                date: date
+            )
+            
+            // Update metadata to mark interest as generated
+            var updatedMetadata = metadata
+            updatedMetadata[lastInterestKey] = ISO8601DateFormatter().string(from: date)
+            loanAccount.metadataDictionary = updatedMetadata
+            
+            print("✅ Interest generated: ₹\(interestAmount) added to \(loanAccount.wrappedAccountName)")
+        }
+        
+        // Save any metadata changes
+        saveContext()
+    }
+    
     deinit {
         NotificationCenter.default.removeObserver(self)
     }
     
     private func startInterestCalculationTimer() {
-        // Check every hour if we need to calculate interest
+        // Check every hour if we need to process EMIs, generate loan interest, and insurance premiums
         Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in
-            self?.checkAndCalculateInterest()
+            self?.processDueLoanEMIs()
+            self?.processDueLoanInterest()
+            self?.processDueInsurancePremiums()
         }
     }
     
@@ -555,6 +691,196 @@ class ExpenseViewModel: ObservableObject {
                 self.deletionStatus = ""
                 self.isDeletingAccount = false
             }
+        }
+    }
+    
+    // MARK: - Automatic Bill Payment Detection
+    
+    /// Automatically detects and processes bill payments for credit card bills
+    /// Searches for transactions matching the due amount between statement and due dates
+    func detectAndProcessBillPayments() {
+        print("DEBUG: 🔍 Starting automatic bill payment detection...")
+        
+        let creditCardAccounts = accounts.filter { $0.accountType == AccountType.creditCard.rawValue }
+        var totalPaymentsDetected = 0
+        
+        for account in creditCardAccounts {
+            let paymentsDetected = detectPaymentsForAccount(account)
+            totalPaymentsDetected += paymentsDetected
+        }
+        
+        print("DEBUG: ✅ Automatic bill payment detection complete - \(totalPaymentsDetected) payments processed")
+    }
+    
+    private func detectPaymentsForAccount(_ creditCardAccount: CDAccount) -> Int {
+        let metadata = creditCardAccount.metadataDictionary
+        var paymentsDetected = 0
+        
+        // Get all statement data from metadata
+        let statementKeys = metadata.keys.filter { $0.contains("Statement_") }
+        
+        for statementKey in statementKeys {
+            guard let statementDataString = metadata[statementKey] as? String,
+                  let statementData = try? JSONSerialization.jsonObject(with: statementDataString.data(using: .utf8)!) as? [String: Any] else {
+                continue
+            }
+            
+            // Extract bill information
+            guard let statementDateString = statementData["statementDate"] as? String,
+                  let dueDateString = statementData["dueDate"] as? String,
+                  let statementDate = ISO8601DateFormatter().date(from: statementDateString),
+                  let dueDate = ISO8601DateFormatter().date(from: dueDateString) else {
+                continue
+            }
+            
+            // Get due amount
+            let dueAmount = statementData["totalAmountDue"].flatMap { Double($0 as? String ?? "") } ??
+                           statementData["totalDue"].flatMap { Double($0 as? String ?? "") } ??
+                           statementData["amountDue"].flatMap { Double($0 as? String ?? "") } ??
+                           statementData["paymentDue"].flatMap { Double($0 as? String ?? "") } ?? 0.0
+            
+            if dueAmount <= 0 {
+                continue
+            }
+            
+            // Check if bill is already marked as paid
+            let isPaid = statementData["isPaid"] as? Bool ?? false
+            if isPaid {
+                continue
+            }
+            
+            print("DEBUG: 🔍 Checking bill - Statement: \(statementDate), Due: \(dueDate), Amount: ₹\(dueAmount)")
+            
+            // Search for matching payment transactions
+            if let paymentTransaction = findMatchingPaymentTransaction(
+                dueAmount: dueAmount,
+                statementDate: statementDate,
+                dueDate: dueDate,
+                creditCardAccount: creditCardAccount
+            ) {
+                print("DEBUG: 💳 Found matching payment transaction - Processing automatic bill payment")
+                
+                // Process the bill payment
+                processAutomaticBillPayment(
+                    creditCardAccount: creditCardAccount,
+                    paymentTransaction: paymentTransaction,
+                    dueAmount: dueAmount,
+                    statementKey: statementKey,
+                    statementData: statementData
+                )
+                
+                paymentsDetected += 1
+            }
+        }
+        
+        return paymentsDetected
+    }
+    
+    private func findMatchingPaymentTransaction(
+        dueAmount: Double,
+        statementDate: Date,
+        dueDate: Date,
+        creditCardAccount: CDAccount
+    ) -> CDTransaction? {
+        
+        // Search all accounts for debit transactions matching the due amount
+        let allTransactions = recentTransactions.filter { transaction in
+            // Must be a debit transaction (payment going out)
+            guard !transaction.isCredit else { return false }
+            
+            // Must be within the payment window (statement date to due date + 30 days grace period)
+            let graceDate = Calendar.current.date(byAdding: .day, value: 30, to: dueDate) ?? dueDate
+            let transactionDate = transaction.wrappedDate
+            guard transactionDate >= statementDate && transactionDate <= graceDate else { return false }
+            
+            // Amount should match (allow ₹100 variance for fees, etc.)
+            let amountDifference = abs(transaction.amount - dueAmount)
+            guard amountDifference <= 100.0 else { return false }
+            
+            // Check transaction notes/category for payment indicators
+            let notes = transaction.wrappedNotes.uppercased()
+            let category = transaction.wrappedCategory.uppercased()
+            
+            let isPaymentTransaction = notes.contains("PAYMENT") ||
+                                     notes.contains("BILL") ||
+                                     notes.contains("CREDIT CARD") ||
+                                     notes.contains(creditCardAccount.wrappedAccountName.uppercased()) ||
+                                     category.contains("PAYMENT") ||
+                                     category.contains("BILL") ||
+                                     category.contains("CREDIT CARD")
+            
+            return isPaymentTransaction
+        }
+        
+        // Sort by closest amount match and most recent date
+        let sortedTransactions = allTransactions.sorted { t1, t2 in
+            let diff1 = abs(t1.amount - dueAmount)
+            let diff2 = abs(t2.amount - dueAmount)
+            
+            if diff1 != diff2 {
+                return diff1 < diff2 // Closer amount match first
+            }
+            
+            return t1.wrappedDate > t2.wrappedDate // More recent first
+        }
+        
+        return sortedTransactions.first
+    }
+    
+    private func processAutomaticBillPayment(
+        creditCardAccount: CDAccount,
+        paymentTransaction: CDTransaction,
+        dueAmount: Double,
+        statementKey: String,
+        statementData: [String: Any]
+    ) {
+        
+        print("DEBUG: 💰 Processing automatic bill payment:")
+        print("DEBUG: - Credit Card: \(creditCardAccount.wrappedAccountName)")
+        print("DEBUG: - Payment Account: \(paymentTransaction.account?.wrappedAccountName ?? "Unknown")")
+        print("DEBUG: - Amount: ₹\(paymentTransaction.amount)")
+        print("DEBUG: - Date: \(paymentTransaction.wrappedDate)")
+        
+        // Create credit transaction for the credit card account
+        let creditTransaction = CDTransaction(context: viewContext)
+        creditTransaction.id = UUID()
+        creditTransaction.amount = paymentTransaction.amount
+        creditTransaction.date = paymentTransaction.wrappedDate
+        creditTransaction.notes = "Bill Payment - \(paymentTransaction.wrappedNotes) [Linked: \(paymentTransaction.id?.uuidString ?? "")]"
+        creditTransaction.category = "Bill Payment"
+        creditTransaction.isCredit = true
+        creditTransaction.account = creditCardAccount
+        
+        // Update the original payment transaction to link it
+        paymentTransaction.notes = paymentTransaction.wrappedNotes + " [Auto-linked to \(creditCardAccount.wrappedAccountName): \(creditTransaction.id?.uuidString ?? "")]"
+        
+        // Update credit card account balance
+        creditCardAccount.balance += paymentTransaction.amount
+        
+        // Mark the bill as paid in metadata
+        var updatedStatementData = statementData
+        updatedStatementData["isPaid"] = true
+        updatedStatementData["paymentDate"] = ISO8601DateFormatter().string(from: paymentTransaction.wrappedDate)
+        updatedStatementData["paymentAmount"] = paymentTransaction.amount
+        updatedStatementData["autoProcessed"] = true
+        
+        // Save updated metadata
+        var metadata = creditCardAccount.metadataDictionary
+        if let updatedDataString = try? JSONSerialization.data(withJSONObject: updatedStatementData),
+           let updatedString = String(data: updatedDataString, encoding: .utf8) {
+            metadata[statementKey] = updatedString
+            
+            if let jsonData = try? JSONSerialization.data(withJSONObject: metadata) {
+                creditCardAccount.metadata = jsonData
+            }
+        }
+        
+        // Save changes
+        do {
+            try viewContext.save()
+            print("DEBUG: ✅ Automatic bill payment processed successfully")
+        } catch {
+            print("DEBUG: ❌ Failed to save automatic bill payment: \(error)")
         }
     }
     

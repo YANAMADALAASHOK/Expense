@@ -46,6 +46,7 @@ struct EnhancedDashboardView: View {
     @State private var customEndDate = Date()
     @State private var pendingBillsAmount: Double = 0
     @State private var upcomingInsuranceAmount: Double = 0
+    @State private var upcomingLoanEMIsAmount: Double = 0
     
     // Section reordering states
     @State private var isEditMode = false
@@ -219,6 +220,7 @@ struct EnhancedDashboardView: View {
             UpcomingBillsSection(
                 pendingBillsAmount: pendingBillsAmount,
                 upcomingInsuranceAmount: upcomingInsuranceAmount,
+                upcomingLoanEMIsAmount: upcomingLoanEMIsAmount,
                 currencySettings: currencySettings,
                 viewModel: viewModel
             )
@@ -305,10 +307,12 @@ struct EnhancedDashboardView: View {
                 loadSectionOrder()
                 calculatePendingBills()
                 calculateUpcomingInsurance()
+                calculateUpcomingLoanEMIs()
             }
             .refreshable {
                 calculatePendingBills()
                 calculateUpcomingInsurance()
+                calculateUpcomingLoanEMIs()
             }
             .sheet(isPresented: $showingInsights) {
                 FinancialInsightsView(viewModel: viewModel)
@@ -435,6 +439,59 @@ struct EnhancedDashboardView: View {
         upcomingInsuranceAmount = nextMonthTotal
         print("DEBUG: Dashboard - Insurance policies count: \(policies.count)")
         print("DEBUG: Dashboard - Calculated upcoming insurance: ₹\(nextMonthTotal)")
+    }
+    
+    private func calculateUpcomingLoanEMIs() {
+        // Get all loan accounts with EMI repayment
+        let loanAccounts = viewModel.accounts.filter { 
+            $0.wrappedAccountType == .loan || $0.wrappedAccountType == .personalLoanGiven
+        }
+        
+        let calendar = Calendar.current
+        let today = Date()
+        let currentDay = calendar.component(.day, from: today)
+        let currentMonth = calendar.component(.month, from: today)
+        let currentYear = calendar.component(.year, from: today)
+        
+        var totalEMIs: Double = 0
+        
+        for account in loanAccounts {
+            guard let details = LoanManager.shared.getLoanDetails(account) else { continue }
+            
+            // Check if this is an EMI loan
+            guard details.isEMILoan, let emiDay = details.emiDayOfMonth else { continue }
+            
+            // Calculate next EMI date
+            var targetMonth = currentMonth
+            var targetYear = currentYear
+            
+            // If we've passed this month's EMI date, show next month
+            if currentDay > emiDay {
+                targetMonth += 1
+                if targetMonth > 12 {
+                    targetMonth = 1
+                    targetYear += 1
+                }
+            }
+            
+            // Check if the next EMI date is within the next 30 days
+            let dateComponents = DateComponents(year: targetYear, month: targetMonth, day: emiDay)
+            if let nextEMIDate = calendar.date(from: dateComponents) {
+                let daysUntilDue = calendar.dateComponents([.day], from: today, to: nextEMIDate).day ?? 0
+                
+                print("DEBUG: Dashboard - Loan: \(account.wrappedAccountName), EMI Due in \(daysUntilDue) days, Amount: ₹\(details.effectiveEMI)")
+                
+                // Include if due within next 30 days
+                if daysUntilDue >= 0 && daysUntilDue <= 30 {
+                    totalEMIs += details.effectiveEMI
+                    print("DEBUG: Dashboard - Added loan EMI for \(account.wrappedAccountName) to total")
+                }
+            }
+        }
+        
+        upcomingLoanEMIsAmount = totalEMIs
+        print("DEBUG: Dashboard - Loan accounts count: \(loanAccounts.count)")
+        print("DEBUG: Dashboard - Calculated upcoming loan EMIs: ₹\(totalEMIs)")
     }
 
 }
@@ -1195,12 +1252,13 @@ struct InsightCard: View {
 struct UpcomingBillsSection: View {
     let pendingBillsAmount: Double
     let upcomingInsuranceAmount: Double
+    let upcomingLoanEMIsAmount: Double
     @ObservedObject var currencySettings: CurrencySettings
     @ObservedObject var viewModel: ExpenseViewModel
     @State private var showingBillDetails = false
     
     private var totalBillsAmount: Double {
-        pendingBillsAmount + upcomingInsuranceAmount
+        pendingBillsAmount + upcomingInsuranceAmount + upcomingLoanEMIsAmount
     }
     
     var body: some View {
@@ -1225,24 +1283,37 @@ struct UpcomingBillsSection: View {
                 }
             }
             
-            HStack(spacing: DesignSystem.Spacing.md) {
-                // Pending Credit Card Bills
-                BillCard(
-                    title: "Pending Bills",
-                    amount: pendingBillsAmount,
-                    icon: "creditcard.fill",
-                    color: DesignSystem.Colors.error,
-                    currencySettings: currencySettings
-                )
+            VStack(spacing: DesignSystem.Spacing.md) {
+                HStack(spacing: DesignSystem.Spacing.md) {
+                    // Pending Credit Card Bills
+                    BillCard(
+                        title: "Pending Bills",
+                        amount: pendingBillsAmount,
+                        icon: "creditcard.fill",
+                        color: DesignSystem.Colors.error,
+                        currencySettings: currencySettings
+                    )
+                    
+                    // Upcoming Insurance
+                    BillCard(
+                        title: "Next Insurance",
+                        amount: upcomingInsuranceAmount,
+                        icon: "shield.fill",
+                        color: DesignSystem.Colors.primary,
+                        currencySettings: currencySettings
+                    )
+                }
                 
-                // Upcoming Insurance
-                BillCard(
-                    title: "Next Insurance",
-                    amount: upcomingInsuranceAmount,
-                    icon: "shield.fill",
-                    color: DesignSystem.Colors.primary,
-                    currencySettings: currencySettings
-                )
+                // Upcoming Loan EMIs (full width)
+                if upcomingLoanEMIsAmount > 0 {
+                    BillCard(
+                        title: "Upcoming Loan EMIs",
+                        amount: upcomingLoanEMIsAmount,
+                        icon: "banknote.fill",
+                        color: Color.orange,
+                        currencySettings: currencySettings
+                    )
+                }
             }
         }
         .padding(DesignSystem.Spacing.md)
@@ -1254,6 +1325,7 @@ struct UpcomingBillsSection: View {
             BillDetailsView(
                 pendingBillsAmount: pendingBillsAmount,
                 upcomingInsuranceAmount: upcomingInsuranceAmount,
+                upcomingLoanEMIsAmount: upcomingLoanEMIsAmount,
                 viewModel: viewModel,
                 currencySettings: currencySettings
             )
@@ -1300,12 +1372,13 @@ struct BillCard: View {
 struct BillDetailsView: View {
     let pendingBillsAmount: Double
     let upcomingInsuranceAmount: Double
+    let upcomingLoanEMIsAmount: Double
     @ObservedObject var viewModel: ExpenseViewModel
     @ObservedObject var currencySettings: CurrencySettings
     @Environment(\.dismiss) private var dismiss
     
     private var totalAmount: Double {
-        pendingBillsAmount + upcomingInsuranceAmount
+        pendingBillsAmount + upcomingInsuranceAmount + upcomingLoanEMIsAmount
     }
     
     private var pendingCreditCards: [(name: String, amount: Double)] {
@@ -1390,6 +1463,48 @@ struct BillDetailsView: View {
         }
         
         return upcomingPolicies.sorted { $0.dueDate < $1.dueDate }
+    }
+    
+    private var upcomingLoanEMIs: [(name: String, amount: Double, dueDate: Date)] {
+        let loanAccounts = viewModel.accounts.filter { 
+            $0.wrappedAccountType == .loan || $0.wrappedAccountType == .personalLoanGiven
+        }
+        
+        let calendar = Calendar.current
+        let today = Date()
+        let currentDay = calendar.component(.day, from: today)
+        let currentMonth = calendar.component(.month, from: today)
+        let currentYear = calendar.component(.year, from: today)
+        
+        var upcomingEMIs: [(name: String, amount: Double, dueDate: Date)] = []
+        
+        for account in loanAccounts {
+            guard let details = LoanManager.shared.getLoanDetails(account) else { continue }
+            
+            guard details.isEMILoan, let emiDay = details.emiDayOfMonth else { continue }
+            
+            var targetMonth = currentMonth
+            var targetYear = currentYear
+            
+            if currentDay > emiDay {
+                targetMonth += 1
+                if targetMonth > 12 {
+                    targetMonth = 1
+                    targetYear += 1
+                }
+            }
+            
+            let dateComponents = DateComponents(year: targetYear, month: targetMonth, day: emiDay)
+            if let nextEMIDate = calendar.date(from: dateComponents) {
+                let daysUntilDue = calendar.dateComponents([.day], from: today, to: nextEMIDate).day ?? 0
+                
+                if daysUntilDue >= 0 && daysUntilDue <= 30 {
+                    upcomingEMIs.append((name: account.wrappedAccountName, amount: details.effectiveEMI, dueDate: nextEMIDate))
+                }
+            }
+        }
+        
+        return upcomingEMIs.sorted { $0.dueDate < $1.dueDate }
     }
     
     var body: some View {
@@ -1498,12 +1613,55 @@ struct BillDetailsView: View {
                         .cardStyle()
                     }
                     
+                    // Upcoming Loan EMIs
+                    if !upcomingLoanEMIs.isEmpty {
+                        VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
+                            HStack {
+                                Image(systemName: "banknote.fill")
+                                    .foregroundColor(Color.orange)
+                                Text("Upcoming Loan EMIs")
+                                    .font(DesignSystem.Typography.headlineSmall)
+                                    .foregroundColor(DesignSystem.Colors.onSurface)
+                                Spacer()
+                                Text(upcomingLoanEMIsAmount, format: .currency(code: currencySettings.selectedCurrency.rawValue))
+                                    .font(DesignSystem.Typography.titleMedium)
+                                    .fontWeight(.semibold)
+                                    .foregroundColor(Color.orange)
+                            }
+                            
+                            ForEach(upcomingLoanEMIs, id: \.name) { loan in
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(loan.name)
+                                            .font(DesignSystem.Typography.bodyMedium)
+                                            .foregroundColor(DesignSystem.Colors.onSurface)
+                                        Text("Due: \(loan.dueDate, style: .date)")
+                                            .font(DesignSystem.Typography.labelSmall)
+                                            .foregroundColor(DesignSystem.Colors.onSurfaceVariant)
+                                    }
+                                    
+                                    Spacer()
+                                    
+                                    Text(loan.amount, format: .currency(code: currencySettings.selectedCurrency.rawValue))
+                                        .font(DesignSystem.Typography.titleSmall)
+                                        .fontWeight(.medium)
+                                        .foregroundColor(Color.orange)
+                                }
+                                .padding(DesignSystem.Spacing.md)
+                                .background(DesignSystem.Colors.surface)
+                                .cornerRadius(DesignSystem.CornerRadius.sm)
+                            }
+                        }
+                        .padding(DesignSystem.Spacing.md)
+                        .cardStyle()
+                    }
+                    
                     // Empty State
-                    if pendingCreditCards.isEmpty && upcomingInsurancePolicies.isEmpty {
+                    if pendingCreditCards.isEmpty && upcomingInsurancePolicies.isEmpty && upcomingLoanEMIs.isEmpty {
                         ContentUnavailableView(
                             "No Upcoming Bills",
                             systemImage: "checkmark.circle.fill",
-                            description: Text("You're all caught up! No pending bills or upcoming insurance premiums.")
+                            description: Text("You're all caught up! No pending bills, insurance premiums, or loan EMIs.")
                         )
                         .foregroundColor(DesignSystem.Colors.success)
                     }

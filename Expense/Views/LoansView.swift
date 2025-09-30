@@ -183,7 +183,7 @@ struct LoansView: View {
                 }
             }
             .sheet(isPresented: $showingAddLoan) {
-                AddLoanView(viewModel: viewModel)
+                AddLoanView(viewModel: viewModel, editingAccount: nil)
             }
             .sheet(item: $selectedLoan) { account in
                 LoanDetailsView(viewModel: viewModel, account: account)
@@ -269,36 +269,123 @@ struct LoanCardView: View {
                 }
                 
                 if let details = loanDetails {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Principal")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                            Text(details.principalAmount, format: .currency(code: currencySettings.selectedCurrency.rawValue))
-                                .font(.subheadline)
-                                .fontWeight(.medium)
+                    VStack(spacing: 8) {
+                        // First row: Principal, Rate, Days
+                        HStack {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Principal")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                Text(details.principalAmount, format: .currency(code: currencySettings.selectedCurrency.rawValue))
+                                    .font(.subheadline)
+                                    .fontWeight(.medium)
+                            }
+                            
+                            Spacer()
+                            
+                            VStack(alignment: .center, spacing: 4) {
+                                Text("Rate")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                Text("\(details.interestRate, specifier: "%.2f")%")
+                                    .font(.subheadline)
+                                    .fontWeight(.medium)
+                            }
+                            
+                            Spacer()
+                            
+                            VStack(alignment: .trailing, spacing: 4) {
+                                Text("Days")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                Text("\(Calendar.current.dateComponents([.day], from: details.lastInterestGeneratedDate ?? details.loanDate, to: Date()).day ?? 0)")
+                                    .font(.subheadline)
+                                    .fontWeight(.medium)
+                            }
                         }
                         
-                        Spacer()
-                        
-                        VStack(alignment: .center, spacing: 4) {
-                            Text("Rate")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                            Text("\(details.interestRate, specifier: "%.2f")%")
-                                .font(.subheadline)
-                                .fontWeight(.medium)
+                        // Second row: EMI/Interest info
+                        if details.isEMILoan {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("EMI Amount")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                    Text(details.effectiveEMI, format: .currency(code: currencySettings.selectedCurrency.rawValue))
+                                        .font(.subheadline)
+                                        .fontWeight(.medium)
+                                        .foregroundColor(.blue)
+                                }
+                                
+                                Spacer()
+                                
+                                VStack(alignment: .center, spacing: 4) {
+                                    Text("Payments Left")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                    Text("\(details.calculatedRemainingPayments)")
+                                        .font(.subheadline)
+                                        .fontWeight(.medium)
+                                        .foregroundColor(.orange)
+                                }
+                                
+                                Spacer()
+                                
+                                VStack(alignment: .trailing, spacing: 4) {
+                                    Text("Progress")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                    Text("\(Int(details.loanProgress * 100))%")
+                                        .font(.subheadline)
+                                        .fontWeight(.medium)
+                                        .foregroundColor(.green)
+                                }
+                            }
+                            
+                            // Progress bar
+                            ProgressView(value: details.loanProgress)
+                                .progressViewStyle(LinearProgressViewStyle(tint: .green))
+                                .scaleEffect(x: 1, y: 0.5)
                         }
                         
-                        Spacer()
-                        
-                        VStack(alignment: .trailing, spacing: 4) {
-                            Text("Days")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                            Text("\(Calendar.current.dateComponents([.day], from: details.lastInterestCalculationDate, to: Date()).day ?? 0)")
-                                .font(.subheadline)
-                                .fontWeight(.medium)
+                        // Third row: Interest accumulated and tenure info
+                        HStack {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Interest Paid")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                Text(details.totalInterestAccumulated, format: .currency(code: currencySettings.selectedCurrency.rawValue))
+                                    .font(.subheadline)
+                                    .fontWeight(.medium)
+                                    .foregroundColor(.red)
+                            }
+                            
+                            Spacer()
+                            
+                            VStack(alignment: .center, spacing: 4) {
+                                Text("Tenure")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                Text("\(details.calculatedMonthsElapsed)/\(details.loanTenure) months")
+                                    .font(.subheadline)
+                                    .fontWeight(.medium)
+                            }
+                            
+                            Spacer()
+                            
+                            if !details.isEMILoan {
+                                VStack(alignment: .trailing, spacing: 4) {
+                                    Text("Next Interest")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                    Text(details.calculatedInterest, format: .currency(code: currencySettings.selectedCurrency.rawValue))
+                                        .font(.subheadline)
+                                        .fontWeight(.medium)
+                                        .foregroundColor(.orange)
+                                }
+                            } else {
+                                Spacer()
+                            }
                         }
                     }
                 }

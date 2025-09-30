@@ -420,9 +420,10 @@ final class EmailParser {
             // Specific transaction indicators for these banks
             let bankTransactionKeywords = [
                 "transaction", "credited", "debited", "payment", "purchase",
-                "withdrawal", "deposit", "transfer", "upi", "imps", "neft",
+                "withdrawal", "deposit", "deposited", "transfer", "upi", "imps", "neft",
                 "atm", "card", "amount", "rs.", "inr", "₹", "account",
-                "balance", "debit card", "credit card", "mobile banking"
+                "balance", "debit card", "credit card", "mobile banking",
+                "credit transaction alert", "debit transaction alert", "salary"
             ]
             
             let hasBankTransactionKeyword = bankTransactionKeywords.contains { keyword in
@@ -435,9 +436,9 @@ final class EmailParser {
             
             // Exclude obvious non-transaction bank emails
             let bankExcludeKeywords = [
-                "newsletter", "welcome", "thank you for choosing", "promotional",
-                "offer", "discount", "cashback offer", "reward points",
-                "statement", "monthly statement", "quarterly statement"
+                "newsletter", "welcome to", "thank you for choosing", "promotional",
+                "offer expires", "limited time offer", "exclusive offer",
+                "monthly statement", "quarterly statement", "annual statement"
             ]
             
             let hasBankExcludeKeyword = bankExcludeKeywords.contains { keyword in
@@ -490,6 +491,12 @@ final class EmailParser {
             "(?:INR|Rs\\.?|₹)\\s*([0-9,]+(?:\\.[0-9]{1,2})?)\\s+was\\s+(debited|credited)\\b",
             // Fallback without word-boundary (some subjects end with a dot/extra token)
             "(?:INR|Rs\\.?|₹)\\s*([0-9,]+(?:\\.[0-9]{1,2})?)\\s+was\\s+(debited|credited)",
+            // Credit transaction alert pattern: "Credit transaction alert for Axis Bank A/c"
+            "(?:INR|Rs\\.?|₹)\\s*([0-9,]+(?:\\.[0-9]{1,2})?)\\s+(?:has been\\s+)?(credited|deposited)\\s+(?:to|in)\\s+(?:your\\s+)?(?:Axis\\s+Bank\\s+)?A/c",
+            "Credit\\s+transaction\\s+alert.*?(?:INR|Rs\\.?|₹)\\s*([0-9,]+(?:\\.[0-9]{1,2})?)\\s+(?:has been\\s+)?(credited|deposited)",
+            // Salary credit patterns
+            "(?:INR|Rs\\.?|₹)\\s*([0-9,]+(?:\\.[0-9]{1,2})?)\\s+(?:has been\\s+)?(credited|deposited).*?salary",
+            "salary.*?(?:INR|Rs\\.?|₹)\\s*([0-9,]+(?:\\.[0-9]{1,2})?)\\s+(?:has been\\s+)?(credited|deposited)",
             "Dear Customer, INR ([0-9,]+(?:\\.[0-9]{2})?) has been (debited|credited)",
             "transaction of INR ([0-9,]+(?:\\.[0-9]{2})?) (debited|credited)",
             "Amount: INR ([0-9,]+(?:\\.[0-9]{2})?) (Debited|Credited)"
@@ -503,10 +510,25 @@ final class EmailParser {
                 let typeStr = (full as NSString).substring(with: match.range(at: 2))
                 
                 if let amount = Double(amountStr) {
-                    let isCredit = typeStr.lowercased().contains("credit")
+                    let isCredit = typeStr.lowercased().contains("credit") || typeStr.lowercased().contains("deposit")
                     
                     // Try to extract date using Axis method, then generic fallback
                     let date = extractAxisDate(from: full) ?? extractGenericINDate(from: full) ?? Date()
+                    
+                    // Enhanced category detection for Axis Bank
+                    let fullText = (subject + "\n" + body).lowercased()
+                    let suggestedCategory: String
+                    if isCredit {
+                        if fullText.contains("salary") || fullText.contains("payroll") || fullText.contains("sal cr") {
+                            suggestedCategory = TransactionCategory.salary.rawValue
+                        } else if fullText.contains("interest") {
+                            suggestedCategory = TransactionCategory.interest.rawValue
+                        } else {
+                            suggestedCategory = TransactionCategory.other.rawValue
+                        }
+                    } else {
+                        suggestedCategory = TransactionCategory.other.rawValue
+                    }
                     
                     return ParsedEmailTransaction(
                         subject: subject,
@@ -515,7 +537,7 @@ final class EmailParser {
                         date: date,
                         isCredit: isCredit,
                         description: extractTransactionInfo(from: full),
-                        suggestedCategory: isCredit ? "income" : "expense"
+                        suggestedCategory: suggestedCategory
                     )
                 }
             }
@@ -548,6 +570,21 @@ final class EmailParser {
                     // Try to extract date using existing method
                     let date = extractICICIGmailDate(from: full) ?? Date()
                     
+                    // Enhanced category detection for ICICI Bank
+                    let fullText = (subject + "\n" + body).lowercased()
+                    let suggestedCategory: String
+                    if isCredit {
+                        if fullText.contains("salary") || fullText.contains("payroll") {
+                            suggestedCategory = TransactionCategory.salary.rawValue
+                        } else if fullText.contains("interest") {
+                            suggestedCategory = TransactionCategory.interest.rawValue
+                        } else {
+                            suggestedCategory = TransactionCategory.other.rawValue
+                        }
+                    } else {
+                        suggestedCategory = TransactionCategory.other.rawValue
+                    }
+                    
                     return ParsedEmailTransaction(
                         subject: subject,
                         body: body,
@@ -555,7 +592,7 @@ final class EmailParser {
                         date: date,
                         isCredit: isCredit,
                         description: extractICICIInfo(from: full) ?? extractTransactionInfo(from: full),
-                        suggestedCategory: isCredit ? "income" : "expense"
+                        suggestedCategory: suggestedCategory
                     )
                 }
             }

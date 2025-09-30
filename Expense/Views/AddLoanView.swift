@@ -7,38 +7,71 @@ struct AddLoanView: View {
     @StateObject private var loanManager = LoanManager.shared
     @StateObject private var currencySettings = CurrencySettings.shared
     
+    // Optional account for editing mode
+    let editingAccount: CDAccount?
+    
+    // Computed properties for edit mode
+    var isEditMode: Bool { editingAccount != nil }
+    var navigationTitle: String { 
+        if isEditMode {
+            return isPersonalLoanGiven ? "Edit Personal Loan" : "Edit Loan"
+        } else {
+            return isPersonalLoanGiven ? "Add Personal Loan" : "Add Loan"
+        }
+    }
+    
     @State private var loanName = ""
     @State private var principalAmount = ""
+    @State private var outstandingAmount = ""
     @State private var interestRate = ""
-    @State private var loanTenure = 60 // Default 5 years
-    @State private var loanDate = Date()
+    @State private var loanTenure = 60 // Default 5 years (total months)
+    @State private var loanStartDate = Date()
+    @State private var loanDate = Date() // Current date for record keeping
     @State private var notes = ""
     @State private var isPersonalLoanGiven = false
     @State private var showingError = false
     @State private var errorMessage = ""
+    // Repayment configuration
+    @State private var repaymentType: String = "EMI" // "EMI" or "ONE_TIME"
+    @State private var emiDayOfMonth: Int = 5
+    @State private var interestDayOfMonth: Int = 1
+    @State private var customEmiAmount: String = ""
+    @State private var selectedFundingAccount: CDAccount?
     
-    var calculatedEMI: Double {
-        guard let principal = Double(principalAmount),
-              let rate = Double(interestRate),
-              rate > 0 else { return 0 }
-        
-        let monthlyRate = rate / 12.0 / 100.0
-        
-        if monthlyRate == 0 { return principal / Double(loanTenure) }
-        
-        let numerator = principal * monthlyRate * pow(1 + monthlyRate, Double(loanTenure))
-        let denominator = pow(1 + monthlyRate, Double(loanTenure)) - 1
-        
-        return numerator / denominator
+    // Initializers
+    init(viewModel: ExpenseViewModel, editingAccount: CDAccount? = nil) {
+        self.viewModel = viewModel
+        self.editingAccount = editingAccount
     }
     
-    var totalInterestPayable: Double {
-        (calculatedEMI * Double(loanTenure)) - (Double(principalAmount) ?? 0)
+    var monthsElapsed: Int {
+        let calendar = Calendar.current
+        let components = calendar.dateComponents([.month], from: loanStartDate, to: Date())
+        return max(0, components.month ?? 0)
     }
     
-    var totalAmountPayable: Double {
-        calculatedEMI * Double(loanTenure)
+    var remainingPayments: Int {
+        return max(0, loanTenure - monthsElapsed)
     }
+    
+    var nextInterestDate: Date {
+        let calendar = Calendar.current
+        let today = Date()
+        let currentMonth = calendar.component(.month, from: today)
+        let currentYear = calendar.component(.year, from: today)
+        let currentDay = calendar.component(.day, from: today)
+        
+        // If interest day hasn't passed this month, use this month
+        if currentDay < interestDayOfMonth {
+            return calendar.date(from: DateComponents(year: currentYear, month: currentMonth, day: interestDayOfMonth)) ?? today
+        } else {
+            // Otherwise, use next month
+            let nextMonth = calendar.date(byAdding: .month, value: 1, to: today) ?? today
+            let nextMonthComponents = calendar.dateComponents([.year, .month], from: nextMonth)
+            return calendar.date(from: DateComponents(year: nextMonthComponents.year, month: nextMonthComponents.month, day: interestDayOfMonth)) ?? today
+        }
+    }
+    
     
     var body: some View {
         NavigationView {
@@ -51,11 +84,11 @@ struct AddLoanView: View {
                     .pickerStyle(SegmentedPickerStyle())
                 }
                 
-                Section("Loan Details") {
+                Section("Loan Details 📋") {
                     TextField("Loan Name", text: $loanName)
                     
                     HStack {
-                        TextField("Principal Amount", text: $principalAmount)
+                        TextField("Original Principal Amount", text: $principalAmount)
                             .keyboardType(.decimalPad)
                         Picker("Currency", selection: $currencySettings.selectedCurrency) {
                             ForEach(Currency.allCases, id: \.self) { currency in
@@ -66,12 +99,19 @@ struct AddLoanView: View {
                     }
                     
                     HStack {
+                        TextField("Current Outstanding Amount", text: $outstandingAmount)
+                            .keyboardType(.decimalPad)
+                        Text(currencySettings.selectedCurrency.symbol)
+                            .foregroundColor(.secondary)
+                    }
+                    
+                    HStack {
                         TextField("Interest Rate", text: $interestRate)
                             .keyboardType(.decimalPad)
                         Text("% per year")
                     }
                     
-                    Picker("Loan Tenure", selection: $loanTenure) {
+                    Picker("Original Loan Tenure", selection: $loanTenure) {
                         Text("1 Year (12 months)").tag(12)
                         Text("2 Years (24 months)").tag(24)
                         Text("3 Years (36 months)").tag(36)
@@ -81,71 +121,67 @@ struct AddLoanView: View {
                         Text("10 Years (120 months)").tag(120)
                     }
                     
-                    DatePicker("Loan Date", selection: $loanDate, in: ...Date(), displayedComponents: [.date])
+                    DatePicker("Loan Start Date", selection: $loanStartDate, in: ...Date(), displayedComponents: [.date])
+                    
+                    DatePicker("Record Date", selection: $loanDate, in: ...Date(), displayedComponents: [.date])
                 }
-                
-                if let principal = Double(principalAmount), principal > 0,
-                   let rate = Double(interestRate), rate > 0 {
-                    Section("EMI Calculation") {
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack {
-                                Text("Principal Amount:")
-                                Spacer()
-                                Text(principal, format: .currency(code: currencySettings.selectedCurrency.rawValue))
-                                    .fontWeight(.medium)
-                            }
-                            
-                            HStack {
-                                Text("Interest Rate:")
-                                Spacer()
-                                Text("\(rate, specifier: "%.2f")% p.a.")
-                                    .fontWeight(.medium)
-                            }
-                            
-                            HStack {
-                                Text("Loan Tenure:")
-                                Spacer()
-                                Text("\(loanTenure) months")
-                                    .fontWeight(.medium)
-                            }
-                            
-                            Divider()
-                            
-                            HStack {
-                                Text("Monthly EMI:")
-                                Spacer()
-                                Text(calculatedEMI, format: .currency(code: currencySettings.selectedCurrency.rawValue))
-                                    .fontWeight(.bold)
-                                    .foregroundColor(.blue)
-                            }
-                            
-                            HStack {
-                                Text("Total Interest:")
-                                Spacer()
-                                Text(totalInterestPayable, format: .currency(code: currencySettings.selectedCurrency.rawValue))
-                                    .fontWeight(.medium)
-                                    .foregroundColor(.orange)
-                            }
-                            
-                            HStack {
-                                Text("Total Amount:")
-                                Spacer()
-                                Text(totalAmountPayable, format: .currency(code: currencySettings.selectedCurrency.rawValue))
-                                    .fontWeight(.bold)
-                                    .foregroundColor(isPersonalLoanGiven ? .green : .red)
+
+                // Repayment configuration
+                Section("Repayment") {
+                    Picker("Repayment Type", selection: $repaymentType) {
+                        Text("EMI").tag("EMI")
+                        Text("One-time").tag("ONE_TIME")
+                    }
+                    .pickerStyle(SegmentedPickerStyle())
+
+                    if repaymentType == "EMI" {
+                        Picker("EMI Debit Day", selection: $emiDayOfMonth) {
+                            ForEach(1...31, id: \.self) { day in
+                                Text("Day \(day)").tag(day)
                             }
                         }
-                        .padding(.vertical, 4)
+
+                        TextField("EMI Amount", text: $customEmiAmount)
+                            .keyboardType(.decimalPad)
+
+                        Picker("Funding Account", selection: $selectedFundingAccount) {
+                            Text("Select Account").tag(nil as CDAccount?)
+                            ForEach(bankAccounts) { account in
+                                Text(account.wrappedAccountName).tag(account as CDAccount?)
+                            }
+                        }
                     }
                 }
+                
+                Section("Interest Configuration") {
+                    Picker("Interest Generation Day", selection: $interestDayOfMonth) {
+                        ForEach(1...31, id: \.self) { day in
+                            Text("Day \(day)").tag(day)
+                        }
+                    }
+                    
+                    HStack {
+                        Text("Next Interest Date:")
+                        Spacer()
+                        Text(nextInterestDate, format: .dateTime.day().month().year())
+                            .foregroundColor(.orange)
+                            .fontWeight(.medium)
+                    }
+                }
+                
                 
                 Section("Additional Details") {
                     TextField("Notes", text: $notes, axis: .vertical)
                         .lineLimit(3)
                 }
             }
-            .navigationTitle(isPersonalLoanGiven ? "Add Personal Loan" : "Add Loan")
+            .navigationTitle(navigationTitle)
             .navigationBarTitleDisplayMode(.inline)
+            .onAppear {
+                if isEditMode {
+                    populateFieldsForEditing()
+                }
+            }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
@@ -162,8 +198,47 @@ struct AddLoanView: View {
         }
     }
     
+    private func populateFieldsForEditing() {
+        guard let account = editingAccount else { return }
+        
+        loanName = account.wrappedAccountName
+        outstandingAmount = String(account.balance)
+        isPersonalLoanGiven = account.wrappedAccountType == .personalLoanGiven
+        
+        // Get loan details from metadata
+        if let details = loanManager.getLoanDetails(account) {
+            principalAmount = String(details.principalAmount)
+            interestRate = String(details.interestRate)
+            loanTenure = details.loanTenure
+            loanStartDate = details.loanDate
+            notes = details.notes ?? ""
+            
+            if let emi = details.emiAmount {
+                customEmiAmount = String(emi)
+                repaymentType = "EMI"
+            } else {
+                repaymentType = details.repaymentType ?? "ONE_TIME"
+            }
+            
+            if let interestDay = details.interestDayOfMonth {
+                interestDayOfMonth = interestDay
+            }
+        }
+        
+        // Get additional metadata
+        let metadata = account.metadataDictionary
+        if let emiDay = metadata["emiDayOfMonth"], let day = Int(emiDay) {
+            emiDayOfMonth = day
+        }
+        
+        if let fundingId = metadata["emiFundingAccountId"], let uuid = UUID(uuidString: fundingId) {
+            selectedFundingAccount = viewModel.accounts.first { $0.id == uuid }
+        }
+    }
+
     private func saveLoan() {
         guard let principal = Double(principalAmount),
+              let outstanding = Double(outstandingAmount),
               let rate = Double(interestRate),
               !loanName.isEmpty else {
             errorMessage = "Please fill in all required fields"
@@ -177,36 +252,122 @@ struct AddLoanView: View {
             return
         }
         
+        guard outstanding > 0 else {
+            errorMessage = "Outstanding amount must be greater than 0"
+            showingError = true
+            return
+        }
+        
+        guard outstanding <= principal else {
+            errorMessage = "Outstanding amount cannot be greater than principal amount"
+            showingError = true
+            return
+        }
+        
         guard rate >= 0 else {
             errorMessage = "Interest rate cannot be negative"
             showingError = true
             return
         }
+
+        // Validate EMI settings if EMI selected
+        var emiAmountToSave: Double? = nil
+        var fundingAccountId: UUID? = nil
+        if repaymentType == "EMI" {
+            guard let emiValue = Double(customEmiAmount), emiValue > 0 else {
+                errorMessage = "Please enter a valid EMI amount"
+                showingError = true
+                return
+            }
+            guard let funding = selectedFundingAccount, let fid = funding.id else {
+                errorMessage = "Please select a funding bank account for EMI"
+                showingError = true
+                return
+            }
+            emiAmountToSave = emiValue
+            fundingAccountId = fid
+        }
         
-        // Create loan account with EMI calculation
-        let account = loanManager.createLoanAccount(
-            name: loanName,
-            principalAmount: principal,
-            interestRate: rate,
-            loanDate: loanDate,
-            notes: notes,
-            isPersonalLoanGiven: isPersonalLoanGiven,
-            emiAmount: calculatedEMI,
-            loanTenure: loanTenure,
-            in: context
-        )
+        let account: CDAccount
         
-        // Add to viewModel accounts
-        viewModel.accounts.append(account)
+        if isEditMode {
+            // Update existing account
+            account = editingAccount!
+            account.accountName = loanName
+            account.accountType = isPersonalLoanGiven ? AccountType.personalLoanGiven.rawValue : AccountType.loan.rawValue
+            account.balance = outstanding
+            account.creditLimit = principal
+            
+            // Update metadata
+            var metadata: [String: String] = [
+                "principalAmount": String(principal),
+                "interestRate": String(rate),
+                "loanDate": ISO8601DateFormatter().string(from: loanStartDate),
+                "loanTenure": String(loanTenure),
+                "notes": notes
+            ]
+            
+            if let emi = emiAmountToSave {
+                metadata["emiAmount"] = String(emi)
+            }
+            if let repaymentType = repaymentType.isEmpty ? nil : repaymentType {
+                metadata["repaymentType"] = repaymentType
+            }
+            if repaymentType == "EMI" {
+                metadata["emiDayOfMonth"] = String(emiDayOfMonth)
+            }
+            metadata["interestDayOfMonth"] = String(interestDayOfMonth)
+            if let fundingId = fundingAccountId {
+                metadata["emiFundingAccountId"] = fundingId.uuidString
+            }
+            metadata["monthsElapsed"] = String(monthsElapsed)
+            metadata["remainingPayments"] = String(remainingPayments)
+            
+            account.metadataDictionary = metadata
+        } else {
+            // Create new loan account
+            account = loanManager.createLoanAccount(
+                name: loanName,
+                principalAmount: principal,
+                interestRate: rate,
+                loanDate: loanStartDate, // Use loan start date for calculations
+                notes: notes,
+                isPersonalLoanGiven: isPersonalLoanGiven,
+                emiAmount: emiAmountToSave,
+                loanTenure: loanTenure,
+                repaymentType: repaymentType,
+                emiDayOfMonth: repaymentType == "EMI" ? emiDayOfMonth : nil,
+                interestDayOfMonth: interestDayOfMonth,
+                emiFundingAccountId: fundingAccountId,
+                monthsElapsed: monthsElapsed,
+                remainingPayments: remainingPayments,
+                in: context
+            )
+            
+            // Set the current outstanding amount as the balance
+            account.balance = outstanding
+            
+            // Add to viewModel accounts
+            viewModel.accounts.append(account)
+        }
         
         // Save context
         do {
             try context.save()
-            print("Loan created: \(loanName), Amount: \(principal), Rate: \(rate)%, EMI: \(calculatedEMI)")
+            print("Loan created: \(loanName), Principal: \(principal), Outstanding: \(outstanding), Rate: \(rate)%")
             dismiss()
         } catch {
             errorMessage = "Failed to save loan: \(error.localizedDescription)"
             showingError = true
+        }
+    }
+
+    private var bankAccounts: [CDAccount] {
+        viewModel.accounts.filter { account in
+            let type = account.accountType ?? ""
+            return type == AccountType.bankAccount.rawValue ||
+                   type == AccountType.savings.rawValue ||
+                   type == AccountType.cash.rawValue
         }
     }
 }
@@ -214,7 +375,7 @@ struct AddLoanView: View {
 #if DEBUG
 struct AddLoanView_Previews: PreviewProvider {
     static var previews: some View {
-        AddLoanView(viewModel: ExpenseViewModel(context: PreviewHelper.shared.viewContext))
+        AddLoanView(viewModel: ExpenseViewModel(context: PreviewHelper.shared.viewContext), editingAccount: nil)
     }
 }
 #endif 
