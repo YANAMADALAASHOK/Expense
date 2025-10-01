@@ -305,11 +305,20 @@ struct EnhancedDashboardView: View {
             }
             .onAppear {
                 loadSectionOrder()
+                
+                // Run automatic bill payment detection first
+                viewModel.detectAndProcessBillPayments()
+                
+                // Then calculate pending bills (will reflect any auto-matched payments)
                 calculatePendingBills()
                 calculateUpcomingInsurance()
                 calculateUpcomingLoanEMIs()
             }
             .refreshable {
+                // Run automatic bill payment detection on refresh
+                viewModel.detectAndProcessBillPayments()
+                
+                // Then recalculate bills
                 calculatePendingBills()
                 calculateUpcomingInsurance()
                 calculateUpcomingLoanEMIs()

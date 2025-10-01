@@ -770,8 +770,11 @@ class ExpenseViewModel: ObservableObject {
         let metadata = creditCardAccount.metadataDictionary
         var paymentsDetected = 0
         
-        // Get all statement data from metadata
-        let statementKeys = metadata.keys.filter { $0.contains("Statement_") }
+        print("DEBUG: 🔍 Checking account: \(creditCardAccount.wrappedAccountName)")
+        print("DEBUG: 🔍 Metadata keys: \(metadata.keys.sorted())")
+        
+        // Get all statement data from metadata (lowercase 'statement_')
+        let statementKeys = metadata.keys.filter { $0.hasPrefix("statement_") }
         
         for statementKey in statementKeys {
             guard let statementDataString = metadata[statementKey] as? String,
@@ -787,19 +790,24 @@ class ExpenseViewModel: ObservableObject {
                 continue
             }
             
-            // Get due amount
-            let dueAmount = statementData["totalAmountDue"].flatMap { Double($0 as? String ?? "") } ??
+            // Get due amount (stored as string in metadata)
+            let dueAmount = statementData["dueAmount"].flatMap { Double($0 as? String ?? "") } ??
+                           statementData["totalAmountDue"].flatMap { Double($0 as? String ?? "") } ??
                            statementData["totalDue"].flatMap { Double($0 as? String ?? "") } ??
-                           statementData["amountDue"].flatMap { Double($0 as? String ?? "") } ??
-                           statementData["paymentDue"].flatMap { Double($0 as? String ?? "") } ?? 0.0
+                           statementData["amountDue"].flatMap { Double($0 as? String ?? "") } ?? 0.0
             
             if dueAmount <= 0 {
                 continue
             }
             
-            // Check if bill is already marked as paid
-            let isPaid = statementData["isPaid"] as? Bool ?? false
+            // Check if bill is already marked as paid (could be bool or string)
+            let isPaid = (statementData["isPaid"] as? Bool) ?? 
+                        (statementData["isPaid"] as? String == "true") ||
+                        (statementData["manuallyPaid"] as? String == "true") ||
+                        (statementData["autoProcessed"] as? Bool ?? false)
+            
             if isPaid {
+                print("DEBUG: ⏭️  Skipping already paid bill: ₹\(dueAmount)")
                 continue
             }
             
@@ -837,6 +845,9 @@ class ExpenseViewModel: ObservableObject {
         creditCardAccount: CDAccount
     ) -> CDTransaction? {
         
+        print("DEBUG: 🔎 Searching for payment matching ₹\(dueAmount) between \(statementDate) and \(dueDate)")
+        print("DEBUG: 🔎 Total transactions to search: \(recentTransactions.count)")
+        
         // Search all accounts for debit transactions matching the due amount
         let allTransactions = recentTransactions.filter { transaction in
             // Must be a debit transaction (payment going out)
@@ -847,9 +858,9 @@ class ExpenseViewModel: ObservableObject {
             let transactionDate = transaction.wrappedDate
             guard transactionDate >= statementDate && transactionDate <= graceDate else { return false }
             
-            // Amount should match (allow ₹100 variance for fees, etc.)
+            // Amount should match (allow ₹10 variance for fees, etc.)
             let amountDifference = abs(transaction.amount - dueAmount)
-            guard amountDifference <= 100.0 else { return false }
+            guard amountDifference <= 10.0 else { return false }
             
             // Check transaction notes/category for payment indicators
             let notes = transaction.wrappedNotes.uppercased()
@@ -866,6 +877,13 @@ class ExpenseViewModel: ObservableObject {
             return isPaymentTransaction
         }
         
+        print("DEBUG: 🔎 Found \(allTransactions.count) potential matching transactions")
+        
+        // Log some details about potential matches
+        for (index, transaction) in allTransactions.prefix(3).enumerated() {
+            print("DEBUG: 🔎 Match #\(index + 1): ₹\(transaction.amount) on \(transaction.wrappedDate) - \(transaction.wrappedNotes)")
+        }
+        
         // Sort by closest amount match and most recent date
         let sortedTransactions = allTransactions.sorted { t1, t2 in
             let diff1 = abs(t1.amount - dueAmount)
@@ -876,6 +894,12 @@ class ExpenseViewModel: ObservableObject {
             }
             
             return t1.wrappedDate > t2.wrappedDate // More recent first
+        }
+        
+        if let match = sortedTransactions.first {
+            print("DEBUG: ✅ Best match found: ₹\(match.amount) on \(match.wrappedDate) - \(match.wrappedNotes)")
+        } else {
+            print("DEBUG: ❌ No matching transaction found for ₹\(dueAmount)")
         }
         
         return sortedTransactions.first
@@ -908,8 +932,12 @@ class ExpenseViewModel: ObservableObject {
         // Update the original payment transaction to link it
         paymentTransaction.notes = paymentTransaction.wrappedNotes + " [Auto-linked to \(creditCardAccount.wrappedAccountName): \(creditTransaction.id?.uuidString ?? "")]"
         
-        // Update credit card account balance
-        creditCardAccount.balance += paymentTransaction.amount
+        // Mark original transaction as credit card payment
+        paymentTransaction.category = "Credit Card Payment"
+        
+        // Update credit card account balance (reduce debt)
+        // Credit card balance is negative (debt), so subtracting payment reduces the debt
+        creditCardAccount.balance -= paymentTransaction.amount
         
         // Mark the bill as paid in metadata
         var updatedStatementData = statementData
