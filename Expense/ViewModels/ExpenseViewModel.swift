@@ -15,6 +15,9 @@ class ExpenseViewModel: ObservableObject {
     private let firestoreQueue = DispatchQueue(label: "firestore.writes", qos: .background)
     private var cloudSyncDisabledUntil: Date?
     
+    // Bulk processing mode - disables Firestore sync to prevent memory crashes
+    public var isBulkProcessing: Bool = false
+    
     // Rate-limited Firestore write helper
     private func performRateLimitedFirestoreWrite<T>(_ operation: @escaping () async throws -> T) async throws -> T {
         let now = Date()
@@ -62,6 +65,11 @@ class ExpenseViewModel: ObservableObject {
         try viewContext.save()
         pendingCoreDataSaves += 1
         
+        // Skip Firestore sync during bulk processing to prevent memory crash
+        if isBulkProcessing {
+            return
+        }
+        
         // Only sync to cloud after accumulating several saves
         if pendingCoreDataSaves >= maxPendingSaves {
             pendingCoreDataSaves = 0
@@ -70,10 +78,56 @@ class ExpenseViewModel: ObservableObject {
     }
     
     func forceSyncPendingSaves() {
+        // Skip during bulk processing
+        if isBulkProcessing {
+            print("DEBUG: ⏭️ Skipping Firestore sync - bulk processing mode")
+            return
+        }
+        
         if pendingCoreDataSaves > 0 {
             pendingCoreDataSaves = 0
             syncToCloud()
         }
+    }
+    
+    /// Perform a single bulk sync to Firestore after processing all statements
+    /// This is much more efficient than syncing after each transaction
+    func performBulkSync() async {
+        guard let userId = AuthenticationManager.shared.currentUser?.id,
+              !AuthenticationManager.shared.currentUser!.isGuest else { 
+            print("DEBUG: ⏭️ Skipping bulk sync - no authenticated user")
+            return 
+        }
+        
+        print("DEBUG: ☁️ Starting bulk sync to Firestore...")
+        print("DEBUG: ℹ️ Sync will happen in background to avoid timeout")
+        
+        // Schedule background sync instead of blocking
+        Task.detached(priority: .background) { [weak self] in
+            guard let self = self else { return }
+            
+            // Wait a bit to let UI update
+            try? await Task.sleep(nanoseconds: 2_000_000_000) // 2 seconds
+            
+            do {
+                print("DEBUG: 🔄 Background sync starting...")
+                
+                // Export all data once
+                let data = try await MainActor.run {
+                    try self.exportData()
+                }
+                
+                // Single Firestore write with all data
+                try await self.syncToCloudAsync(data: data)
+                
+                print("DEBUG: ✅ Background sync completed successfully")
+            } catch {
+                print("DEBUG: ⚠️ Background sync failed (will retry later): \(error.localizedDescription)")
+                // Don't throw - let it fail silently and retry on next app launch
+            }
+        }
+        
+        print("DEBUG: ✅ Bulk sync scheduled in background")
     }
     
     @Published var accounts: [CDAccount] = []
@@ -2077,6 +2131,12 @@ class ExpenseViewModel: ObservableObject {
         guard let userId = AuthenticationManager.shared.currentUser?.id,
               !AuthenticationManager.shared.currentUser!.isGuest else { return }
         
+        // Skip during bulk processing - will sync once at the end
+        if isBulkProcessing {
+            print("DEBUG: ⏭️ Skipping cloud sync - bulk processing mode")
+            return
+        }
+        
         // Don't sync if we're deleting an account
         guard !isDeletingAccount else {
             print("Skipping cloud sync - account deletion in progress")
@@ -2560,6 +2620,7 @@ class ExpenseViewModel: ObservableObject {
     
     func getLoanDetails(for account: CDAccount) -> LoanDetails? {
         return LoanManager.shared.getLoanDetails(account)
+
     }
     
     // MARK: - Data Deletion

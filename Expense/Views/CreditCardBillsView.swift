@@ -1604,9 +1604,69 @@ struct BillDetailView: View {
         // Find the credit card account that matches this bill
         let accountName = "\(bill.bankName) ****\(bill.cardNumber)"
         
-        if let account = viewModel.accounts.first(where: { $0.wrappedAccountName == accountName }) {
-            transactions = account.transactionsArray
+        guard let account = viewModel.accounts.first(where: { $0.wrappedAccountName == accountName }) else {
+            print("DEBUG: BillDetailView - Account not found: \(accountName)")
+            return
         }
+        
+        // Get the statement period dates
+        let metadata = account.metadataDictionary
+        let dateFormatter = ISO8601DateFormatter()
+        
+        // Find all statement dates to determine the period for this bill
+        var allStatementDates: [Date] = []
+        let billHistoryKeys = metadata.keys.filter { $0.hasPrefix("statement_") }
+        
+        for key in billHistoryKeys {
+            if let statementJsonString = metadata[key],
+               let statementJsonData = statementJsonString.data(using: .utf8),
+               let statementData = try? JSONSerialization.jsonObject(with: statementJsonData) as? [String: String],
+               let statementDateString = statementData["statementDate"],
+               let date = dateFormatter.date(from: statementDateString) {
+                allStatementDates.append(date)
+            }
+        }
+        
+        // Sort statement dates
+        allStatementDates.sort()
+        
+        // Find the previous statement date (start of this billing period)
+        let currentStatementDate = bill.statementDate
+        let previousStatementDate: Date
+        
+        if let currentIndex = allStatementDates.firstIndex(where: { Calendar.current.isDate($0, inSameDayAs: currentStatementDate) }),
+           currentIndex > 0 {
+            previousStatementDate = allStatementDates[currentIndex - 1]
+        } else {
+            // If this is the first statement, use a date far in the past
+            previousStatementDate = Calendar.current.date(byAdding: .year, value: -10, to: currentStatementDate) ?? currentStatementDate
+        }
+        
+        print("DEBUG: BillDetailView - Filtering transactions")
+        print("DEBUG: - Statement Date: \(currentStatementDate)")
+        print("DEBUG: - Previous Statement Date: \(previousStatementDate)")
+        print("DEBUG: - Total transactions in account: \(account.transactionsArray.count)")
+        
+        // Filter transactions for this billing period only
+        // Include transactions AFTER previous statement date and UP TO current statement date
+        let filteredTransactions = account.transactionsArray.filter { transaction in
+            let transactionDate = transaction.wrappedDate
+            let isInPeriod = transactionDate > previousStatementDate && transactionDate <= currentStatementDate
+            
+            // Also exclude payment transactions (credits to credit card)
+            let isPayment = transaction.isCredit && (
+                transaction.wrappedNotes.uppercased().contains("PAYMENT") ||
+                transaction.wrappedCategory.uppercased().contains("PAYMENT")
+            )
+            
+            return isInPeriod && !isPayment
+        }
+        
+        // Sort by date (newest first)
+        transactions = filteredTransactions.sorted { $0.wrappedDate > $1.wrappedDate }
+        
+        print("DEBUG: - Filtered transactions: \(transactions.count)")
+        print("DEBUG: - Date range: \(previousStatementDate.formatted(date: .abbreviated, time: .omitted)) to \(currentStatementDate.formatted(date: .abbreviated, time: .omitted))")
     }
     
 }

@@ -133,7 +133,15 @@ class PDFTransactionParser {
             return nil
         }
         
-        let fullText = extractTextFromPDF(pdfDocument)
+        // Quick check for SBI Card - use special extraction
+        let quickText = extractTextFromPDF(pdfDocument)
+        if quickText.lowercased().contains("sbi card") || quickText.lowercased().contains("state bank") {
+            print("DEBUG: Detected SBI Card - using full page extraction")
+            let fullText = extractTextFromSBICardPDF(pdfDocument)
+            return parseSBICardStatement(fullText)
+        }
+        
+        let fullText = quickText
         print("Extracted PDF text (\(fullText.count) characters)")
         
         // Determine bank and parse accordingly
@@ -2151,5 +2159,392 @@ class PDFTransactionParser {
         } else {
             return "Others"
         }
+    }
+    
+    // MARK: - SBI Card Statement Parser
+    
+    private func extractTextFromSBICardPDF(_ document: PDFDocument) -> String {
+        var fullText = ""
+        
+        print("DEBUG: Extracting text from page 1 for SBI Card (transactions are on first page)")
+        
+        // Extract only from first page - transactions are there
+        if let page = document.page(at: 0) {
+            if let pageText = page.string, !pageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                print("DEBUG: Page 1 extracted \(pageText.count) characters")
+                fullText = pageText
+            }
+        }
+        
+        print("DEBUG: Total text extracted from SBI Card PDF: \(fullText.count) characters")
+        return fullText
+    }
+    
+    private func parseSBICardStatement(_ text: String) -> CreditCardBillInfo? {
+        print("DEBUG: Starting SBI Card statement parsing")
+        print("DEBUG: Text length: \(text.count) characters")
+        
+        // Extract card number (last 4 digits) - SBI format: "XXXX XXXX XXXX XX18"
+        var cardNumber = "XXXX"
+        if let cardMatch = text.range(of: #"(?:Credit Card Number|Card Number)[:\s]*[xX\s]*(\d{2,4})"#, options: .regularExpression) {
+            let matchedText = String(text[cardMatch])
+            if let numberMatch = matchedText.range(of: #"\d{2,4}"#, options: .regularExpression) {
+                cardNumber = String(matchedText[numberMatch])
+                print("DEBUG: Found card number: ****\(cardNumber)")
+            }
+        }
+        
+        // Also try the format from the sample: "XXXX XXXX XXXX XX18"
+        if cardNumber == "XXXX" {
+            if let match = text.range(of: #"[xX]{4}\s+[xX]{4}\s+[xX]{4}\s+[xX]{2}(\d{2})"#, options: .regularExpression) {
+                let matchedText = String(text[match])
+                if let numberMatch = matchedText.range(of: #"\d{2}$"#, options: .regularExpression) {
+                    cardNumber = String(matchedText[numberMatch])
+                    print("DEBUG: Found card number from XXXX format: ****\(cardNumber)")
+                }
+            }
+        }
+        
+        // Extract statement date
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "dd-MM-yyyy"
+        var statementDate = Date()
+        
+        // Try multiple date patterns for statement date
+        // SBI format: "Statement Date 24 Oct 2024" or "24 Oct 2024"
+        let statementDatePatterns = [
+            #"Statement Date[:\s]+(\d{2}\s+[A-Za-z]{3}\s+\d{4})"#,
+            #"Statement Date[:\s]+(\d{2}[-/]\d{2}[-/]\d{4})"#,
+            #"Statement Period[:\s]+\d{2}[-/]\d{2}[-/]\d{4}\s+to\s+(\d{2}[-/]\d{2}[-/]\d{4})"#,
+            #"Billing Date[:\s]+(\d{2}[-/]\d{2}[-/]\d{4})"#
+        ]
+        
+        // Try parsing "24 Oct 2024" format first
+        let monthFormatter = DateFormatter()
+        monthFormatter.dateFormat = "dd MMM yyyy"
+        
+        // First try to find "24 Sep 2025" format directly in text
+        if let directMatch = text.range(of: #"\d{2}\s+[A-Za-z]{3}\s+\d{4}"#, options: .regularExpression) {
+            let dateString = String(text[directMatch])
+            if let date = monthFormatter.date(from: dateString) {
+                statementDate = date
+                print("DEBUG: Found statement date (direct MMM format): \(dateString)")
+            }
+        } else {
+            // Fallback to pattern-based search
+            for pattern in statementDatePatterns {
+                if let match = text.range(of: pattern, options: .regularExpression) {
+                    let matchedText = String(text[match])
+                    
+                    // Try "24 Oct 2024" format first
+                    if let dateMatch = matchedText.range(of: #"\d{2}\s+[A-Za-z]{3}\s+\d{4}"#, options: .regularExpression) {
+                        let dateString = String(matchedText[dateMatch])
+                        if let date = monthFormatter.date(from: dateString) {
+                            statementDate = date
+                            print("DEBUG: Found statement date (MMM format): \(dateString)")
+                            break
+                        }
+                    }
+                    
+                    // Try "24-10-2024" format
+                    if let dateMatch = matchedText.range(of: #"\d{2}[-/]\d{2}[-/]\d{4}"#, options: .regularExpression) {
+                        let dateString = String(matchedText[dateMatch]).replacingOccurrences(of: "/", with: "-")
+                        if let date = dateFormatter.date(from: dateString) {
+                            statementDate = date
+                            print("DEBUG: Found statement date: \(dateString)")
+                            break
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Extract due date
+        var dueDate = Calendar.current.date(byAdding: .day, value: 20, to: statementDate) ?? Date()
+        
+        let dueDatePatterns = [
+            #"Payment Due Date[:\s]+(\d{2}[-/]\d{2}[-/]\d{4})"#,
+            #"Due Date[:\s]+(\d{2}[-/]\d{2}[-/]\d{4})"#,
+            #"Pay by[:\s]+(\d{2}[-/]\d{2}[-/]\d{4})"#
+        ]
+        
+        for pattern in dueDatePatterns {
+            if let match = text.range(of: pattern, options: .regularExpression) {
+                let matchedText = String(text[match])
+                if let dateMatch = matchedText.range(of: #"\d{2}[-/]\d{2}[-/]\d{4}"#, options: .regularExpression) {
+                    let dateString = String(matchedText[dateMatch]).replacingOccurrences(of: "/", with: "-")
+                    if let date = dateFormatter.date(from: dateString) {
+                        dueDate = date
+                        print("DEBUG: Found due date: \(dateString)")
+                        break
+                    }
+                }
+            }
+        }
+        
+        // Extract credit limit - SBI format: "Credit Limit (including cash) 1,25,000.00"
+        var creditLimit: Double = 0
+        let creditLimitPatterns = [
+            #"Credit Limit[^\d]+([\d,]+\.?\d{0,2})"#,
+            #"Total Limit[:\s]+(?:Rs\.?|₹)?\s*([\d,]+(?:\.\d{2})?)"#
+        ]
+        
+        for pattern in creditLimitPatterns {
+            if let limitMatch = text.range(of: pattern, options: .regularExpression) {
+                let matchedText = String(text[limitMatch])
+                if let amountMatch = matchedText.range(of: #"[\d,]+\.?\d{0,2}"#, options: .regularExpression) {
+                    let amountString = String(matchedText[amountMatch]).replacingOccurrences(of: ",", with: "")
+                    creditLimit = Double(amountString) ?? 0
+                    if creditLimit > 0 {
+                        print("DEBUG: Found credit limit: ₹\(creditLimit)")
+                        break
+                    }
+                }
+            }
+        }
+        
+        // Extract available credit limit - SBI format: "Available Credit Limit 46,285.09"
+        var availableLimit: Double = 0
+        let availableLimitPatterns = [
+            #"Available Credit Limit[^\d]+([\d,]+\.?\d{0,2})"#,
+            #"Available Limit[^\d]+([\d,]+\.?\d{0,2})"#
+        ]
+        
+        for pattern in availableLimitPatterns {
+            if let limitMatch = text.range(of: pattern, options: .regularExpression) {
+                let matchedText = String(text[limitMatch])
+                if let amountMatch = matchedText.range(of: #"[\d,]+\.?\d{0,2}"#, options: .regularExpression) {
+                    let amountString = String(matchedText[amountMatch]).replacingOccurrences(of: ",", with: "")
+                    availableLimit = Double(amountString) ?? 0
+                    if availableLimit > 0 {
+                        print("DEBUG: Found available credit limit: ₹\(availableLimit)")
+                        break
+                    }
+                }
+            }
+        }
+        
+        // Calculate current usage from credit limit - available limit
+        var currentUsage: Double = 0
+        if creditLimit > 0 && availableLimit > 0 {
+            currentUsage = creditLimit - availableLimit
+            print("DEBUG: Calculated current usage: ₹\(currentUsage) (₹\(creditLimit) - ₹\(availableLimit))")
+        }
+        
+        // Extract total amount due - SBI format: "*Total Amount Due ( ` ) 37,036.00"
+        var totalAmount: Double = 0
+        let amountPatterns = [
+            #"\*Total Amount Due[^\d]+([\d,]+\.?\d{0,2})"#,
+            #"Total Amount Due[^\d]+([\d,]+\.?\d{0,2})"#,
+            #"(?:Amount Due|Outstanding)[:\s]+(?:Rs\.?|₹)?\s*([\d,]+(?:\.\d{2})?)"#,
+            #"(?:Current Balance|Total Outstanding)[:\s]+(?:Rs\.?|₹)?\s*([\d,]+(?:\.\d{2})?)"#
+        ]
+        
+        for pattern in amountPatterns {
+            if let match = text.range(of: pattern, options: .regularExpression) {
+                let matchedText = String(text[match])
+                if let amountMatch = matchedText.range(of: #"[\d,]+\.?\d{0,2}"#, options: .regularExpression) {
+                    let amountString = String(matchedText[amountMatch]).replacingOccurrences(of: ",", with: "")
+                    totalAmount = Double(amountString) ?? 0
+                    if totalAmount > 0 {
+                        print("DEBUG: Found total amount: ₹\(totalAmount)")
+                        break
+                    }
+                }
+            }
+        }
+        
+        // Extract minimum amount due - SBI format: "**Minimum Amount Due ( ` ) 1,852.00"
+        var dueAmount: Double = totalAmount
+        
+        // Look for minimum amount AFTER the asterisks pattern
+        if let minPattern = text.range(of: #"\*\*Minimum Amount Due"#, options: .regularExpression) {
+            let startIndex = minPattern.upperBound
+            let searchRange = startIndex..<text.endIndex
+            let remainingText = String(text[searchRange])
+            
+            // Find first valid amount after the label (skip STMT numbers)
+            if let amountMatch = remainingText.range(of: #"([\d,]+\.\d{2})"#, options: .regularExpression) {
+                let amountString = String(remainingText[amountMatch]).replacingOccurrences(of: ",", with: "")
+                if let minAmount = Double(amountString), minAmount > 0 && minAmount < 100000 {
+                    print("DEBUG: Found minimum amount: ₹\(minAmount) (using total: ₹\(totalAmount))")
+                }
+            }
+        }
+        
+        // Parse transactions
+        var transactions: [CreditCardTransaction] = []
+        
+        // NEW APPROACH: SBI Card has dates/descriptions on one line, amounts on next lines
+        // First, find the "TRANSACTIONS FOR" section
+        var transactionText = text
+        if let transactionRange = text.range(of: "TRANSACTIONS FOR", options: .caseInsensitive) {
+            transactionText = String(text[transactionRange.lowerBound...])
+            print("DEBUG: Found TRANSACTIONS section, length: \(transactionText.count)")
+        }
+        
+        // Extract all date-description pairs
+        var dateDescPairs: [(date: String, desc: String)] = []
+        
+        // Pattern: "DD MMM YY " followed by description until next date or end
+        // Look for patterns like "09 Sep 25 UPI-..." or "24 Aug 25 SBR..."
+        let dateDescPattern = #"(\d{2}\s+[A-Z][a-z]{2}\s+\d{2})\s+([A-Z][A-Za-z0-9\s\-\.\&\@\*\(\)\/]+?)(?=\s+\d{2}\s+[A-Z][a-z]{2}\s+\d{2}|\s+[\d,]+\.\d{2}\s+[DC]|$)"#
+        
+        if let regex = try? NSRegularExpression(pattern: dateDescPattern, options: []) {
+            let nsText = transactionText as NSString
+            let matches = regex.matches(in: transactionText, options: [], range: NSRange(location: 0, length: nsText.length))
+            
+            print("DEBUG: Found \(matches.count) date-description pairs")
+            
+            for match in matches {
+                if match.numberOfRanges >= 3 {
+                    let dateStr = nsText.substring(with: match.range(at: 1))
+                    let descStr = nsText.substring(with: match.range(at: 2)).trimmingCharacters(in: .whitespaces)
+                    
+                    // Clean up description - remove extra spaces and limit length
+                    var cleanDesc = descStr.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+                    
+                    // Truncate if too long (likely captured too much)
+                    if cleanDesc.count > 100 {
+                        cleanDesc = String(cleanDesc.prefix(100))
+                    }
+                    
+                    dateDescPairs.append((date: dateStr, desc: cleanDesc))
+                }
+            }
+        }
+        
+        // Extract all amounts with D/C markers from the transaction section
+        var amounts: [(amount: String, type: String)] = []
+        
+        // Pattern to find amounts: "12,345.67 D" or "12,345.67 C"
+        let amountPattern = #"([\d,]+\.\d{2})\s+([DC])\b"#
+        
+        if let regex = try? NSRegularExpression(pattern: amountPattern, options: []) {
+            let nsText = transactionText as NSString
+            let matches = regex.matches(in: transactionText, options: [], range: NSRange(location: 0, length: nsText.length))
+            
+            print("DEBUG: Found \(matches.count) amounts in transaction section")
+            
+            for match in matches {
+                if match.numberOfRanges >= 3 {
+                    let amountStr = nsText.substring(with: match.range(at: 1))
+                    let typeStr = nsText.substring(with: match.range(at: 2))
+                    
+                    amounts.append((amount: amountStr, type: typeStr))
+                }
+            }
+        }
+        
+        // Match date-desc pairs with amounts
+        // Filter only Debit amounts (actual expenses), skip Credits (payments/refunds)
+        let debitAmounts = amounts.filter { $0.type == "D" }
+        
+        print("DEBUG: Filtered to \(debitAmounts.count) debit transactions (excluding \(amounts.count - debitAmounts.count) credits)")
+        
+        var allMatches: [(date: String, desc: String, amount: String)] = []
+        
+        // Match date-desc pairs with debit amounts (assuming same order)
+        let minCount = min(dateDescPairs.count, debitAmounts.count)
+        for i in 0..<minCount {
+            allMatches.append((
+                date: dateDescPairs[i].date,
+                desc: dateDescPairs[i].desc,
+                amount: debitAmounts[i].amount
+            ))
+        }
+        
+        print("DEBUG: Total potential transactions found: \(allMatches.count)")
+        
+        // Process all matched transactions
+        for matchData in allMatches {
+            let description = matchData.desc.trimmingCharacters(in: .whitespaces)
+            let amountString = matchData.amount.replacingOccurrences(of: ",", with: "")
+            
+            // Parse date - handle "DD MMM YY" format (e.g., "09 Sep 25")
+            var transactionDate: Date?
+            
+            // Try "DD MMM YY" format first (SBI Card format)
+            let shortYearFormatter = DateFormatter()
+            shortYearFormatter.dateFormat = "dd MMM yy"
+            shortYearFormatter.locale = Locale(identifier: "en_US_POSIX")
+            transactionDate = shortYearFormatter.date(from: matchData.date)
+            
+            // Try DD-MM-YYYY format
+            if transactionDate == nil {
+                let dateString = matchData.date.replacingOccurrences(of: "/", with: "-")
+                transactionDate = dateFormatter.date(from: dateString)
+            }
+            
+            // Try DD-MMM-YYYY format
+            if transactionDate == nil {
+                let dateString = matchData.date.replacingOccurrences(of: "/", with: "-")
+                let monthFormatter = DateFormatter()
+                monthFormatter.dateFormat = "dd-MMM-yyyy"
+                transactionDate = monthFormatter.date(from: dateString)
+            }
+            
+            guard let date = transactionDate else {
+                print("DEBUG: Failed to parse date: \(matchData.date)")
+                continue
+            }
+            
+            // Parse amount
+            guard let amount = Double(amountString), amount > 0 else {
+                print("DEBUG: Failed to parse amount: \(amountString)")
+                continue
+            }
+            
+            // Skip payment transactions
+            if isPaymentTransaction(description) {
+                print("DEBUG: Skipping payment: \(description)")
+                continue
+            }
+            
+            let transaction = CreditCardTransaction(
+                date: date,
+                description: description,
+                amount: amount,
+                category: categorizeTransaction(description),
+                referenceNumber: nil
+            )
+            
+            transactions.append(transaction)
+            print("DEBUG: ✅ Added transaction: \(description) - ₹\(amount) on \(matchData.date)")
+        }
+        
+        print("DEBUG: Total transactions parsed: \(transactions.count)")
+        
+        // If no valid data found, return nil
+        guard totalAmount > 0 || creditLimit > 0 else {
+            print("DEBUG: No valid data found in SBI Card statement")
+            return nil
+        }
+        
+        // Use calculated current usage if available, otherwise fall back to total amount
+        let finalCurrentUsage = currentUsage > 0 ? currentUsage : totalAmount
+        
+        print("DEBUG: ✅ Successfully parsed SBI Card statement")
+        print("DEBUG: - Card: ****\(cardNumber)")
+        print("DEBUG: - Statement Date: \(statementDate)")
+        print("DEBUG: - Due Date: \(dueDate)")
+        print("DEBUG: - Total Amount: ₹\(totalAmount)")
+        print("DEBUG: - Current Usage: ₹\(finalCurrentUsage)")
+        print("DEBUG: - Credit Limit: ₹\(creditLimit)")
+        print("DEBUG: - Available Limit: ₹\(availableLimit)")
+        print("DEBUG: - Transactions: \(transactions.count)")
+        
+        let billInfo = CreditCardBillInfo(
+            bankName: "SBI Card",
+            cardNumber: cardNumber,
+            statementDate: statementDate,
+            dueDate: dueDate,
+            totalAmount: finalCurrentUsage, // Use calculated current usage
+            dueAmount: dueAmount,
+            creditLimit: creditLimit,
+            transactions: transactions
+        )
+        
+        return billInfo
     }
 }

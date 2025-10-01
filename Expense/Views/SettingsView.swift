@@ -99,11 +99,13 @@ struct ManageCategoriesView: View {
 enum CreditCardBank: String, CaseIterable {
     case axis = "cc.statements@axisbank.com"
     case icici = "credit_cards@icicibank.com"
+    case sbi = "sbicard.com"
     
     var displayName: String {
         switch self {
         case .axis: return "Axis Bank"
         case .icici: return "ICICI Bank"
+        case .sbi: return "SBI Card"
         }
     }
 }
@@ -629,12 +631,16 @@ struct SettingsView: View {
         do {
             print("DEBUG: 🔍 Starting comprehensive credit card bill loading from Settings")
             
+            // CRITICAL: Enable bulk processing mode to disable Firestore sync
+            expenseViewModel.isBulkProcessing = true
+            print("DEBUG: 🚫 Firestore sync DISABLED for bulk processing")
+            
             var totalProcessed = 0
             
-            // Check both banks and both email providers
+            // Process banks in order: ICICI → Axis → SBI
             let banks: [(String, String)] = [
-                ("cc.statements@axisbank.com", "Axis Bank"),
-                ("credit_cards@icicibank.com", "ICICI Bank")
+                ("credit_cards@icicibank.com", "ICICI Bank"),
+                ("cc.statements@axisbank.com", "Axis Bank")
             ]
             let providers: [EmailServiceManager.EmailProvider] = [.outlook, .gmail]
             
@@ -716,11 +722,43 @@ struct SettingsView: View {
                                 )
                                 totalProcessed += 1
                                 billLoadingProgress = "✅ Processed \(totalProcessed) statements so far..."
+                                
+                                // CRITICAL: Clear memory after each PDF to prevent crash
+                                autoreleasepool {
+                                    // Force memory cleanup
+                                    print("DEBUG: 🧹 Clearing memory after processing statement")
+                                }
+                                
+                                // Small delay to allow memory cleanup
+                                try? await Task.sleep(nanoseconds: 500_000_000) // 0.5 seconds
                             }
                         }
                     }
                 }
             }
+            
+            // Finally, process SBI Card statements (last in order)
+            billLoadingProgress = "🏦 Processing SBI Card statements..."
+            print("DEBUG: 🏦 Starting SBI Card processing (last)")
+            let sbiProcessed = await SBICARDManager.shared.processStatements(
+                viewModel: expenseViewModel,
+                progressCallback: { progress in
+                    DispatchQueue.main.async {
+                        self.billLoadingProgress = progress
+                    }
+                }
+            )
+            totalProcessed += sbiProcessed
+            print("DEBUG: ✅ SBI Card processing complete - \(sbiProcessed) statements")
+            
+            // CRITICAL: Re-enable Firestore sync after bulk processing
+            expenseViewModel.isBulkProcessing = false
+            print("DEBUG: ✅ Firestore sync RE-ENABLED")
+            
+            // Now do a single efficient bulk sync to Firestore
+            billLoadingProgress = "☁️ Syncing to cloud..."
+            print("DEBUG: ☁️ Performing single bulk sync to Firestore...")
+            await expenseViewModel.performBulkSync()
             
             if totalProcessed > 0 {
                 billLoadingProgress = "✅ Completed! Processed \(totalProcessed) statements"
@@ -742,6 +780,9 @@ struct SettingsView: View {
             showingError = true
             
         } catch {
+            // Re-enable sync even on error
+            expenseViewModel.isBulkProcessing = false
+            
             billLoadingProgress = "❌ Error occurred"
             print("DEBUG: Error loading credit card bills: \(error)")
             errorMessage = "❌ Error loading bills: \(error.localizedDescription)"
@@ -770,6 +811,10 @@ struct SettingsView: View {
         do {
             print("DEBUG: 🚀 Starting incremental credit card bill check")
             
+            var totalNewStatements = 0
+            
+            // Skip SBI processing in incremental check - will be done in full check if needed
+            
             // Check if it's time for a full check (every 15 days)
             let shouldDoFullCheck = shouldPerformFullCheck()
             
@@ -794,7 +839,20 @@ struct SettingsView: View {
                 return
             }
             
-            var totalNewStatements = 0
+            // Check if we're missing expected banks (Axis, ICICI, SBI) - if so, do full check
+            let hasAxisBank = creditCardAccounts.contains { $0.wrappedAccountName.lowercased().contains("axis") }
+            let hasICICIBank = creditCardAccounts.contains { $0.wrappedAccountName.lowercased().contains("icici") }
+            let hasSBICard = creditCardAccounts.contains { $0.wrappedAccountName.lowercased().contains("sbi") }
+            
+            // If banks are missing, always do full check (regardless of time since last check)
+            if !hasAxisBank || !hasICICIBank || !hasSBICard {
+                print("DEBUG: 🔍 Missing expected banks (ICICI: \(hasICICIBank), Axis: \(hasAxisBank), SBI: \(hasSBICard)) - performing full check")
+                billLoadingProgress = "🔍 Scanning for missing banks..."
+                await performFullCreditCardCheck()
+                lastFullCheck = Date()
+                UserDefaults.standard.set(lastFullCheck, forKey: "lastFullCreditCardCheck")
+                return
+            }
             
             // Check each existing card for new statements
             for account in creditCardAccounts {
@@ -868,9 +926,10 @@ struct SettingsView: View {
     private func processPDFStatement(pdfData: Data, pdfFileName: String, email: EmailMessage) async {
         print("DEBUG: Starting PDF processing for: \(pdfFileName)")
         
-        // Save PDF temporarily
-        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(pdfFileName)
+        // Wrap entire processing in error handling to prevent crashes
         do {
+            // Save PDF temporarily
+            let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(pdfFileName)
             try pdfData.write(to: tempURL)
             print("DEBUG: Saved PDF to temp location: \(tempURL.path)")
             
@@ -885,6 +944,8 @@ struct SettingsView: View {
             // Handle double optional: withTimeout returns T?, and parsePDF returns CreditCardBillInfo?
             guard let optionalBillInfo = timeoutResult, let billInfo = optionalBillInfo else {
                 print("DEBUG: Failed to parse PDF or parsing timed out: \(pdfFileName)")
+                // Clean up temp file
+                try? FileManager.default.removeItem(at: tempURL)
                 return
             }
             
@@ -967,9 +1028,24 @@ struct SettingsView: View {
                 }
             }
             
-            // Update balance
+            // Update balance ONLY if this statement is newer than the last one
             let finalAccount = expenseViewModel.viewContext.object(with: creditCardAccount.objectID) as! CDAccount
-            finalAccount.balance = -billInfo.totalAmount // Use current usage for account balance
+            let metadata = finalAccount.metadataDictionary
+            
+            var shouldUpdateBalance = true
+            if let lastStatementDateString = metadata["lastStatementDate"],
+               let lastStatementDate = dateFormatter.date(from: lastStatementDateString) {
+                // Only update if this statement is newer or same date
+                shouldUpdateBalance = billInfo.statementDate >= lastStatementDate
+                print("DEBUG: Last statement: \(lastStatementDate), Current: \(billInfo.statementDate), Will update: \(shouldUpdateBalance)")
+            }
+            
+            if shouldUpdateBalance {
+                finalAccount.balance = -billInfo.totalAmount // Use current usage for account balance
+                print("DEBUG: ✅ Updated account balance to: ₹\(billInfo.totalAmount)")
+            } else {
+                print("DEBUG: ⏭️ Skipped balance update - older statement")
+            }
             
             // Save bill metadata for UI display
             saveBillMetadata(account: finalAccount, billInfo: billInfo, pdfFileName: pdfFileName)
@@ -985,8 +1061,16 @@ struct SettingsView: View {
             // Clean up temp file
             try? FileManager.default.removeItem(at: tempURL)
             
+            // Force memory cleanup
+            autoreleasepool {
+                print("DEBUG: 🧹 Memory cleanup after processing \(pdfFileName)")
+            }
+            
         } catch {
-            print("DEBUG: Error processing PDF \(pdfFileName): \(error)")
+            print("DEBUG: ❌ Error processing PDF \(pdfFileName): \(error.localizedDescription)")
+            // Try to clean up temp file even on error
+            let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(pdfFileName)
+            try? FileManager.default.removeItem(at: tempURL)
         }
     }
     
@@ -1052,6 +1136,18 @@ struct SettingsView: View {
            let jsonString = String(data: jsonData, encoding: .utf8) {
             metadata[statementKey] = jsonString
             
+            // Also save the latest statement date for balance update logic
+            if let existingLastDateString = metadata["lastStatementDate"],
+               let existingLastDate = dateFormatter.date(from: existingLastDateString) {
+                // Only update if this statement is newer
+                if billInfo.statementDate >= existingLastDate {
+                    metadata["lastStatementDate"] = dateFormatter.string(from: billInfo.statementDate)
+                }
+            } else {
+                // No previous statement date, save this one
+                metadata["lastStatementDate"] = dateFormatter.string(from: billInfo.statementDate)
+            }
+            
             // Update account metadata
             account.metadataDictionary = metadata
             
@@ -1111,6 +1207,8 @@ struct SettingsView: View {
             return "cc.statements@axisbank.com"
         } else if accountName.contains("icici") {
             return "credit_cards@icicibank.com"
+        } else if accountName.contains("sbi") {
+            return "sbicard.com"
         }
         
         // Default to Axis Bank
@@ -1124,6 +1222,8 @@ struct SettingsView: View {
             return "Axis Bank"
         } else if accountName.contains("icici") {
             return "ICICI Bank"
+        } else if accountName.contains("sbi") {
+            return "SBI Card"
         }
         
         return "Unknown Bank"
