@@ -1438,13 +1438,44 @@ class ExpenseViewModel: ObservableObject {
             let fetchedAccounts = try viewContext.fetch(request)
             
             // Additional filtering to ensure data integrity
-            accounts = fetchedAccounts.filter { account in
+            let validAccounts = fetchedAccounts.filter { account in
                 guard let name = account.accountName,
                       !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                     print("DEBUG: Filtering out account with invalid name: \(account.id?.uuidString ?? "unknown")")
                     return false
                 }
                 return true
+            }
+            
+            // Group by bank/account type: Credit Cards (Axis, ICICI), then Banks, then Others
+            accounts = validAccounts.sorted { account1, account2 in
+                let name1 = account1.accountName?.lowercased() ?? ""
+                let name2 = account2.accountName?.lowercased() ?? ""
+                let type1 = account1.accountType?.lowercased() ?? ""
+                let type2 = account2.accountType?.lowercased() ?? ""
+                
+                // Priority: 1. Credit Cards, 2. Banks, 3. Others
+                let isCC1 = type1.contains("credit") || name1.contains("axis") || name1.contains("icici")
+                let isCC2 = type2.contains("credit") || name2.contains("axis") || name2.contains("icici")
+                
+                if isCC1 && !isCC2 { return true }  // CC first
+                if !isCC1 && isCC2 { return false }
+                
+                // Within credit cards, group by bank: Axis then ICICI
+                if isCC1 && isCC2 {
+                    let isAxis1 = name1.contains("axis")
+                    let isAxis2 = name2.contains("axis")
+                    let isICICI1 = name1.contains("icici")
+                    let isICICI2 = name2.contains("icici")
+                    
+                    if isAxis1 && !isAxis2 { return true }
+                    if !isAxis1 && isAxis2 { return false }
+                    if isICICI1 && !isICICI2 { return true }
+                    if !isICICI1 && isICICI2 { return false }
+                }
+                
+                // Same group: sort alphabetically
+                return name1 < name2
             }
             
             objectWillChange.send()

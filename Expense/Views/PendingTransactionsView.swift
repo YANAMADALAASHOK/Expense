@@ -120,6 +120,7 @@ private struct PendingListView: View {
     let viewModel: ExpenseViewModel
     let inferBank: (PendingTransactionItem) -> BankFilter
     let resolvePreferredAccount: (BankFilter) -> CDAccount?
+    let groupedAccounts: [(title: String, accounts: [CDAccount])]
     
     var body: some View {
         List {
@@ -143,9 +144,13 @@ private struct PendingListView: View {
                             }
                         }
                         Menu {
-                            ForEach(viewModel.accounts) { acc in
-                                Button(acc.wrappedAccountName) {
-                                    viewModel.approvePendingTransaction(id: transaction.id, toAccount: acc)
+                            ForEach(groupedAccounts, id: \.title) { group in
+                                Section(header: Text(group.title)) {
+                                    ForEach(group.accounts) { acc in
+                                        Button(acc.wrappedAccountName) {
+                                            viewModel.approvePendingTransaction(id: transaction.id, toAccount: acc)
+                                        }
+                                    }
                                 }
                             }
                         } label: {
@@ -305,11 +310,15 @@ struct PendingTransactionsView: View {
                         }
                         Divider()
                     }
-                    ForEach(viewModel.accounts) { acc in
-                        Button("Approve Selected → \(acc.wrappedAccountName)") {
-                            let ids = selectedTransactions
-                            for id in ids { viewModel.approvePendingTransaction(id: id, toAccount: acc) }
-                            selectedTransactions.removeAll()
+                    ForEach(groupedAccounts, id: \.title) { group in
+                        Section(header: Text(group.title)) {
+                            ForEach(group.accounts) { acc in
+                                Button(acc.wrappedAccountName) {
+                                    let ids = selectedTransactions
+                                    for id in ids { viewModel.approvePendingTransaction(id: id, toAccount: acc) }
+                                    selectedTransactions.removeAll()
+                                }
+                            }
                         }
                     }
                 } label: {
@@ -326,9 +335,13 @@ struct PendingTransactionsView: View {
                         }
                         Divider()
                     }
-                    ForEach(viewModel.accounts) { acc in
-                        Button("Approve All Visible → \(acc.wrappedAccountName)") {
-                            approveAllVisible(to: acc)
+                    ForEach(groupedAccounts, id: \.title) { group in
+                        Section(header: Text(group.title)) {
+                            ForEach(group.accounts) { acc in
+                                Button(acc.wrappedAccountName) {
+                                    approveAllVisible(to: acc)
+                                }
+                            }
                         }
                     }
                 } label: {
@@ -408,7 +421,8 @@ struct PendingTransactionsView: View {
                 isDuplicate: isDuplicateTransaction,
                 viewModel: viewModel,
                 inferBank: { item in inferBank(for: item) },
-                resolvePreferredAccount: { bank in preferredAccount(for: bank) }
+                resolvePreferredAccount: { bank in preferredAccount(for: bank) },
+                groupedAccounts: groupedAccounts
             )
         }
     }
@@ -423,6 +437,36 @@ struct PendingTransactionsView: View {
         } else {
             EmptyView()
         }
+    }
+    
+    // Helper to group accounts by type
+    private var groupedAccounts: [(title: String, accounts: [CDAccount])] {
+        let creditCards = viewModel.accounts.filter { account in
+            let name = account.accountName?.lowercased() ?? ""
+            let type = account.accountType?.lowercased() ?? ""
+            return type.contains("credit") || name.contains("axis") || name.contains("icici")
+        }
+        
+        let axisCards = creditCards.filter { $0.accountName?.lowercased().contains("axis") ?? false }
+        let iciciCards = creditCards.filter { $0.accountName?.lowercased().contains("icici") ?? false }
+        let otherCards = creditCards.filter { 
+            let name = $0.accountName?.lowercased() ?? ""
+            return !name.contains("axis") && !name.contains("icici")
+        }
+        
+        let banks = viewModel.accounts.filter { account in
+            let name = account.accountName?.lowercased() ?? ""
+            let type = account.accountType?.lowercased() ?? ""
+            return !type.contains("credit") && !name.contains("axis") && !name.contains("icici")
+        }
+        
+        var groups: [(String, [CDAccount])] = []
+        if !axisCards.isEmpty { groups.append(("Axis Credit Cards", axisCards)) }
+        if !iciciCards.isEmpty { groups.append(("ICICI Credit Cards", iciciCards)) }
+        if !otherCards.isEmpty { groups.append(("Other Credit Cards", otherCards)) }
+        if !banks.isEmpty { groups.append(("Bank Accounts", banks)) }
+        
+        return groups
     }
     
     // Resolve preferred account for a bank using stored UUIDs

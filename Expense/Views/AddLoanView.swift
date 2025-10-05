@@ -85,10 +85,10 @@ struct AddLoanView: View {
                 }
                 
                 Section("Loan Details 📋") {
-                    TextField("Loan Name", text: $loanName)
+                    TextField(isPersonalLoanGiven ? "Person's Name" : "Loan Name", text: $loanName)
                     
                     HStack {
-                        TextField("Original Principal Amount", text: $principalAmount)
+                        TextField(isPersonalLoanGiven ? "Amount Given" : "Original Principal Amount", text: $principalAmount)
                             .keyboardType(.decimalPad)
                         Picker("Currency", selection: $currencySettings.selectedCurrency) {
                             ForEach(Currency.allCases, id: \.self) { currency in
@@ -111,61 +111,66 @@ struct AddLoanView: View {
                         Text("% per year")
                     }
                     
-                    Picker("Original Loan Tenure", selection: $loanTenure) {
-                        Text("1 Year (12 months)").tag(12)
-                        Text("2 Years (24 months)").tag(24)
-                        Text("3 Years (36 months)").tag(36)
-                        Text("4 Years (48 months)").tag(48)
-                        Text("5 Years (60 months)").tag(60)
-                        Text("7 Years (84 months)").tag(84)
-                        Text("10 Years (120 months)").tag(120)
+                    // Only show tenure, repayment, and EMI fields for loans taken
+                    if !isPersonalLoanGiven {
+                        Picker("Original Loan Tenure", selection: $loanTenure) {
+                            Text("1 Year (12 months)").tag(12)
+                            Text("2 Years (24 months)").tag(24)
+                            Text("3 Years (36 months)").tag(36)
+                            Text("4 Years (48 months)").tag(48)
+                            Text("5 Years (60 months)").tag(60)
+                            Text("7 Years (84 months)").tag(84)
+                            Text("10 Years (120 months)").tag(120)
+                        }
                     }
                     
-                    DatePicker("Loan Start Date", selection: $loanStartDate, in: ...Date(), displayedComponents: [.date])
+                    DatePicker(isPersonalLoanGiven ? "Date Given" : "Loan Start Date", selection: $loanStartDate, in: ...Date(), displayedComponents: [.date])
                     
                     DatePicker("Record Date", selection: $loanDate, in: ...Date(), displayedComponents: [.date])
                 }
 
-                // Repayment configuration
-                Section("Repayment") {
-                    Picker("Repayment Type", selection: $repaymentType) {
-                        Text("EMI").tag("EMI")
-                        Text("One-time").tag("ONE_TIME")
-                    }
-                    .pickerStyle(SegmentedPickerStyle())
+                // Repayment configuration - Only for loans taken
+                if !isPersonalLoanGiven {
+                    Section("Repayment") {
+                        Picker("Repayment Type", selection: $repaymentType) {
+                            Text("EMI").tag("EMI")
+                            Text("One-time").tag("ONE_TIME")
+                        }
+                        .pickerStyle(SegmentedPickerStyle())
 
-                    if repaymentType == "EMI" {
-                        Picker("EMI Debit Day", selection: $emiDayOfMonth) {
+                        if repaymentType == "EMI" {
+                            Picker("EMI Debit Day", selection: $emiDayOfMonth) {
+                                ForEach(1...31, id: \.self) { day in
+                                    Text("Day \(day)").tag(day)
+                                }
+                            }
+
+                            TextField("EMI Amount", text: $customEmiAmount)
+                                .keyboardType(.decimalPad)
+
+                            Picker("Funding Account", selection: $selectedFundingAccount) {
+                                Text("Select Account").tag(nil as CDAccount?)
+                                ForEach(bankAccounts) { account in
+                                    Text(account.wrappedAccountName).tag(account as CDAccount?)
+                                }
+                            }
+                        }
+                    }
+                    
+                    Section("Interest Configuration") {
+                        Picker("Interest Generation Day", selection: $interestDayOfMonth) {
                             ForEach(1...31, id: \.self) { day in
                                 Text("Day \(day)").tag(day)
                             }
                         }
-
-                        TextField("EMI Amount", text: $customEmiAmount)
-                            .keyboardType(.decimalPad)
-
-                        Picker("Funding Account", selection: $selectedFundingAccount) {
-                            Text("Select Account").tag(nil as CDAccount?)
-                            ForEach(bankAccounts) { account in
-                                Text(account.wrappedAccountName).tag(account as CDAccount?)
-                            }
+                        
+                        HStack {
+                            Text("Next Interest Date:")
+                            Spacer()
+                            Text(nextInterestDate, format: .dateTime.day().month().year())
+                                .foregroundColor(.orange)
+                                .fontWeight(.medium)
                         }
-                    }
-                }
-                
-                Section("Interest Configuration") {
-                    Picker("Interest Generation Day", selection: $interestDayOfMonth) {
-                        ForEach(1...31, id: \.self) { day in
-                            Text("Day \(day)").tag(day)
-                        }
-                    }
-                    
-                    HStack {
-                        Text("Next Interest Date:")
-                        Spacer()
-                        Text(nextInterestDate, format: .dateTime.day().month().year())
-                            .foregroundColor(.orange)
-                            .fontWeight(.medium)
                     }
                 }
                 
@@ -270,10 +275,10 @@ struct AddLoanView: View {
             return
         }
 
-        // Validate EMI settings if EMI selected
+        // Validate EMI settings if EMI selected (only for loans taken, not personal loans given)
         var emiAmountToSave: Double? = nil
         var fundingAccountId: UUID? = nil
-        if repaymentType == "EMI" {
+        if !isPersonalLoanGiven && repaymentType == "EMI" {
             guard let emiValue = Double(customEmiAmount), emiValue > 0 else {
                 errorMessage = "Please enter a valid EMI amount"
                 showingError = true
@@ -303,29 +308,34 @@ struct AddLoanView: View {
                 "principalAmount": String(principal),
                 "interestRate": String(rate),
                 "loanDate": ISO8601DateFormatter().string(from: loanStartDate),
-                "loanTenure": String(loanTenure),
                 "notes": notes
             ]
             
-            if let emi = emiAmountToSave {
-                metadata["emiAmount"] = String(emi)
+            // Only add EMI and repayment-related fields for loans taken (not personal loans given)
+            if !isPersonalLoanGiven {
+                metadata["loanTenure"] = String(loanTenure)
+                
+                if let emi = emiAmountToSave {
+                    metadata["emiAmount"] = String(emi)
+                }
+                if let repaymentType = repaymentType.isEmpty ? nil : repaymentType {
+                    metadata["repaymentType"] = repaymentType
+                }
+                if repaymentType == "EMI" {
+                    metadata["emiDayOfMonth"] = String(emiDayOfMonth)
+                }
+                metadata["interestDayOfMonth"] = String(interestDayOfMonth)
+                if let fundingId = fundingAccountId {
+                    metadata["emiFundingAccountId"] = fundingId.uuidString
+                }
+                metadata["monthsElapsed"] = String(monthsElapsed)
+                metadata["remainingPayments"] = String(remainingPayments)
             }
-            if let repaymentType = repaymentType.isEmpty ? nil : repaymentType {
-                metadata["repaymentType"] = repaymentType
-            }
-            if repaymentType == "EMI" {
-                metadata["emiDayOfMonth"] = String(emiDayOfMonth)
-            }
-            metadata["interestDayOfMonth"] = String(interestDayOfMonth)
-            if let fundingId = fundingAccountId {
-                metadata["emiFundingAccountId"] = fundingId.uuidString
-            }
-            metadata["monthsElapsed"] = String(monthsElapsed)
-            metadata["remainingPayments"] = String(remainingPayments)
             
             account.metadataDictionary = metadata
         } else {
             // Create new loan account
+            // Only pass EMI-related parameters for loans taken
             account = loanManager.createLoanAccount(
                 name: loanName,
                 principalAmount: principal,
@@ -333,14 +343,14 @@ struct AddLoanView: View {
                 loanDate: loanStartDate, // Use loan start date for calculations
                 notes: notes,
                 isPersonalLoanGiven: isPersonalLoanGiven,
-                emiAmount: emiAmountToSave,
-                loanTenure: loanTenure,
-                repaymentType: repaymentType,
-                emiDayOfMonth: repaymentType == "EMI" ? emiDayOfMonth : nil,
-                interestDayOfMonth: interestDayOfMonth,
-                emiFundingAccountId: fundingAccountId,
-                monthsElapsed: monthsElapsed,
-                remainingPayments: remainingPayments,
+                emiAmount: isPersonalLoanGiven ? nil : emiAmountToSave,
+                loanTenure: isPersonalLoanGiven ? 0 : loanTenure,
+                repaymentType: isPersonalLoanGiven ? nil : repaymentType,
+                emiDayOfMonth: isPersonalLoanGiven ? nil : (repaymentType == "EMI" ? emiDayOfMonth : nil),
+                interestDayOfMonth: isPersonalLoanGiven ? nil : interestDayOfMonth,
+                emiFundingAccountId: isPersonalLoanGiven ? nil : fundingAccountId,
+                monthsElapsed: isPersonalLoanGiven ? 0 : monthsElapsed,
+                remainingPayments: isPersonalLoanGiven ? 0 : remainingPayments,
                 in: context
             )
             

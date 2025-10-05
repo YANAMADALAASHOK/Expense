@@ -160,11 +160,72 @@ struct TransactionView: View {
                 NavigationView {
                     Form {
                         Section("Filter") {
-                            // Account Filter
+                            // Account Filter - Grouped by Bank/Type
                             Picker("Account", selection: $selectedAccountFilter) {
                                 Text("All Accounts").tag(nil as CDAccount?)
-                                ForEach(viewModel.accounts, id: \.id) { account in
-                                    Text(account.wrappedAccountName).tag(account as CDAccount?)
+                                
+                                // Axis Credit Cards (must have "credit" in type or "****" in name for card number)
+                                let axisCards = viewModel.accounts.filter { account in
+                                    let name = account.accountName?.lowercased() ?? ""
+                                    let type = account.accountType?.lowercased() ?? ""
+                                    return name.contains("axis") && 
+                                           (type.contains("credit") || name.contains("****"))
+                                }
+                                if !axisCards.isEmpty {
+                                    Section(header: Text("Axis Credit Cards")) {
+                                        ForEach(axisCards, id: \.id) { account in
+                                            Text(account.wrappedAccountName).tag(account as CDAccount?)
+                                        }
+                                    }
+                                }
+                                
+                                // ICICI Credit Cards (must have "credit" in type or "****" in name for card number)
+                                let iciciCards = viewModel.accounts.filter { account in
+                                    let name = account.accountName?.lowercased() ?? ""
+                                    let type = account.accountType?.lowercased() ?? ""
+                                    return name.contains("icici") && 
+                                           (type.contains("credit") || name.contains("****"))
+                                }
+                                if !iciciCards.isEmpty {
+                                    Section(header: Text("ICICI Credit Cards")) {
+                                        ForEach(iciciCards, id: \.id) { account in
+                                            Text(account.wrappedAccountName).tag(account as CDAccount?)
+                                        }
+                                    }
+                                }
+                                
+                                // Other Credit Cards
+                                let otherCards = viewModel.accounts.filter { account in
+                                    let name = account.accountName?.lowercased() ?? ""
+                                    let type = account.accountType?.lowercased() ?? ""
+                                    return (type.contains("credit") || name.contains("axis") || name.contains("icici")) &&
+                                           !name.contains("axis") && !name.contains("icici")
+                                }
+                                if !otherCards.isEmpty {
+                                    Section(header: Text("Other Credit Cards")) {
+                                        ForEach(otherCards, id: \.id) { account in
+                                            Text(account.wrappedAccountName).tag(account as CDAccount?)
+                                        }
+                                    }
+                                }
+                                
+                                // Bank Accounts (exclude credit cards, mutual funds, investments, loans)
+                                let bankAccounts = viewModel.accounts.filter { account in
+                                    let name = account.accountName?.lowercased() ?? ""
+                                    let type = account.accountType?.lowercased() ?? ""
+                                    // Exclude if it's a credit card (has **** or credit type)
+                                    let isCreditCard = type.contains("credit") || name.contains("****")
+                                    return !isCreditCard &&
+                                           !type.contains("mutual") &&
+                                           !type.contains("investment") &&
+                                           !type.contains("loan")
+                                }
+                                if !bankAccounts.isEmpty {
+                                    Section(header: Text("Bank Accounts")) {
+                                        ForEach(bankAccounts, id: \.id) { account in
+                                            Text(account.wrappedAccountName).tag(account as CDAccount?)
+                                        }
+                                    }
                                 }
                             }
                             
