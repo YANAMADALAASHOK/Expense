@@ -15,7 +15,8 @@ struct TransactionView: View {
     @State private var searchKeywords: String = ""
     
     var body: some View {
-        NavigationView {
+        let _ = PerformanceMonitor.shared.measureViewRender("TransactionView") { }
+        return NavigationView {
             List {
                 ForEach(filteredTransactions.grouped(by: \.wrappedDate), id: \.key) { date, transactions in
                     Section(header: 
@@ -79,6 +80,34 @@ struct TransactionView: View {
                         .onDelete { indexSet in
                             let transactionsToDelete = indexSet.map { transactions[$0] }
                             transactionsToDelete.forEach { viewModel.deleteTransaction($0) }
+                        }
+                    }
+                }
+                
+                // Lazy loading trigger - Load more when reaching end
+                if hasActiveFilter {
+                    // When filter is active, all matching transactions are already loaded
+                    EmptyView()
+                } else if viewModel.hasMoreTransactions {
+                    Section {
+                        HStack {
+                            Spacer()
+                            if viewModel.isLoadingMoreTransactions {
+                                ProgressView()
+                                    .padding()
+                            } else {
+                                Button("Load More") {
+                                    viewModel.loadMoreTransactions()
+                                }
+                                .padding()
+                            }
+                            Spacer()
+                        }
+                    }
+                    .onAppear {
+                        // Auto-load when this section appears
+                        if !viewModel.isLoadingMoreTransactions {
+                            viewModel.loadMoreTransactions()
                         }
                     }
                 }
@@ -275,6 +304,12 @@ struct TransactionView: View {
                 }
             }
         }
+    }
+    
+    private var hasActiveFilter: Bool {
+        return selectedAccountFilter != nil || 
+               selectedCategoryFilter != nil || 
+               !searchKeywords.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
     
     private var filteredTransactions: [CDTransaction] {

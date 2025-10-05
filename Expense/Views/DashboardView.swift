@@ -6,7 +6,8 @@ struct DashboardView: View {
     @State private var upcomingInsuranceAmount: Double = 0
     
     var body: some View {
-        NavigationView {
+        let _ = PerformanceMonitor.shared.measureViewRender("DashboardView") { }
+        return NavigationView {
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
                     // Summary Cards

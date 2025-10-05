@@ -204,8 +204,9 @@ class AuthenticationManager: ObservableObject {
         ]
         
         do {
-            try await db.collection("users").document(user.id).setData(userData)
-            print("DEBUG: ✅ Successfully saved profile to Firestore")
+            // CRITICAL: Use merge:true to preserve expense data!
+            try await db.collection("users").document(user.id).setData(userData, merge: true)
+            print("DEBUG: ✅ Successfully saved profile to Firestore (expense data preserved)")
         } catch {
             print("DEBUG: ❌ Failed to save profile to Firestore: \(error.localizedDescription)")
             throw error

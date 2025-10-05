@@ -9,14 +9,19 @@ class ExpenseViewModel: ObservableObject {
     @Published var deletionStatus: String = ""
     @Published var isDeletingFromCloud = false
     
-    // Rate limiting for Firestore writes
+    // AGGRESSIVE Rate limiting for Firestore writes to reduce CPU usage
     private var lastFirestoreWrite: Date = Date.distantPast
-    private let firestoreWriteDelay: TimeInterval = 0.5 // 500ms between writes
-    private let firestoreQueue = DispatchQueue(label: "firestore.writes", qos: .background)
+    private let firestoreWriteDelay: TimeInterval = 2.0 // INCREASED: 2 seconds between writes (was 500ms)
+    private let firestoreQueue = DispatchQueue(label: "firestore.writes", qos: .utility) // Lower priority
     private var cloudSyncDisabledUntil: Date?
     
     // Bulk processing mode - disables Firestore sync to prevent memory crashes
     public var isBulkProcessing: Bool = false
+    
+    // PERFORMANCE: Batch all writes and sync once per minute
+    private var pendingFirestoreWrites: [[String: Any]] = []
+    private var lastBulkFirestoreSync: Date = Date.distantPast
+    private let bulkFirestoreSyncInterval: TimeInterval = 60.0 // Sync every 60 seconds
     
     // Rate-limited Firestore write helper
     private func performRateLimitedFirestoreWrite<T>(_ operation: @escaping () async throws -> T) async throws -> T {
@@ -57,23 +62,136 @@ class ExpenseViewModel: ObservableObject {
         fatalError("Should not reach here")
     }
     
-    // Batch Core Data saves to reduce Firestore sync frequency
+    // OPTIMIZED: Smart batching with configurable sync strategy
     private var pendingCoreDataSaves = 0
-    private let maxPendingSaves = 5 // Batch up to 5 saves before syncing
+    private let maxPendingSaves = 20 // Batch up to 20 saves before syncing
     
-    func performBatchedSave() throws {
+    // Sync status tracking for UI visibility
+    @Published var pendingSyncCount: Int = 0
+    @Published var pendingSyncSize: Int64 = 0  // in bytes
+    @Published var totalSyncedSize: Int64 = 0  // in bytes
+    @Published var lastSyncStatus: String = "Ready"
+    @Published var isSyncing: Bool = false
+    @Published var syncCompletionPercentage: Double = 100.0  // 0-100
+    @Published var isFullySynced: Bool = true
+    
+    // Sync priority for different operations
+    enum SyncPriority {
+        case immediate  // Critical data - sync now
+        case batched    // Normal data - batch and sync periodically
+        case background // Bulk operations - sync when done
+        case manual     // Only sync on user request
+    }
+    
+    // Estimate data size for sync visibility
+    private func estimateDataSize() -> Int64 {
+        let request = NSFetchRequest<CDTransaction>(entityName: "CDTransaction")
+        let lastSync = lastSyncTime ?? Date.distantPast
+        request.predicate = NSPredicate(format: "date >= %@", lastSync as NSDate)
+        
+        do {
+            let count = try viewContext.count(for: request)
+            // Rough estimate: ~500 bytes per transaction (JSON serialized)
+            return Int64(count) * 500
+        } catch {
+            print("❌ Error estimating data size: \(error)")
+            return 0
+        }
+    }
+    
+    // Calculate total local data size
+    func calculateTotalLocalDataSize() -> Int64 {
+        var totalSize: Int64 = 0
+        
+        // Count transactions
+        let transactionRequest = NSFetchRequest<CDTransaction>(entityName: "CDTransaction")
+        if let transactionCount = try? viewContext.count(for: transactionRequest) {
+            totalSize += Int64(transactionCount) * 500 // ~500 bytes per transaction
+        }
+        
+        // Count accounts
+        let accountRequest = NSFetchRequest<CDAccount>(entityName: "CDAccount")
+        if let accountCount = try? viewContext.count(for: accountRequest) {
+            totalSize += Int64(accountCount) * 1000 // ~1KB per account (includes metadata)
+        }
+        
+        // Add categories, policies, etc.
+        totalSize += Int64(customCategories.count * 100)
+        totalSize += Int64(insurancePolicies.count * 200)
+        
+        return totalSize
+    }
+    
+    // Verify if all data is synced
+    func verifySyncStatus() {
+        let totalLocal = calculateTotalLocalDataSize()
+        let pending = pendingSyncSize
+        
+        // Calculate completion percentage
+        if totalLocal > 0 {
+            let synced = totalLocal - pending
+            syncCompletionPercentage = Double(synced) / Double(totalLocal) * 100.0
+            isFullySynced = (pending == 0 && pendingSyncCount == 0)
+        } else {
+            syncCompletionPercentage = 100.0
+            isFullySynced = true
+        }
+        
+        print("📊 Sync Status: \(Int(syncCompletionPercentage))% complete")
+        print("📊 Local data: \(formatBytes(totalLocal)), Pending: \(formatBytes(pending))")
+        print("📊 Fully synced: \(isFullySynced ? "✅ YES" : "⚠️ NO")")
+    }
+    
+    func performBatchedSave(priority: SyncPriority = .batched) throws {
         try viewContext.save()
         pendingCoreDataSaves += 1
+        
+        // Update sync status for UI
+        pendingSyncCount = pendingCoreDataSaves
+        pendingSyncSize = estimateDataSize()
         
         // Skip Firestore sync during bulk processing to prevent memory crash
         if isBulkProcessing {
             return
         }
         
-        // Only sync to cloud after accumulating several saves
-        if pendingCoreDataSaves >= maxPendingSaves {
+        // Handle based on priority
+        switch priority {
+        case .immediate:
+            // Critical data - sync immediately
+            print("DEBUG: ⚡ Immediate sync triggered (critical data)")
             pendingCoreDataSaves = 0
-            syncToCloud() // This will be rate-limited
+            pendingSyncCount = 0
+            lastBulkFirestoreSync = Date()
+            syncToCloud()
+            
+        case .batched:
+            // PERFORMANCE: Only sync if enough saves OR enough time has passed
+            let timeSinceLastSync = Date().timeIntervalSince(lastBulkFirestoreSync)
+            let shouldSyncByTime = timeSinceLastSync >= bulkFirestoreSyncInterval // 60 seconds
+            
+            // Sync after 20 saves OR 5 minutes
+            if pendingCoreDataSaves >= maxPendingSaves || shouldSyncByTime {
+                print("DEBUG: 🔄 Batched sync (\(pendingCoreDataSaves) saves, \(Int(timeSinceLastSync))s since last)")
+                pendingCoreDataSaves = 0
+                pendingSyncCount = 0
+                lastBulkFirestoreSync = Date()
+                syncToCloud()
+            } else {
+                let nextSyncIn = Int(bulkFirestoreSyncInterval - timeSinceLastSync)
+                print("DEBUG: ⏸️ Batching save (\(pendingCoreDataSaves)/\(maxPendingSaves), next sync in \(nextSyncIn)s)")
+                lastSyncStatus = "Batching... Next sync in \(nextSyncIn)s"
+            }
+            
+        case .background:
+            // Background sync - accumulate and sync later
+            print("DEBUG: 📦 Background save queued (\(pendingCoreDataSaves) pending)")
+            lastSyncStatus = "Background mode - \(pendingCoreDataSaves) pending"
+            
+        case .manual:
+            // Manual only - don't auto-sync
+            print("DEBUG: 🛑 Manual sync mode - save queued (\(pendingCoreDataSaves) pending)")
+            lastSyncStatus = "Manual mode - \(pendingCoreDataSaves) pending"
         }
     }
     
@@ -134,6 +252,17 @@ class ExpenseViewModel: ObservableObject {
     @Published var recentTransactions: [CDTransaction] = []
     @Published var customCategories: [String] = []
     @Published var lastSyncTime: Date?
+    
+    // MARK: - Pagination for Performance
+    private let transactionsPerPage = 50 // Load 50 transactions at a time
+    private var currentTransactionOffset = 0
+    @Published var hasMoreTransactions = true
+    @Published var isLoadingMoreTransactions = false
+    
+    // MARK: - Debouncing to prevent rapid fetches
+    private var lastFetchAccountsTime: Date?
+    private var lastFetchTransactionsTime: Date?
+    private let fetchDebounceInterval: TimeInterval = 0.1 // 100ms debounce
     @Published var budgets: [Budget] = []
     @Published var amfiFundList: [(code: String, name: String)] = []
     @Published var pendingTransactions: [PendingTransactionItem] = []
@@ -153,9 +282,11 @@ class ExpenseViewModel: ObservableObject {
     private let preferredICICIKey = "PreferredAccount_icici"
     
     init(context: NSManagedObjectContext) {
-        print("🔄 DEBUG: ExpenseViewModel init called - \(Date()) - Thread: \(Thread.current)")
-        print("🔄 DEBUG: Call stack: \(Thread.callStackSymbols.prefix(5))")
+        print("✅ ExpenseViewModel initialized")
         self.viewContext = context
+        
+        // Note: Firestore persistence is disabled in ExpenseApp.init()
+        
         loadCustomCategories()
         loadSubcategories()
         loadInsurancePolicies()
@@ -166,7 +297,19 @@ class ExpenseViewModel: ObservableObject {
         // Load last sync time from UserDefaults
         if let savedDate = UserDefaults.standard.object(forKey: "lastSyncTime") as? Date {
             self.lastSyncTime = savedDate
+            // Update status with last sync info
+            let formatter = DateFormatter()
+            formatter.timeStyle = .short
+            formatter.dateStyle = .short
+            lastSyncStatus = "Last synced: \(formatter.string(from: savedDate))"
         }
+        
+        // Load total synced size from UserDefaults
+        let savedSyncedSize = UserDefaults.standard.object(forKey: "totalSyncedSize") as? Int64 ?? 0
+        self.totalSyncedSize = savedSyncedSize
+        
+        // Calculate initial pending size
+        self.pendingSyncSize = estimateDataSize()
 
         // Add observer for Core Data changes
         NotificationCenter.default.addObserver(
@@ -455,11 +598,15 @@ class ExpenseViewModel: ObservableObject {
     }
     
     private func startInterestCalculationTimer() {
-        // Check every hour if we need to process EMIs, generate loan interest, and insurance premiums
-        Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in
-            self?.processDueLoanEMIs()
-            self?.processDueLoanInterest()
-            self?.processDueInsurancePremiums()
+        // BATTERY SAVING: Check every 6 hours instead of 1 hour
+        // Reduced from 3600 (1 hour) to 21600 (6 hours)
+        Timer.scheduledTimer(withTimeInterval: 21600, repeats: true) { [weak self] _ in
+            PerformanceMonitor.shared.measure("Timer: Process EMI/Interest/Insurance") {
+                self?.processDueLoanEMIs()
+                self?.processDueLoanInterest()
+                self?.processDueInsurancePremiums()
+                self?.autoSync() // Check for 3 AM sync opportunity
+            }
         }
     }
     
@@ -698,9 +845,10 @@ class ExpenseViewModel: ObservableObject {
                             "lastSynced": Date()
                         ]
                         
-                        try await docRef.setData(payload)
+                        // CRITICAL: Use merge:true to preserve profile data!
+                        try await docRef.setData(payload, merge: true)
                     }
-                    print("DEBUG: Updated user backup without deleted account")
+                    print("DEBUG: Updated user backup without deleted account (profile preserved)")
                 }
                 
                 deletionStatus = "✅ Completely deleted from cloud and local"
@@ -1281,10 +1429,18 @@ class ExpenseViewModel: ObservableObject {
                 transaction.account = targetAccount
                 transaction.notes = description
                 transaction.date = date
-                imported += 1
+                
+                // Store CSV balance in metadata for accurate historical balance display
                 if let bIdx = balanceIndex, columns.count > bIdx {
-                    lastKnownBalance = parseAmount(columns[bIdx])
+                    let csvBalance = parseAmount(columns[bIdx])
+                    lastKnownBalance = csvBalance
+                    // Store balance in notes with special prefix so it can be extracted later
+                    if let bal = csvBalance {
+                        transaction.notes = description + " [BAL:\(bal)]"
+                    }
                 }
+                
+                imported += 1
             }
 
             // Save once after batch to avoid context resets during import
@@ -1413,22 +1569,41 @@ class ExpenseViewModel: ObservableObject {
     // MARK: - Core Data Operations
     func saveContext() {
         if viewContext.hasChanges {
-            do {
-                try viewContext.save()
-                viewContext.reset() // Reset the context to ensure fresh data
-                DispatchQueue.main.async { [weak self] in
-                    self?.fetchAccounts()
-                    self?.fetchRecentTransactions()
-                    self?.objectWillChange.send()
-                    self?.autoSync() // Auto-sync after saving
+            PerformanceMonitor.shared.measureCoreData("Save Context") {
+                do {
+                    try self.viewContext.save()
+                    self.viewContext.reset() // Reset the context to ensure fresh data
+                    DispatchQueue.main.async { [weak self] in
+                        self?.fetchAccounts()
+                        self?.fetchRecentTransactions()
+                        // PERFORMANCE: Removed objectWillChange.send() - @Published handles this
+                        // BATTERY SAVING: Check if it's 3 AM for daily sync
+                        self?.autoSync()
+                    }
+                } catch {
+                    print("Error saving context: \(error)")
                 }
-            } catch {
-                print("Error saving context: \(error)")
             }
         }
     }
     
     func fetchAccounts() {
+        // DEBOUNCE: Skip if called too recently
+        let now = Date()
+        if let lastFetch = lastFetchAccountsTime, now.timeIntervalSince(lastFetch) < fetchDebounceInterval {
+            print("⏭️ DEBOUNCED: fetchAccounts() called too soon (skipped)")
+            return
+        }
+        lastFetchAccountsTime = now
+        
+        // Removed verbose call stack logging for performance
+        
+        PerformanceMonitor.shared.measureCoreData("Fetch Accounts") {
+            self.performFetchAccounts()
+        }
+    }
+    
+    private func performFetchAccounts() {
         let request = NSFetchRequest<CDAccount>(entityName: "CDAccount")
         request.sortDescriptors = [NSSortDescriptor(keyPath: \CDAccount.accountName, ascending: true)]
         // Filter out accounts with nil or empty names
@@ -1478,22 +1653,94 @@ class ExpenseViewModel: ObservableObject {
                 return name1 < name2
             }
             
-            objectWillChange.send()
+            // PERFORMANCE: Only send if accounts actually changed
+            // objectWillChange.send() - Removed to reduce UI refresh frequency
         } catch {
             print("Error fetching accounts: \(error)")
         }
     }
     
-    private func fetchRecentTransactions() {
+    // MARK: - Pagination Support for Better Performance
+    func fetchRecentTransactions() {
+        // DEBOUNCE: Skip if called too recently
+        let now = Date()
+        if let lastFetch = lastFetchTransactionsTime, now.timeIntervalSince(lastFetch) < fetchDebounceInterval {
+            print("⏭️ DEBOUNCED: fetchRecentTransactions() called too soon (skipped)")
+            return
+        }
+        lastFetchTransactionsTime = now
+        
+        // Track what's calling this
+        let caller = Thread.callStackSymbols[1]
+        print("📞 fetchRecentTransactions() called from: \(caller)")
+        
+        PerformanceMonitor.shared.measureCoreData("Fetch Transactions (Initial)") {
+            self.performFetchRecentTransactions()
+        }
+    }
+    
+    private func performFetchRecentTransactions() {
+        // Reset pagination for initial load
+        currentTransactionOffset = 0
+        hasMoreTransactions = true
+        
         let request = NSFetchRequest<CDTransaction>(entityName: "CDTransaction")
         request.sortDescriptors = [NSSortDescriptor(keyPath: \CDTransaction.date, ascending: false)]
-        // Show all transactions in the app (no limit)
+        request.fetchLimit = transactionsPerPage
+        request.fetchOffset = 0
         
         do {
             recentTransactions = try viewContext.fetch(request)
-            objectWillChange.send()
+            
+            // Check if there are more transactions
+            let totalCount = try viewContext.count(for: NSFetchRequest<CDTransaction>(entityName: "CDTransaction"))
+            hasMoreTransactions = recentTransactions.count < totalCount
+            currentTransactionOffset = transactionsPerPage
+            
+            print("DEBUG: 📊 Loaded \(recentTransactions.count) transactions (Page 1), More available: \(hasMoreTransactions)")
+            // PERFORMANCE: Removed objectWillChange.send() - @Published handles this automatically
         } catch {
             print("Error fetching transactions: \(error)")
+        }
+    }
+    
+    func loadMoreTransactions() {
+        guard hasMoreTransactions, !isLoadingMoreTransactions else { return }
+        
+        PerformanceMonitor.shared.measureCoreData("Load More Transactions") {
+            self.performLoadMoreTransactions()
+        }
+    }
+    
+    private func performLoadMoreTransactions() {
+        isLoadingMoreTransactions = true
+        
+        let request = NSFetchRequest<CDTransaction>(entityName: "CDTransaction")
+        request.sortDescriptors = [NSSortDescriptor(keyPath: \CDTransaction.date, ascending: false)]
+        request.fetchLimit = transactionsPerPage
+        request.fetchOffset = currentTransactionOffset
+        
+        do {
+            let moreTransactions = try viewContext.fetch(request)
+            
+            if moreTransactions.isEmpty {
+                hasMoreTransactions = false
+            } else {
+                recentTransactions.append(contentsOf: moreTransactions)
+                currentTransactionOffset += moreTransactions.count
+                
+                // Check if there are still more
+                let totalCount = try viewContext.count(for: NSFetchRequest<CDTransaction>(entityName: "CDTransaction"))
+                hasMoreTransactions = recentTransactions.count < totalCount
+                
+                print("DEBUG: 📊 Loaded \(moreTransactions.count) more transactions, Total: \(recentTransactions.count), More: \(hasMoreTransactions)")
+            }
+            
+            isLoadingMoreTransactions = false
+            // PERFORMANCE: Removed objectWillChange.send() - @Published handles this automatically
+        } catch {
+            print("Error loading more transactions: \(error)")
+            isLoadingMoreTransactions = false
         }
     }
     
@@ -1501,7 +1748,7 @@ class ExpenseViewModel: ObservableObject {
         viewContext.reset()
         fetchAccounts()
         fetchRecentTransactions()
-        objectWillChange.send()
+        // PERFORMANCE: Removed objectWillChange.send() - @Published handles this automatically
     }
     
     // MARK: - Email Ingestion State
@@ -1922,6 +2169,10 @@ class ExpenseViewModel: ObservableObject {
     }
     
     func clearAllData() {
+        // CRITICAL: Disable cloud sync before clearing to prevent syncing empty data
+        let originalPendingSaves = pendingCoreDataSaves
+        pendingCoreDataSaves = 0  // Prevent auto-sync
+        
         do {
             // Delete all transactions first
             let transactionsFetch = NSFetchRequest<CDTransaction>(entityName: "CDTransaction")
@@ -1937,8 +2188,10 @@ class ExpenseViewModel: ObservableObject {
                 viewContext.delete(account)
             }
             
-            // Save changes
+            // Save changes WITHOUT triggering cloud sync
             try viewContext.save()
+            
+            print("DEBUG: Cleared local profile data")
             
             // Refresh local data
             fetchAccounts()
@@ -1946,6 +2199,9 @@ class ExpenseViewModel: ObservableObject {
         } catch {
             print("Error clearing data: \(error)")
         }
+        
+        // Restore pending saves counter
+        pendingCoreDataSaves = originalPendingSaves
     }
     
     // MARK: - Cloud Sync
@@ -1969,15 +2225,97 @@ class ExpenseViewModel: ObservableObject {
     }
     
     func syncToCloud() {
-        guard let userId = AuthenticationManager.shared.currentUser?.id,
-              !AuthenticationManager.shared.currentUser!.isGuest else { return }
+        // OPTIMIZED: Re-enabled with smart batching and rate limiting
+        print("☁️ Cloud sync triggered")
         
-        // Skip during bulk processing - will sync once at the end
-        if isBulkProcessing {
-            print("DEBUG: ⏭️ Skipping cloud sync - bulk processing mode")
+        guard let userId = AuthenticationManager.shared.currentUser?.id,
+              !AuthenticationManager.shared.currentUser!.isGuest else { 
+            print("⚠️ No authenticated user - skipping sync")
+            lastSyncStatus = "Not authenticated"
+            return 
+        }
+        
+        // Rate limiting: Don't sync more than once per 30 seconds
+        if let lastSync = lastSyncTime, Date().timeIntervalSince(lastSync) < 30 {
+            print("⏸️ Skipping cloud sync - rate limited (last sync: \(Int(Date().timeIntervalSince(lastSync)))s ago)")
+            lastSyncStatus = "Rate limited - last sync \(Int(Date().timeIntervalSince(lastSync)))s ago"
             return
         }
         
+        print("✅ Starting sync - User: \(userId)")
+        
+        // Update UI - sync starting
+        isSyncing = true
+        lastSyncStatus = "Syncing..."
+        let syncSize = pendingSyncSize
+        
+        PerformanceMonitor.shared.measure("Cloud Sync") {
+            self.performSyncToCloud(userId: userId)
+            
+            // Update UI - sync completed
+            DispatchQueue.main.async {
+                self.isSyncing = false
+                self.totalSyncedSize += syncSize
+                self.pendingSyncSize = 0
+                self.lastSyncStatus = "Last synced: \(self.formatBytes(syncSize)) at \(self.formatTime(Date()))"
+                
+                // Persist to UserDefaults
+                UserDefaults.standard.set(self.totalSyncedSize, forKey: "totalSyncedSize")
+                
+                print("✅ Sync completed - \(self.formatBytes(syncSize))")
+            }
+        }
+    }
+    
+    // Helper to format bytes
+    private func formatBytes(_ bytes: Int64) -> String {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        return formatter.string(fromByteCount: bytes)
+    }
+    
+    // Helper to format time
+    private func formatTime(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.timeStyle = .short
+        return formatter.string(from: date)
+    }
+    
+    // Manual sync function for UI
+    func manualSync() {
+        print("🔄 Manual sync triggered by user")
+        
+        // Verify current sync status first
+        verifySyncStatus()
+        
+        // Reset pending counter and force sync
+        pendingCoreDataSaves = 0
+        pendingSyncCount = 0
+        
+        // Always trigger sync (even if no pending changes)
+        syncToCloud()
+    }
+    
+    // TEMP: Clear Firestore cache to stop background processing
+    func clearFirestoreCache() async {
+        do {
+            try await db.terminate()
+            try await db.clearPersistence()
+            print("✅ Firestore cache cleared successfully")
+        } catch {
+            print("❌ Error clearing Firestore cache: \(error)")
+        }
+    }
+    
+    // TEMP: Disable Firestore persistence completely
+    func disableFirestorePersistence() {
+        let settings = db.settings
+        settings.cacheSettings = MemoryCacheSettings()
+        db.settings = settings
+        print("✅ Firestore persistence disabled - using memory-only cache")
+    }
+    
+    private func performSyncToCloud(userId: String) {
         // Don't sync if we're deleting an account
         guard !isDeletingAccount else {
             print("Skipping cloud sync - account deletion in progress")
@@ -2022,12 +2360,13 @@ class ExpenseViewModel: ObservableObject {
         do {
             try await performRateLimitedFirestoreWrite {
                 let docRef = self.db.collection("users").document(userId)
-                try await docRef.setData(payload)
+                // CRITICAL: Use merge:true to preserve profile data!
+                try await docRef.setData(payload, merge: true)
             }
             DispatchQueue.main.async {
                 self.lastSyncTime = timestamp
             }
-            print("✅ Data synced to cloud successfully")
+            print("✅ Data synced to cloud successfully (profile preserved)")
         } catch {
             print("❌ Failed to sync to cloud: \(error)")
             throw error
@@ -2098,12 +2437,29 @@ class ExpenseViewModel: ObservableObject {
     }
     
     // Call this after any significant data changes
+    // BATTERY SAVING: Only sync once daily at 3 AM
     private func autoSync() {
-        // Don't auto-sync if we're deleting an account
+        let lastSyncDate = UserDefaults.standard.object(forKey: "LastAutoSyncDate") as? Date ?? Date.distantPast
+        let calendar = Calendar.current
+        let now = Date()
+        
+        // Check if last sync was today
+        if calendar.isDateInToday(lastSyncDate) {
+            return // Already synced today
+        }
+        
+        // Check if current time is 3 AM (between 3:00 and 3:59)
+        let hour = calendar.component(.hour, from: now)
+        guard hour == 3 else { return }
+        
+        // Don't sync if we're deleting an account
         guard !isDeletingAccount,
               AuthenticationManager.shared.currentUser != nil,
               !AuthenticationManager.shared.currentUser!.isGuest else { return }
+        
+        print("DEBUG: 🌙 Performing scheduled 3 AM cloud sync")
         syncToCloud()
+        UserDefaults.standard.set(now, forKey: "LastAutoSyncDate")
     }
     
     @objc private func handleSyncToCloud() {

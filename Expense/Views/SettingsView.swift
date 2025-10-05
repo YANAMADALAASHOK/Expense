@@ -137,31 +137,26 @@ struct SettingsView: View {
     @State private var isCategoriesExpanded = false
     @State private var isCurrencyExpanded = false
     @State private var isBillSettingsExpanded = false
+    @State private var isPerformanceExpanded = false
+    @State private var showingPerformanceLog = false
     
     var body: some View {
         NavigationView {
             Form {
-                // Cloud Sync Section
-                CollapsibleSection(
-                    title: "Cloud Sync",
-                    isExpanded: $isCloudSyncExpanded,
-                    icon: "icloud.and.arrow.up"
-                ) {
-                    VStack(alignment: .leading) {
-                        Text("Status: \(cloudSyncStatus)")
-                        if let lastSync = lastSyncTime {
-                            Text("Last synced: \(lastSync.formatted())")
-                        }
-                    }
-                    
-                    if let user = authManager.currentUser, !user.isGuest {
-                        Button(action: {
-                            expenseViewModel.syncToCloud()
-                            checkCloudStatus()
-                        }) {
-                            Text("Sync Now")
-                        }
-                        
+                // Cloud Sync Section - Enhanced with visibility
+                Section {
+                    SyncStatusView(viewModel: expenseViewModel)
+                } header: {
+                    Label("Cloud Sync", systemImage: "icloud.and.arrow.up")
+                }
+                
+                // Advanced Cloud Operations
+                if let user = authManager.currentUser, !user.isGuest {
+                    CollapsibleSection(
+                        title: "Advanced Cloud Operations",
+                        isExpanded: $isCloudSyncExpanded,
+                        icon: "gearshape.2"
+                    ) {
                         Button(action: {
                             expenseViewModel.loadFromCloud { success in
                                 if success {
@@ -169,7 +164,7 @@ struct SettingsView: View {
                                 }
                             }
                         }) {
-                            Text("Load from Cloud")
+                            Label("Load from Cloud", systemImage: "arrow.down.circle")
                         }
                     }
                 }
@@ -441,6 +436,45 @@ struct SettingsView: View {
                     }
                 }
                 
+                // Performance Monitoring Section
+                CollapsibleSection(
+                    title: "Performance Monitor",
+                    isExpanded: $isPerformanceExpanded,
+                    icon: "speedometer"
+                ) {
+                    Button(action: {
+                        PerformanceMonitor.shared.printSummary()
+                    }) {
+                        HStack {
+                            Image(systemName: "chart.bar")
+                            Text("Print Performance Summary")
+                        }
+                    }
+                    
+                    Button(action: {
+                        showingPerformanceLog = true
+                    }) {
+                        HStack {
+                            Image(systemName: "doc.text")
+                            Text("View Performance Log")
+                        }
+                    }
+                    
+                    Button(action: {
+                        PerformanceMonitor.shared.reset()
+                    }) {
+                        HStack {
+                            Image(systemName: "trash")
+                            Text("Clear Performance Data")
+                        }
+                        .foregroundColor(.orange)
+                    }
+                    
+                    Text("Log file: \(PerformanceMonitor.shared.getLogFilePath())")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                
                 // Danger Zone Section
                 CollapsibleSection(
                     title: "Danger Zone",
@@ -471,6 +505,9 @@ struct SettingsView: View {
             }
             .sheet(isPresented: $showingCustomCategorySheet) {
                 CustomCategoryView()
+            }
+            .sheet(isPresented: $showingPerformanceLog) {
+                PerformanceLogView()
             }
             .fileExporter(
                 isPresented: $showingExportSheet,

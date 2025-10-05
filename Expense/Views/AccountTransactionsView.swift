@@ -99,31 +99,54 @@ struct AccountTransactionsView: View {
             let sortedTransactions = allTransactions.sorted { $0.wrappedDate < $1.wrappedDate }
             
             for transaction in sortedTransactions {
-                let beforeBalance = currentBalance
+                // Check if transaction has CSV balance stored in notes
+                let csvBalance = extractCSVBalance(from: transaction.notes)
                 
-                // Calculate the balance change
-                let balanceChange: Double
-                if transaction.isCredit {
-                    // Credit increases balance for assets, decreases for liabilities
-                    if account.wrappedAccountType.isAsset {
-                        balanceChange = transaction.amount
-                    } else {
-                        balanceChange = -transaction.amount
+                if let bal = csvBalance {
+                    // Use CSV balance directly (after-transaction balance)
+                    if let id = transaction.id {
+                        // Calculate before-balance based on transaction type
+                        let beforeBalance: Double
+                        if transaction.isCredit {
+                            beforeBalance = account.wrappedAccountType.isAsset ? bal - transaction.amount : bal + transaction.amount
+                        } else {
+                            beforeBalance = account.wrappedAccountType.isAsset ? bal + transaction.amount : bal - transaction.amount
+                        }
+                        balanceMap[id] = (before: beforeBalance, after: bal)
                     }
                 } else {
-                    // Debit decreases balance for assets, increases for liabilities
-                    if account.wrappedAccountType.isAsset {
-                        balanceChange = -transaction.amount
+                    // Calculate balance changes for non-CSV transactions
+                    let beforeBalance = currentBalance
+                    
+                    let balanceChange: Double
+                    if transaction.isCredit {
+                        if account.wrappedAccountType.isAsset {
+                            balanceChange = transaction.amount
+                        } else {
+                            balanceChange = -transaction.amount
+                        }
                     } else {
-                        balanceChange = transaction.amount
+                        if account.wrappedAccountType.isAsset {
+                            balanceChange = -transaction.amount
+                        } else {
+                            balanceChange = transaction.amount
+                        }
+                    }
+                    
+                    currentBalance -= balanceChange
+                    
+                    if let id = transaction.id {
+                        balanceMap[id] = (before: currentBalance, after: beforeBalance)
                     }
                 }
-                
-                currentBalance -= balanceChange // Reverse the change to get previous balance
-                
-                if let id = transaction.id {
-                    balanceMap[id] = (before: currentBalance, after: beforeBalance)
-                }
+            }
+            
+            // Helper function to extract CSV balance from notes
+            func extractCSVBalance(from notes: String?) -> Double? {
+                guard let notes = notes else { return nil }
+                guard let range = notes.range(of: #"\[BAL:([\d.]+)\]"#, options: .regularExpression) else { return nil }
+                let balString = notes[range].dropFirst(5).dropLast(1) // Remove "[BAL:" and "]"
+                return Double(balString)
             }
             
             await MainActor.run {

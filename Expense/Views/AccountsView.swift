@@ -60,41 +60,41 @@ struct AccountsView: View {
     @State private var isEditMode = false
     @State private var sectionOrder: [AccountSection] = []
     
-    private var assetAccounts: [CDAccount] {
-        viewModel.accounts.filter { $0.wrappedAccountType.isAsset }
-    }
+    // PERFORMANCE: Cache filtered arrays to avoid recalculating on every view update
+    @State private var cachedAssetAccounts: [CDAccount] = []
+    @State private var cachedBankAccounts: [CDAccount] = []
+    @State private var cachedMutualFunds: [CDAccount] = []
+    @State private var cachedLiabilityAccounts: [CDAccount] = []
+    @State private var cachedLoans: [CDAccount] = []
+    @State private var cachedCreditCards: [CDAccount] = []
+    @State private var cachedPersonalLoansGiven: [CDAccount] = []
     
-    private var bankAccounts: [CDAccount] {
-        assetAccounts.filter { $0.accountType == AccountType.bankAccount.rawValue }
-    }
-    private var bankAccountsTotal: Double { bankAccounts.reduce(0) { $0 + $1.balance } }
+    private var assetAccounts: [CDAccount] { cachedAssetAccounts }
+    private var bankAccounts: [CDAccount] { cachedBankAccounts }
+    private var bankAccountsTotal: Double { cachedBankAccounts.reduce(0) { $0 + $1.balance } }
+    private var mutualFunds: [CDAccount] { cachedMutualFunds }
+    private var mutualFundsTotal: Double { cachedMutualFunds.reduce(0) { $0 + $1.balance } }
+    private var liabilityAccounts: [CDAccount] { cachedLiabilityAccounts }
+    private var loans: [CDAccount] { cachedLoans }
+    private var loansOutstanding: Double { cachedLoans.reduce(0) { $0 + abs($1.balance) } }
+    private var creditCards: [CDAccount] { cachedCreditCards }
+    private var creditCardsOutstanding: Double { cachedCreditCards.reduce(0) { $0 + abs($1.balance) } }
+    private var personalLoansGiven: [CDAccount] { cachedPersonalLoansGiven }
+    private var personalLoansOutstanding: Double { cachedPersonalLoansGiven.reduce(0) { $0 + $1.balance } }
     
-    private var mutualFunds: [CDAccount] {
-        assetAccounts.filter { $0.accountType == AccountType.mutualFund.rawValue }
+    private func updateCachedAccounts() {
+        cachedAssetAccounts = viewModel.accounts.filter { $0.wrappedAccountType.isAsset }
+        cachedBankAccounts = cachedAssetAccounts.filter { $0.accountType == AccountType.bankAccount.rawValue }
+        cachedMutualFunds = cachedAssetAccounts.filter { $0.accountType == AccountType.mutualFund.rawValue }
+        cachedLiabilityAccounts = viewModel.accounts.filter { !$0.wrappedAccountType.isAsset }
+        cachedLoans = cachedLiabilityAccounts.filter { $0.accountType == AccountType.loan.rawValue }
+        cachedCreditCards = cachedLiabilityAccounts.filter { $0.accountType == AccountType.creditCard.rawValue }
+        cachedPersonalLoansGiven = cachedAssetAccounts.filter { $0.accountType == AccountType.personalLoanGiven.rawValue }
     }
-    private var mutualFundsTotal: Double { mutualFunds.reduce(0) { $0 + $1.balance } }
-    
-    private var liabilityAccounts: [CDAccount] {
-        viewModel.accounts.filter { !$0.wrappedAccountType.isAsset }
-    }
-    
-    private var loans: [CDAccount] {
-        liabilityAccounts.filter { $0.accountType == AccountType.loan.rawValue }
-    }
-    private var loansOutstanding: Double { loans.reduce(0) { $0 + abs($1.balance) } }
-    
-    private var creditCards: [CDAccount] {
-        liabilityAccounts.filter { $0.accountType == AccountType.creditCard.rawValue }
-    }
-    private var creditCardsOutstanding: Double { creditCards.reduce(0) { $0 + abs($1.balance) } }
-    
-    private var personalLoansGiven: [CDAccount] {
-        assetAccounts.filter { $0.accountType == AccountType.personalLoanGiven.rawValue }
-    }
-    private var personalLoansOutstanding: Double { personalLoansGiven.reduce(0) { $0 + $1.balance } }
     
     var body: some View {
-        NavigationView {
+        let _ = PerformanceMonitor.shared.measureViewRender("AccountsView") { }
+        return NavigationView {
             ZStack {
                 Group {
                     if isEditMode {
@@ -209,6 +209,10 @@ struct AccountsView: View {
             .onAppear {
                 loadSectionOrder()
                 viewModel.fetchAccounts()
+                updateCachedAccounts() // PERFORMANCE: Initialize cache
+            }
+            .onChange(of: viewModel.accounts) { _ in
+                updateCachedAccounts() // PERFORMANCE: Update cache only when accounts change
             }
             .sheet(isPresented: $showingAddAccount) {
                 AddAccountView(viewModel: viewModel)
@@ -540,60 +544,60 @@ private struct BalanceSummarySection: View {
     @State private var showingBalanceBreakdown = false
     @State private var showingLiabilityBreakdown = false
     
-    var bankBalance: Double {
-        accounts.filter { $0.accountType == AccountType.bankAccount.rawValue }.reduce(0) { $0 + $1.balance }
+    // PERFORMANCE: Memoize expensive calculations
+    private var bankBalance: Double {
+        accounts.lazy.filter { $0.accountType == AccountType.bankAccount.rawValue }.reduce(0) { $0 + $1.balance }
     }
     
-    var investmentBalance: Double {
-        accounts.filter { $0.accountType == AccountType.mutualFund.rawValue }.reduce(0) { $0 + $1.balance }
+    private var investmentBalance: Double {
+        accounts.lazy.filter { $0.accountType == AccountType.mutualFund.rawValue }.reduce(0) { $0 + $1.balance }
     }
     
-    var totalInvestment: Double {
-        accounts.filter { $0.accountType == AccountType.mutualFund.rawValue }.reduce(0) { $0 + $1.creditLimit }
+    private var totalInvestment: Double {
+        accounts.lazy.filter { $0.accountType == AccountType.mutualFund.rawValue }.reduce(0) { $0 + $1.creditLimit }
     }
     
-    var investmentReturns: Double {
-        let returns = investmentBalance - totalInvestment
-        return returns
+    private var investmentReturns: Double {
+        investmentBalance - totalInvestment
     }
     
-    var personalLoansGivenBalance: Double {
-        accounts.filter { $0.accountType == AccountType.personalLoanGiven.rawValue }.reduce(0) { $0 + $1.balance }
+    private var personalLoansGivenBalance: Double {
+        accounts.lazy.filter { $0.accountType == AccountType.personalLoanGiven.rawValue }.reduce(0) { $0 + $1.balance }
     }
     
-    var personalLoansPrincipal: Double {
-        accounts.filter { $0.accountType == AccountType.personalLoanGiven.rawValue }.reduce(0) { $0 + $1.creditLimit }
+    private var personalLoansPrincipal: Double {
+        accounts.lazy.filter { $0.accountType == AccountType.personalLoanGiven.rawValue }.reduce(0) { $0 + $1.creditLimit }
     }
     
-    var personalLoansInterest: Double {
+    private var personalLoansInterest: Double {
         personalLoansGivenBalance - personalLoansPrincipal
     }
     
-    var totalBalance: Double {
-        accounts.filter { $0.wrappedAccountType.isAsset }.reduce(0) { $0 + $1.balance }
+    private var totalBalance: Double {
+        accounts.lazy.filter { $0.wrappedAccountType.isAsset }.reduce(0) { $0 + $1.balance }
     }
     
-    var totalLiabilities: Double {
-        accounts.filter { !$0.wrappedAccountType.isAsset }.reduce(0) { $0 + abs($1.balance) }
+    private var totalLiabilities: Double {
+        accounts.lazy.filter { !$0.wrappedAccountType.isAsset }.reduce(0) { $0 + abs($1.balance) }
     }
     
-    var creditCardBalance: Double {
-        accounts.filter { $0.accountType == AccountType.creditCard.rawValue }.reduce(0) { $0 + abs($1.balance) }
+    private var creditCardBalance: Double {
+        accounts.lazy.filter { $0.accountType == AccountType.creditCard.rawValue }.reduce(0) { $0 + abs($1.balance) }
     }
     
-    var loanBalance: Double {
-        accounts.filter { $0.accountType == AccountType.loan.rawValue }.reduce(0) { $0 + abs($1.balance) }
+    private var loanBalance: Double {
+        accounts.lazy.filter { $0.accountType == AccountType.loan.rawValue }.reduce(0) { $0 + abs($1.balance) }
     }
     
-    var totalLoanAmount: Double {
-        accounts.filter { $0.accountType == AccountType.loan.rawValue }.reduce(0) { $0 + $1.creditLimit }
+    private var totalLoanAmount: Double {
+        accounts.lazy.filter { $0.accountType == AccountType.loan.rawValue }.reduce(0) { $0 + $1.creditLimit }
     }
     
-    var totalCreditLimit: Double {
-        accounts.filter { $0.accountType == AccountType.creditCard.rawValue }.reduce(0) { $0 + $1.creditLimit }
+    private var totalCreditLimit: Double {
+        accounts.lazy.filter { $0.accountType == AccountType.creditCard.rawValue }.reduce(0) { $0 + $1.creditLimit }
     }
     
-    var netWorth: Double { totalBalance - totalLiabilities }
+    private var netWorth: Double { totalBalance - totalLiabilities }
     
     var body: some View {
         Section {

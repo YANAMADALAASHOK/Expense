@@ -332,13 +332,13 @@ struct EnhancedDashboardView: View {
         let creditCardAccounts = viewModel.accounts.filter { $0.wrappedAccountType == .creditCard }
         var totalPending: Double = 0
         
-        print("DEBUG: Dashboard - Starting bill calculation for \(creditCardAccounts.count) credit card accounts")
+        // Calculate bills for \(creditCardAccounts.count) credit card accounts
         
         for account in creditCardAccounts {
             let metadata = account.metadataDictionary
             let billHistoryKeys = metadata.keys.filter { $0.hasPrefix("statement_") }
             
-            print("DEBUG: Dashboard - Account: \(account.wrappedAccountName), Bills found: \(billHistoryKeys.count)")
+            // Account: \(account.wrappedAccountName), \(billHistoryKeys.count) bills
             
             // Find the latest unpaid bill
             let dateFormatter = ISO8601DateFormatter()
@@ -356,7 +356,7 @@ struct EnhancedDashboardView: View {
                     let dueAmount = statementData["dueAmount"].flatMap { Double($0) } ?? 0.0
                     let isManuallyPaid = statementData["manuallyPaid"] == "true"
                     
-                    print("DEBUG: Dashboard - Bill: \(statementDate), Amount: ₹\(dueAmount), Manually Paid: \(isManuallyPaid)")
+                    // Bill: \(statementDate), ₹\(dueAmount)
                     
                     // Check if this is the latest statement and not manually paid
                     if (latestStatementDate == nil || statementDate > latestStatementDate!) &&
@@ -364,7 +364,7 @@ struct EnhancedDashboardView: View {
                         latestStatementDate = statementDate
                         latestBillAmount = dueAmount
                         latestBillKey = key
-                        print("DEBUG: Dashboard - Updated latest unpaid bill: ₹\(dueAmount)")
+                        // Updated latest: ₹\(dueAmount)
                     }
                 }
             }
@@ -382,17 +382,17 @@ struct EnhancedDashboardView: View {
                 
                 if let maxDate = allDates.max(), Calendar.current.isDate(latestDate, inSameDayAs: maxDate) {
                     totalPending += latestBillAmount
-                    print("DEBUG: Dashboard - Added to total: ₹\(latestBillAmount) for account \(account.wrappedAccountName)")
+                    // Added: ₹\(latestBillAmount)
                 } else {
-                    print("DEBUG: Dashboard - Skipped (not latest): ₹\(latestBillAmount) for account \(account.wrappedAccountName)")
+                    // Skipped (not latest)
                 }
             } else {
-                print("DEBUG: Dashboard - No unpaid bills found for account \(account.wrappedAccountName)")
+                // No unpaid bills
             }
         }
         
         pendingBillsAmount = totalPending
-        print("DEBUG: Dashboard - Final calculated pending bills: ₹\(totalPending)")
+        print("💳 Total pending bills: ₹\(totalPending)")
     }
     
     private func calculateUpcomingInsurance() {
@@ -426,19 +426,18 @@ struct EnhancedDashboardView: View {
             if let nextDueDate = calendar.date(from: dateComponents) {
                 let daysUntilDue = calendar.dateComponents([.day], from: today, to: nextDueDate).day ?? 0
                 
-                print("DEBUG: Dashboard - Policy: \(policy.name), Due in \(daysUntilDue) days, Amount: ₹\(policy.premiumAmount)")
+                // Policy: \(policy.name), \(daysUntilDue) days
                 
                 // Include if due within next 30 days
                 if daysUntilDue >= 0 && daysUntilDue <= 30 {
                     nextMonthTotal += policy.premiumAmount
-                    print("DEBUG: Dashboard - Added policy \(policy.name) to total")
+                    // Added: \(policy.name)
                 }
             }
         }
         
         upcomingInsuranceAmount = nextMonthTotal
-        print("DEBUG: Dashboard - Insurance policies count: \(policies.count)")
-        print("DEBUG: Dashboard - Calculated upcoming insurance: ₹\(nextMonthTotal)")
+        print("🛡️ Insurance due: ₹\(nextMonthTotal) (\(policies.count) policies)")
     }
     
     private func calculateUpcomingLoanEMIs() {
@@ -479,19 +478,18 @@ struct EnhancedDashboardView: View {
             if let nextEMIDate = calendar.date(from: dateComponents) {
                 let daysUntilDue = calendar.dateComponents([.day], from: today, to: nextEMIDate).day ?? 0
                 
-                print("DEBUG: Dashboard - Loan: \(account.wrappedAccountName), EMI Due in \(daysUntilDue) days, Amount: ₹\(details.effectiveEMI)")
+                // Loan: \(account.wrappedAccountName), \(daysUntilDue) days
                 
                 // Include if due within next 30 days
                 if daysUntilDue >= 0 && daysUntilDue <= 30 {
                     totalEMIs += details.effectiveEMI
-                    print("DEBUG: Dashboard - Added loan EMI for \(account.wrappedAccountName) to total")
+                    // Added: \(account.wrappedAccountName)
                 }
             }
         }
         
         upcomingLoanEMIsAmount = totalEMIs
-        print("DEBUG: Dashboard - Loan accounts count: \(loanAccounts.count)")
-        print("DEBUG: Dashboard - Calculated upcoming loan EMIs: ₹\(totalEMIs)")
+        print("🏦 Loan EMIs due: ₹\(totalEMIs) (\(loanAccounts.count) accounts)")
     }
 
 }
