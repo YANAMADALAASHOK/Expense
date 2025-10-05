@@ -100,6 +100,13 @@ struct ReportsView: View {
         .sorted { $0.wrappedDate > $1.wrappedDate }
     }
     
+    var dateRangeText: String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MMM d, yyyy"
+        let interval = dateInterval
+        return "\(formatter.string(from: interval.start)) - \(formatter.string(from: interval.end))"
+    }
+    
     var body: some View {
         NavigationView {
             List {
@@ -108,6 +115,15 @@ struct ReportsView: View {
                         ForEach(TimePeriod.allCases, id: \.self) { period in
                             Text(period.rawValue).tag(period)
                         }
+                    }
+                    
+                    // Show date range
+                    HStack {
+                        Image(systemName: "calendar")
+                            .foregroundColor(.secondary)
+                        Text(dateRangeText)
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
                     }
                     
                     if selectedPeriod == .custom {

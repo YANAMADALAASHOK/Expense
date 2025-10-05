@@ -176,12 +176,24 @@ struct UserProfileView: View {
     }
     
     private func saveProfile() {
-        guard !(authManager.currentUser?.isGuest ?? true) else { return }
+        print("DEBUG: 💾 UserProfileView.saveProfile() called")
+        
+        guard !(authManager.currentUser?.isGuest ?? true) else {
+            print("DEBUG: ❌ User is guest, cannot save profile")
+            return
+        }
+        
+        print("DEBUG: 📋 Profile data to save:")
+        print("DEBUG:    First Name: \(firstName)")
+        print("DEBUG:    Last Name: \(lastName)")
+        print("DEBUG:    Mobile: \(mobileNumber)")
+        print("DEBUG:    DOB: \(dateOfBirth)")
         
         isLoading = true
         
         Task {
             do {
+                print("DEBUG: 🚀 Calling authManager.updateUserProfile...")
                 try await authManager.updateUserProfile(
                     firstName: firstName,
                     lastName: lastName,
@@ -189,15 +201,21 @@ struct UserProfileView: View {
                     dateOfBirth: dateOfBirth
                 )
                 
+                print("DEBUG: ✅ Profile save completed successfully")
+                
                 DispatchQueue.main.async {
                     self.isLoading = false
                     self.isEditing = false
+                    print("DEBUG: ✅ UI updated - editing mode disabled")
                 }
             } catch {
+                print("DEBUG: ❌ Profile save failed with error: \(error.localizedDescription)")
+                
                 DispatchQueue.main.async {
                     self.isLoading = false
                     self.errorMessage = error.localizedDescription
                     self.showingError = true
+                    print("DEBUG: ❌ Showing error to user: \(error.localizedDescription)")
                 }
             }
         }

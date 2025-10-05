@@ -305,20 +305,11 @@ struct EnhancedDashboardView: View {
             }
             .onAppear {
                 loadSectionOrder()
-                
-                // Run automatic bill payment detection first
-                viewModel.detectAndProcessBillPayments()
-                
-                // Then calculate pending bills (will reflect any auto-matched payments)
                 calculatePendingBills()
                 calculateUpcomingInsurance()
                 calculateUpcomingLoanEMIs()
             }
             .refreshable {
-                // Run automatic bill payment detection on refresh
-                viewModel.detectAndProcessBillPayments()
-                
-                // Then recalculate bills
                 calculatePendingBills()
                 calculateUpcomingInsurance()
                 calculateUpcomingLoanEMIs()
@@ -1331,7 +1322,7 @@ struct UpcomingBillsSection: View {
             showingBillDetails = true
         }
         .sheet(isPresented: $showingBillDetails) {
-            BillDetailsView(
+            DashboardBillDetailsView(
                 pendingBillsAmount: pendingBillsAmount,
                 upcomingInsuranceAmount: upcomingInsuranceAmount,
                 upcomingLoanEMIsAmount: upcomingLoanEMIsAmount,
@@ -1377,8 +1368,8 @@ struct BillCard: View {
     }
 }
 
-// MARK: - Bill Details View
-struct BillDetailsView: View {
+// MARK: - Dashboard Bill Details View
+struct DashboardBillDetailsView: View {
     let pendingBillsAmount: Double
     let upcomingInsuranceAmount: Double
     let upcomingLoanEMIsAmount: Double

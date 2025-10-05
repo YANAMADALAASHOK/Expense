@@ -36,17 +36,26 @@ class AuthenticationManager: ObservableObject {
         if let user = Auth.auth().currentUser {
             self.isAuthenticated = true
             // Load user profile from Firestore
-            loadUserProfile(userId: user.uid) { userProfile in
+            loadUserProfile(userId: user.uid) { [weak self] userProfile in
                 DispatchQueue.main.async {
-                    self.currentUser = userProfile ?? User(
-                        id: user.uid,
-                        email: user.email,
-                        firstName: user.displayName,
-                        lastName: nil,
-                        mobileNumber: nil,
-                        dateOfBirth: nil,
-                        isGuest: false
-                    )
+                    if let profile = userProfile {
+                        self?.currentUser = profile
+                    } else {
+                        // Fallback to UserDefaults if Firestore fails
+                        print("DEBUG: Firestore profile not found, loading from UserDefaults...")
+                        self?.currentUser = self?.loadUserProfileLocally(userId: user.uid, email: user.email) ?? User(
+                            id: user.uid,
+                            email: user.email,
+                            firstName: user.displayName,
+                            lastName: nil,
+                            mobileNumber: nil,
+                            dateOfBirth: nil,
+                            isGuest: false
+                        )
+                        if self?.currentUser?.firstName != nil {
+                            print("DEBUG: Successfully loaded profile from UserDefaults")
+                        }
+                    }
                 }
             }
         }
@@ -59,15 +68,24 @@ class AuthenticationManager: ObservableObject {
                     // Load user profile from Firestore
                     self?.loadUserProfile(userId: firebaseUser.uid) { userProfile in
                         DispatchQueue.main.async {
-                            self?.currentUser = userProfile ?? User(
-                                id: firebaseUser.uid,
-                                email: firebaseUser.email,
-                                firstName: firebaseUser.displayName,
-                                lastName: nil,
-                                mobileNumber: nil,
-                                dateOfBirth: nil,
-                                isGuest: false
-                            )
+                            if let profile = userProfile {
+                                self?.currentUser = profile
+                            } else {
+                                // Fallback to UserDefaults if Firestore fails
+                                print("DEBUG: Firestore profile not found, loading from UserDefaults...")
+                                self?.currentUser = self?.loadUserProfileLocally(userId: firebaseUser.uid, email: firebaseUser.email) ?? User(
+                                    id: firebaseUser.uid,
+                                    email: firebaseUser.email,
+                                    firstName: firebaseUser.displayName,
+                                    lastName: nil,
+                                    mobileNumber: nil,
+                                    dateOfBirth: nil,
+                                    isGuest: false
+                                )
+                                if self?.currentUser?.firstName != nil {
+                                    print("DEBUG: Successfully loaded profile from UserDefaults")
+                                }
+                            }
                         }
                     }
                 } else {
@@ -117,8 +135,9 @@ class AuthenticationManager: ObservableObject {
                 isGuest: false
             )
             
-            // Save user profile to Firestore
+            // Save user profile to Firestore and locally
             try await saveUserProfile(user: newUser)
+            saveUserProfileLocally(user: newUser)
             
             DispatchQueue.main.async {
                 self.isAuthenticated = true
@@ -140,6 +159,8 @@ class AuthenticationManager: ObservableObject {
             DispatchQueue.main.async {
                 self.isAuthenticated = false
                 self.currentUser = nil
+                // Clear local profile data
+                self.clearUserProfileLocally()
                 // Clear local data after sign out
                 PersistenceController.shared.clearAllData()
             }
@@ -166,6 +187,12 @@ class AuthenticationManager: ObservableObject {
     // MARK: - Firestore Methods
     
     private func saveUserProfile(user: User) async throws {
+        print("DEBUG: 💾 Saving profile to Firestore...")
+        print("DEBUG:    User ID: \(user.id)")
+        print("DEBUG:    First Name: \(user.firstName ?? "nil")")
+        print("DEBUG:    Last Name: \(user.lastName ?? "nil")")
+        print("DEBUG:    DOB: \(user.dateOfBirth?.description ?? "nil")")
+        
         let userData: [String: Any] = [
             "email": user.email ?? "",
             "firstName": user.firstName ?? "",
@@ -176,20 +203,39 @@ class AuthenticationManager: ObservableObject {
             "updatedAt": Date()
         ]
         
-        try await db.collection("users").document(user.id).setData(userData)
+        do {
+            try await db.collection("users").document(user.id).setData(userData)
+            print("DEBUG: ✅ Successfully saved profile to Firestore")
+        } catch {
+            print("DEBUG: ❌ Failed to save profile to Firestore: \(error.localizedDescription)")
+            throw error
+        }
     }
     
     private func loadUserProfile(userId: String, completion: @escaping (User?) -> Void) {
-        db.collection("users").document(userId).getDocument { document, error in
+        db.collection("users").document(userId).getDocument { [weak self] document, error in
             if let error = error {
-                print("Error loading user profile: \(error)")
-                completion(nil)
+                print("Error loading user profile from Firestore: \(error)")
+                // Try loading from local backup
+                if let localUser = self?.loadUserProfileLocally(userId: userId, email: nil) {
+                    print("DEBUG: Loaded profile from local backup")
+                    completion(localUser)
+                } else {
+                    completion(nil)
+                }
                 return
             }
             
             guard let document = document, document.exists,
                   let data = document.data() else {
-                completion(nil)
+                print("DEBUG: No Firestore profile found, trying local backup")
+                // Try loading from local backup
+                if let localUser = self?.loadUserProfileLocally(userId: userId, email: nil) {
+                    print("DEBUG: Loaded profile from local backup")
+                    completion(localUser)
+                } else {
+                    completion(nil)
+                }
                 return
             }
             
@@ -203,14 +249,41 @@ class AuthenticationManager: ObservableObject {
                 isGuest: false
             )
             
-            completion(user)
+            // Only save to local backup if profile has valid data
+            // This prevents overwriting good backup with empty Firestore data
+            if user.firstName != nil && user.dateOfBirth != nil {
+                self?.saveUserProfileLocally(user: user)
+                print("DEBUG: Loaded profile from Firestore - Name: \(user.firstName ?? "nil"), DOB: \(user.dateOfBirth?.description ?? "nil")")
+                print("DEBUG: Saved valid profile to local backup")
+                completion(user)
+            } else {
+                print("DEBUG: Firestore profile incomplete (Name: \(user.firstName ?? "nil"), DOB: \(user.dateOfBirth?.description ?? "nil"))")
+                print("DEBUG: Loading from UserDefaults backup instead...")
+                // Try loading from local backup instead of using incomplete Firestore data
+                if let localUser = self?.loadUserProfileLocally(userId: userId, email: data["email"] as? String) {
+                    print("DEBUG: Successfully loaded complete profile from UserDefaults")
+                    completion(localUser)
+                } else {
+                    print("DEBUG: No valid backup found, using incomplete profile")
+                    completion(user)
+                }
+            }
         }
     }
     
     func updateUserProfile(firstName: String, lastName: String, mobileNumber: String, dateOfBirth: Date) async throws {
+        print("DEBUG: 📝 updateUserProfile called")
+        print("DEBUG:    First Name: \(firstName)")
+        print("DEBUG:    Last Name: \(lastName)")
+        print("DEBUG:    Mobile: \(mobileNumber)")
+        print("DEBUG:    DOB: \(dateOfBirth)")
+        
         guard let currentUser = currentUser, !currentUser.isGuest else {
+            print("DEBUG: ❌ No authenticated user or user is guest")
             throw NSError(domain: "AuthError", code: 0, userInfo: [NSLocalizedDescriptionKey: "No authenticated user"])
         }
+        
+        print("DEBUG: ✅ Current user verified: \(currentUser.id)")
         
         let updatedUser = User(
             id: currentUser.id,
@@ -222,11 +295,67 @@ class AuthenticationManager: ObservableObject {
             isGuest: false
         )
         
-        try await saveUserProfile(user: updatedUser)
+        // Save to Firestore
+        print("DEBUG: 📤 Attempting to save to Firestore...")
+        do {
+            try await saveUserProfile(user: updatedUser)
+            print("DEBUG: ✅ Firestore save successful")
+        } catch {
+            print("DEBUG: ❌ Firestore save failed: \(error)")
+            // Continue to save locally even if Firestore fails
+        }
+        
+        // Also save to UserDefaults as backup
+        print("DEBUG: 💾 Saving to UserDefaults backup...")
+        saveUserProfileLocally(user: updatedUser)
         
         DispatchQueue.main.async {
             self.currentUser = updatedUser
+            print("DEBUG: ✅ Current user updated in memory")
         }
+        
+        print("DEBUG: 🎉 Profile update complete - Name: \(firstName), DOB: \(dateOfBirth)")
+    }
+    
+    // MARK: - Local Storage (UserDefaults Backup)
+    
+    private func saveUserProfileLocally(user: User) {
+        let defaults = UserDefaults.standard
+        defaults.set(user.firstName, forKey: "user_firstName")
+        defaults.set(user.lastName, forKey: "user_lastName")
+        defaults.set(user.mobileNumber, forKey: "user_mobileNumber")
+        defaults.set(user.dateOfBirth, forKey: "user_dateOfBirth")
+        defaults.set(user.email, forKey: "user_email")
+        defaults.synchronize()
+        print("DEBUG: Profile saved locally to UserDefaults")
+    }
+    
+    private func loadUserProfileLocally(userId: String, email: String?) -> User? {
+        let defaults = UserDefaults.standard
+        guard let firstName = defaults.string(forKey: "user_firstName") else {
+            return nil
+        }
+        
+        return User(
+            id: userId,
+            email: email ?? defaults.string(forKey: "user_email"),
+            firstName: firstName,
+            lastName: defaults.string(forKey: "user_lastName"),
+            mobileNumber: defaults.string(forKey: "user_mobileNumber"),
+            dateOfBirth: defaults.object(forKey: "user_dateOfBirth") as? Date,
+            isGuest: false
+        )
+    }
+    
+    private func clearUserProfileLocally() {
+        let defaults = UserDefaults.standard
+        defaults.removeObject(forKey: "user_firstName")
+        defaults.removeObject(forKey: "user_lastName")
+        defaults.removeObject(forKey: "user_mobileNumber")
+        defaults.removeObject(forKey: "user_dateOfBirth")
+        defaults.removeObject(forKey: "user_email")
+        defaults.synchronize()
+        print("DEBUG: Cleared local profile data")
     }
     
     deinit {

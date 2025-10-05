@@ -1,5 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import CoreData
 
 struct CurrencyPickerView: View {
     @Environment(\.dismiss) var dismiss
@@ -96,20 +97,6 @@ struct ManageCategoriesView: View {
     }
 }
 
-enum CreditCardBank: String, CaseIterable {
-    case axis = "cc.statements@axisbank.com"
-    case icici = "credit_cards@icicibank.com"
-    case sbi = "sbicard.com"
-    
-    var displayName: String {
-        switch self {
-        case .axis: return "Axis Bank"
-        case .icici: return "ICICI Bank"
-        case .sbi: return "SBI Card"
-        }
-    }
-}
-
 struct SettingsView: View {
     @EnvironmentObject var authManager: AuthenticationManager
     @EnvironmentObject var expenseViewModel: ExpenseViewModel
@@ -140,18 +127,16 @@ struct SettingsView: View {
     @State private var gmailClientId: String = GmailOAuthManager.shared.clientId ?? ""
     @State private var gmailRedirectUri: String = GmailOAuthManager.shared.redirectUri ?? ""
     @State private var showingProfile = false
-    @State private var isLoadingBills = false
-    @State private var billLoadingProgress = ""
     
     // Collapsible section states
     @State private var isCloudSyncExpanded = false
     @State private var isEmailExpanded = false
-    @State private var isBillsExpanded = false
     @State private var isGmailExpanded = false
     @State private var isDataManagementExpanded = false
     @State private var isDangerZoneExpanded = false
     @State private var isCategoriesExpanded = false
     @State private var isCurrencyExpanded = false
+    @State private var isBillSettingsExpanded = false
     
     var body: some View {
         NavigationView {
@@ -204,47 +189,6 @@ struct SettingsView: View {
                     }
                     NavigationLink(destination: GmailInboxView(viewModel: expenseViewModel)) {
                         Label("ICICI Gmail", systemImage: "tray.full")
-                    }
-                }
-
-                // Bills Section
-                CollapsibleSection(
-                    title: "Bills",
-                    isExpanded: $isBillsExpanded,
-                    icon: "doc.text.below.ecg"
-                ) {
-                    
-                    Button(action: {
-                        loadCreditCardBills()
-                    }) {
-                        HStack {
-                            Label("Load Credit Card Bills", systemImage: "envelope.arrow.triangle.branch")
-                            if isLoadingBills {
-                                Spacer()
-                                ProgressView()
-                                    .scaleEffect(0.8)
-                            }
-                        }
-                    }
-                    .disabled(isLoadingBills)
-                    
-                    if isLoadingBills && !billLoadingProgress.isEmpty {
-                        Text(billLoadingProgress)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                            .padding(.leading)
-                    }
-                    
-                    NavigationLink(destination: CreditCardBillsView(viewModel: expenseViewModel)) {
-                        Label("View Processed Bills", systemImage: "creditcard")
-                    }
-                    
-                    Button(action: {
-                        expenseViewModel.detectAndProcessBillPayments()
-                        errorMessage = "✅ Automatic bill payment detection completed"
-                        showingError = true
-                    }) {
-                        Label("Detect Bill Payments", systemImage: "magnifyingglass.circle")
                     }
                 }
 
@@ -410,6 +354,93 @@ struct SettingsView: View {
                     }
                 }
                 
+                // Bill Settings Section
+                CollapsibleSection(
+                    title: "Credit Card Bill Settings",
+                    isExpanded: $isBillSettingsExpanded,
+                    icon: "doc.text"
+                ) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("PDF passwords are automatically generated from your profile")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        
+                        if let currentUser = authManager.currentUser {
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack {
+                                    Text("First Name:")
+                                        .font(.subheadline)
+                                        .foregroundColor(.secondary)
+                                    Spacer()
+                                    Text(currentUser.firstName ?? "Not set")
+                                        .font(.subheadline)
+                                        .fontWeight(.medium)
+                                }
+                                
+                                HStack {
+                                    Text("Date of Birth:")
+                                        .font(.subheadline)
+                                        .foregroundColor(.secondary)
+                                    Spacer()
+                                    if let dob = currentUser.dateOfBirth {
+                                        Text(formatDate(dob))
+                                            .font(.subheadline)
+                                            .fontWeight(.medium)
+                                    } else {
+                                        Text("Not set")
+                                            .font(.subheadline)
+                                            .fontWeight(.medium)
+                                    }
+                                }
+                                
+                                if let firstName = currentUser.firstName,
+                                   let dob = currentUser.dateOfBirth {
+                                    Divider()
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text("PDF Password Preview:")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                        let preview = generatePasswordPreviewFromProfile(firstName: firstName, dob: dob)
+                                        Text(preview)
+                                            .font(.system(.body, design: .monospaced))
+                                            .padding(8)
+                                            .background(Color(.systemGray6))
+                                            .cornerRadius(4)
+                                    }
+                                } else {
+                                    Divider()
+                                    VStack(alignment: .leading, spacing: 8) {
+                                        HStack {
+                                            Image(systemName: "exclamationmark.triangle.fill")
+                                                .foregroundColor(.orange)
+                                            Text("Profile Incomplete")
+                                                .font(.subheadline)
+                                                .fontWeight(.medium)
+                                        }
+                                        Text("Please update your profile with First Name and Date of Birth to use bill fetching")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                        
+                                        Button(action: {
+                                            showingProfile = true
+                                        }) {
+                                            Text("Update Profile")
+                                                .frame(maxWidth: .infinity)
+                                                .foregroundColor(.white)
+                                                .padding()
+                                                .background(Color.blue)
+                                                .cornerRadius(8)
+                                        }
+                                    }
+                                }
+                            }
+                            .padding()
+                            .background(Color(.systemGray6))
+                            .cornerRadius(8)
+                        }
+                    }
+                }
+                
                 // Danger Zone Section
                 CollapsibleSection(
                     title: "Danger Zone",
@@ -430,11 +461,7 @@ struct SettingsView: View {
             }
             .navigationTitle("Settings")
             .navigationBarItems(trailing: 
-                Button(action: {
-                    showingProfile = true
-                }) {
-                    ProfileButtonView()
-                }
+                ProfileButtonView(showingProfile: $showingProfile)
             )
             .sheet(isPresented: $showingCurrencyPicker) {
                 CurrencyPickerView()
@@ -595,6 +622,21 @@ struct SettingsView: View {
         
     }
     
+    private func formatDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        return formatter.string(from: date)
+    }
+    
+    private func generatePasswordPreviewFromProfile(firstName: String, dob: Date) -> String {
+        let firstFour = String(firstName.uppercased().prefix(4))
+        let calendar = Calendar.current
+        let day = calendar.component(.day, from: dob)
+        let month = calendar.component(.month, from: dob)
+        let dateMonth = String(format: "%02d%02d", day, month)
+        return "\(firstFour)\(dateMonth)"
+    }
+    
     private func checkCloudStatus() {
         guard !isCheckingStatus else { return }
         isCheckingStatus = true
@@ -617,720 +659,9 @@ struct SettingsView: View {
     private func deleteAllData() {
         expenseViewModel.clearAllData()
     }
-    
-    @MainActor
-    private func loadCreditCardBills() async {
-        isLoadingBills = true
-        billLoadingProgress = "Starting bill loading..."
-        
-        defer {
-            isLoadingBills = false
-            billLoadingProgress = ""
-        }
-        
-        do {
-            print("DEBUG: 🔍 Starting comprehensive credit card bill loading from Settings")
-            
-            // CRITICAL: Enable bulk processing mode to disable Firestore sync
-            expenseViewModel.isBulkProcessing = true
-            print("DEBUG: 🚫 Firestore sync DISABLED for bulk processing")
-            
-            var totalProcessed = 0
-            
-            // Process banks in order: ICICI → Axis → SBI
-            let banks: [(String, String)] = [
-                ("credit_cards@icicibank.com", "ICICI Bank"),
-                ("cc.statements@axisbank.com", "Axis Bank")
-            ]
-            let providers: [EmailServiceManager.EmailProvider] = [.outlook, .gmail]
-            
-            for (bankEmail, bankName) in banks {
-                for provider in providers {
-                    let providerName = provider == .outlook ? "Outlook" : "Gmail"
-                    billLoadingProgress = "📧 Checking \(bankName) from \(providerName)..."
-                    print("DEBUG: Checking \(bankName) via \(providerName)...")
-                    
-                    // Temporarily switch to this provider
-                    let originalProvider = EmailServiceManager.shared.preferredProvider
-                    EmailServiceManager.shared.preferredProvider = provider
-                    
-                    defer {
-                        EmailServiceManager.shared.preferredProvider = originalProvider
-                    }
-                    
-                    let emailService = EmailServiceManager.shared.getEmailService()
-                    
-                    // Fetch emails with timeout
-                    guard let emails = await withTimeout(seconds: 120, operation: {
-                        try await emailService.fetchEmails(from: bankEmail)
-                    }) else {
-                        billLoadingProgress = "⏰ \(bankName) from \(providerName) timed out"
-                        print("DEBUG: \(bankName) via \(providerName) timed out")
-                        try? await Task.sleep(nanoseconds: 1_000_000_000) // Show message for 1 second
-                        continue
-                    }
-                    
-                    print("DEBUG: Found \(emails.count) emails from \(bankName) via \(providerName)")
-                    billLoadingProgress = "📨 Found \(emails.count) emails from \(bankName) (\(providerName))"
-                    
-                    if emails.isEmpty {
-                        billLoadingProgress = "📭 No emails found from \(bankName) (\(providerName))"
-                        print("DEBUG: No emails found from \(bankName) via \(providerName)")
-                        try? await Task.sleep(nanoseconds: 1_000_000_000) // Show message for 1 second
-                        continue
-                    }
-                    
-                    billLoadingProgress = "📎 Processing \(emails.count) emails from \(bankName)..."
-                    
-                    // Sort emails by date (oldest first, newest last) so latest statement sets final balance
-                    let sortedEmails = emails.sorted { email1, email2 in
-                        guard let date1 = ISO8601DateFormatter().date(from: email1.receivedDateTime),
-                              let date2 = ISO8601DateFormatter().date(from: email2.receivedDateTime) else {
-                            return false
-                        }
-                        return date1 < date2 // oldest first
-                    }
-                    
-                    print("DEBUG: Processing \(sortedEmails.count) emails in chronological order (oldest first)")
-                    billLoadingProgress = "📅 Sorted \(sortedEmails.count) emails chronologically for \(bankName)..."
-                    
-                    // Process all emails in chronological order (oldest first, newest last)
-                    for (index, email) in sortedEmails.enumerated() {
-                        billLoadingProgress = "📎 Processing email \(index + 1)/\(sortedEmails.count) from \(bankName)..."
-                        
-                        guard let attachments = await withTimeout(seconds: 60, operation: {
-                            try await emailService.fetchAttachments(for: email.id)
-                        }) else {
-                            continue
-                        }
-                        
-                        let pdfAttachments = attachments.filter { attachment in
-                            attachment.contentType?.lowercased().contains("pdf") == true ||
-                            attachment.name?.lowercased().hasSuffix(".pdf") == true
-                        }
-                        
-                        for attachment in pdfAttachments {
-                            billLoadingProgress = "📄 Processing PDF: \(attachment.name ?? "Statement") from \(bankName)..."
-                            
-                            if let pdfDataOptional = await withTimeout(seconds: 120, operation: {
-                                try await emailService.downloadAttachment(messageId: email.id, attachmentId: attachment.id)
-                            }), let pdfData = pdfDataOptional {
-                                await processPDFStatement(
-                                    pdfData: pdfData,
-                                    pdfFileName: attachment.name ?? "\(bankName)_Statement.pdf",
-                                    email: email
-                                )
-                                totalProcessed += 1
-                                billLoadingProgress = "✅ Processed \(totalProcessed) statements so far..."
-                                
-                                // CRITICAL: Clear memory after each PDF to prevent crash
-                                autoreleasepool {
-                                    // Force memory cleanup
-                                    print("DEBUG: 🧹 Clearing memory after processing statement")
-                                }
-                                
-                                // Small delay to allow memory cleanup
-                                try? await Task.sleep(nanoseconds: 500_000_000) // 0.5 seconds
-                            }
-                        }
-                    }
-                }
-            }
-            
-            // Finally, process SBI Card statements (last in order)
-            billLoadingProgress = "🏦 Processing SBI Card statements..."
-            print("DEBUG: 🏦 Starting SBI Card processing (last)")
-            let sbiProcessed = await SBICARDManager.shared.processStatements(
-                viewModel: expenseViewModel,
-                progressCallback: { progress in
-                    DispatchQueue.main.async {
-                        self.billLoadingProgress = progress
-                    }
-                }
-            )
-            totalProcessed += sbiProcessed
-            print("DEBUG: ✅ SBI Card processing complete - \(sbiProcessed) statements")
-            
-            // CRITICAL: Re-enable Firestore sync after bulk processing
-            expenseViewModel.isBulkProcessing = false
-            print("DEBUG: ✅ Firestore sync RE-ENABLED")
-            
-            // Now do a single efficient bulk sync to Firestore
-            billLoadingProgress = "☁️ Syncing to cloud..."
-            print("DEBUG: ☁️ Performing single bulk sync to Firestore...")
-            await expenseViewModel.performBulkSync()
-            
-            if totalProcessed > 0 {
-                billLoadingProgress = "✅ Completed! Processed \(totalProcessed) statements"
-                print("DEBUG: ✅ Bill loading complete - processed \(totalProcessed) new statements")
-                expenseViewModel.fetchAccounts()
-                
-                // Run automatic bill payment detection after successful loading
-                billLoadingProgress = "🔍 Detecting automatic bill payments..."
-                expenseViewModel.detectAndProcessBillPayments()
-                
-                errorMessage = "✅ Successfully loaded \(totalProcessed) credit card statements"
-            } else {
-                billLoadingProgress = "ℹ️ No new statements found"
-                print("DEBUG: ℹ️ Bill loading complete - no new statements found")
-                errorMessage = "ℹ️ No new credit card statements found"
-            }
-            
-            try? await Task.sleep(nanoseconds: 2_000_000_000) // Show final message for 2 seconds
-            showingError = true
-            
-        } catch {
-            // Re-enable sync even on error
-            expenseViewModel.isBulkProcessing = false
-            
-            billLoadingProgress = "❌ Error occurred"
-            print("DEBUG: Error loading credit card bills: \(error)")
-            errorMessage = "❌ Error loading bills: \(error.localizedDescription)"
-            showingError = true
-        }
-    }
-    
-    private func loadCreditCardBills() {
-        Task {
-            await loadCreditCardBillsIncremental()
-        }
-    }
-    
-    @MainActor
-    private func loadCreditCardBillsIncremental() async {
-        isLoadingBills = true
-        isIncrementalCheck = true
-        billLoadingProgress = "🔍 Checking for new statements..."
-        
-        defer {
-            isLoadingBills = false
-            isIncrementalCheck = false
-            billLoadingProgress = ""
-        }
-        
-        do {
-            print("DEBUG: 🚀 Starting incremental credit card bill check")
-            
-            var totalNewStatements = 0
-            
-            // Skip SBI processing in incremental check - will be done in full check if needed
-            
-            // Check if it's time for a full check (every 15 days)
-            let shouldDoFullCheck = shouldPerformFullCheck()
-            
-            if shouldDoFullCheck {
-                print("DEBUG: 📅 Performing full check (15+ days since last full check)")
-                billLoadingProgress = "📅 Full check - scanning for new cards..."
-                await performFullCreditCardCheck()
-                lastFullCheck = Date()
-                UserDefaults.standard.set(lastFullCheck, forKey: "lastFullCreditCardCheck")
-                return
-            }
-            
-            // Get existing credit card accounts and their latest statement dates
-            let creditCardAccounts = expenseViewModel.accounts.filter { 
-                $0.accountType == AccountType.creditCard.rawValue 
-            }
-            
-            if creditCardAccounts.isEmpty {
-                print("DEBUG: 📭 No credit card accounts found, performing full check")
-                billLoadingProgress = "📭 No cards found - full scan..."
-                await performFullCreditCardCheck()
-                return
-            }
-            
-            // Check if we're missing expected banks (Axis, ICICI, SBI) - if so, do full check
-            let hasAxisBank = creditCardAccounts.contains { $0.wrappedAccountName.lowercased().contains("axis") }
-            let hasICICIBank = creditCardAccounts.contains { $0.wrappedAccountName.lowercased().contains("icici") }
-            let hasSBICard = creditCardAccounts.contains { $0.wrappedAccountName.lowercased().contains("sbi") }
-            
-            // If banks are missing, always do full check (regardless of time since last check)
-            if !hasAxisBank || !hasICICIBank || !hasSBICard {
-                print("DEBUG: 🔍 Missing expected banks (ICICI: \(hasICICIBank), Axis: \(hasAxisBank), SBI: \(hasSBICard)) - performing full check")
-                billLoadingProgress = "🔍 Scanning for missing banks..."
-                await performFullCreditCardCheck()
-                lastFullCheck = Date()
-                UserDefaults.standard.set(lastFullCheck, forKey: "lastFullCreditCardCheck")
-                return
-            }
-            
-            // Check each existing card for new statements
-            for account in creditCardAccounts {
-                let latestStatementDate = getLatestStatementDate(for: account)
-                let bankEmail = getBankEmailFromAccount(account)
-                let bankName = getBankNameFromAccount(account)
-                
-                print("DEBUG: 🏦 Checking \(account.wrappedAccountName) - Latest: \(latestStatementDate)")
-                billLoadingProgress = "📧 Checking \(bankName) for new statements..."
-                
-                let newStatementsCount = await checkForNewStatements(
-                    account: account,
-                    bankEmail: bankEmail,
-                    bankName: bankName,
-                    since: latestStatementDate
-                )
-                
-                totalNewStatements += newStatementsCount
-            }
-            
-            if totalNewStatements > 0 {
-                billLoadingProgress = "✅ Found \(totalNewStatements) new statements"
-                print("DEBUG: ✅ Incremental check complete - \(totalNewStatements) new statements processed")
-                
-                // Run automatic bill payment detection after finding new statements
-                billLoadingProgress = "🔍 Detecting automatic bill payments..."
-                expenseViewModel.detectAndProcessBillPayments()
-            } else {
-                billLoadingProgress = "✅ All statements up to date"
-                print("DEBUG: ✅ Incremental check complete - no new statements")
-            }
-            
-            // Show result for 2 seconds
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
-            
-        } catch {
-            print("DEBUG: ❌ Error in incremental check: \(error)")
-            billLoadingProgress = "❌ Error checking statements"
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
-        }
-    }
-    
-    @MainActor
-    private func withTimeout<T>(seconds: TimeInterval, operation: @escaping () async throws -> T) async -> T? {
-        return await withTaskGroup(of: T?.self) { group in
-            // Add the main operation
-            group.addTask {
-                do {
-                    return try await operation()
-                } catch {
-                    print("DEBUG: Operation failed with error: \(error)")
-                    return nil
-                }
-            }
-            
-            // Add timeout task
-            group.addTask {
-                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
-                print("DEBUG: Operation timed out after \(seconds) seconds")
-                return nil
-            }
-            
-            // Return the first completed task result
-            let result = await group.next()
-            group.cancelAll() // Cancel remaining tasks
-            return result ?? nil
-        }
-    }
-    
-    @MainActor
-    private func processPDFStatement(pdfData: Data, pdfFileName: String, email: EmailMessage) async {
-        print("DEBUG: Starting PDF processing for: \(pdfFileName)")
-        
-        // Wrap entire processing in error handling to prevent crashes
-        do {
-            // Save PDF temporarily
-            let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(pdfFileName)
-            try pdfData.write(to: tempURL)
-            print("DEBUG: Saved PDF to temp location: \(tempURL.path)")
-            
-            // Parse PDF with timeout
-            let parser = PDFTransactionParser.shared
-            
-            // Add timeout for PDF parsing (60 seconds)
-            let timeoutResult = await withTimeout(seconds: 60, operation: {
-                return parser.parsePDF(at: tempURL)
-            })
-            
-            // Handle double optional: withTimeout returns T?, and parsePDF returns CreditCardBillInfo?
-            guard let optionalBillInfo = timeoutResult, let billInfo = optionalBillInfo else {
-                print("DEBUG: Failed to parse PDF or parsing timed out: \(pdfFileName)")
-                // Clean up temp file
-                try? FileManager.default.removeItem(at: tempURL)
-                return
-            }
-            
-            print("DEBUG: Successfully parsed PDF: \(pdfFileName) - Found \(billInfo.transactions.count) transactions")
-            
-            // Check if this bill already exists before processing
-            let accountName = "\(billInfo.bankName) ****\(billInfo.cardNumber)"
-            let existingAccount = expenseViewModel.accounts.first(where: { account in
-                account.wrappedAccountName == accountName && account.wrappedAccountType == AccountType.creditCard
-            })
-            
-            if let existing = existingAccount {
-                let dateFormatter = ISO8601DateFormatter()
-                let statementKey = "statement_\(dateFormatter.string(from: billInfo.statementDate))"
-                let metadata = existing.metadataDictionary
-                
-                if metadata.keys.contains(statementKey) {
-                    print("DEBUG: ⏭️ Bill already exists for \(accountName) - Statement: \(billInfo.statementDate)")
-                    print("DEBUG: ⏭️ Skipping duplicate bill processing")
-                    try? FileManager.default.removeItem(at: tempURL)
-                    return
-                }
-            }
-            
-            let dateFormatter = ISO8601DateFormatter()
-            
-            let creditCardAccount: CDAccount
-            if let existing = existingAccount {
-                creditCardAccount = existing
-                print("DEBUG: Using existing account: \(accountName)")
-            } else {
-                // Create new account
-                creditCardAccount = CDAccount(context: expenseViewModel.viewContext)
-                creditCardAccount.id = UUID()
-                creditCardAccount.accountName = accountName
-                creditCardAccount.accountType = AccountType.creditCard.rawValue
-                creditCardAccount.balance = -billInfo.totalAmount // Use current usage for account balance
-                creditCardAccount.creditLimit = billInfo.creditLimit ?? 0
-                
-                print("DEBUG: ✅ Created new account: \(accountName)")
-            }
-            
-            // Save the account first with batching to reduce Firestore writes
-            try expenseViewModel.performBatchedSave()
-            expenseViewModel.viewContext.refresh(creditCardAccount, mergeChanges: true)
-            
-            // Add all transactions from this bill
-            for transaction in billInfo.transactions {
-                let existingTransaction = creditCardAccount.transactionsArray.first(where: { cdTransaction in
-                    abs(cdTransaction.amount - transaction.amount) < 0.01 &&
-                    Calendar.current.isDate(cdTransaction.wrappedDate, inSameDayAs: transaction.date) &&
-                    cdTransaction.wrappedNotes.contains(transaction.description)
-                })
-                
-                if existingTransaction == nil {
-                    // Check if this is a payment transaction (should be filtered out)
-                    let isPayment = isPaymentTransaction(transaction.description)
-                    
-                    if isPayment {
-                        print("DEBUG: 🚫 Skipping payment transaction: \(transaction.description) - ₹\(transaction.amount)")
-                        continue
-                    }
-                    
-                    // Re-fetch the account in viewContext
-                    let accountInViewContext = expenseViewModel.viewContext.object(with: creditCardAccount.objectID) as! CDAccount
-                    
-                    // Add CC tag to all credit card transactions
-                    let ccTaggedNotes = "[CC] \(transaction.description)"
-                    
-                    expenseViewModel.addTransaction(
-                        amount: transaction.amount,
-                        category: TransactionCategory(rawValue: transaction.category),
-                        isCredit: false,
-                        account: accountInViewContext,
-                        notes: ccTaggedNotes,
-                        date: transaction.date
-                    )
-                    
-                    print("DEBUG: ✅ Added transaction: \(transaction.description) - ₹\(transaction.amount)")
-                }
-            }
-            
-            // Update balance ONLY if this statement is newer than the last one
-            let finalAccount = expenseViewModel.viewContext.object(with: creditCardAccount.objectID) as! CDAccount
-            let metadata = finalAccount.metadataDictionary
-            
-            var shouldUpdateBalance = true
-            if let lastStatementDateString = metadata["lastStatementDate"],
-               let lastStatementDate = dateFormatter.date(from: lastStatementDateString) {
-                // Only update if this statement is newer or same date
-                shouldUpdateBalance = billInfo.statementDate >= lastStatementDate
-                print("DEBUG: Last statement: \(lastStatementDate), Current: \(billInfo.statementDate), Will update: \(shouldUpdateBalance)")
-            }
-            
-            if shouldUpdateBalance {
-                finalAccount.balance = -billInfo.totalAmount // Use current usage for account balance
-                print("DEBUG: ✅ Updated account balance to: ₹\(billInfo.totalAmount)")
-            } else {
-                print("DEBUG: ⏭️ Skipped balance update - older statement")
-            }
-            
-            // Save bill metadata for UI display
-            saveBillMetadata(account: finalAccount, billInfo: billInfo, pdfFileName: pdfFileName)
-            
-            // Save context with batching to reduce Firestore writes
-            try expenseViewModel.performBatchedSave()
-            
-            // Force sync after processing is complete
-            expenseViewModel.forceSyncPendingSaves()
-            
-            print("DEBUG: Processed \(billInfo.bankName) ****\(billInfo.cardNumber): \(billInfo.transactions.count) transactions")
-            
-            // Clean up temp file
-            try? FileManager.default.removeItem(at: tempURL)
-            
-            // Force memory cleanup
-            autoreleasepool {
-                print("DEBUG: 🧹 Memory cleanup after processing \(pdfFileName)")
-            }
-            
-        } catch {
-            print("DEBUG: ❌ Error processing PDF \(pdfFileName): \(error.localizedDescription)")
-            // Try to clean up temp file even on error
-            let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(pdfFileName)
-            try? FileManager.default.removeItem(at: tempURL)
-        }
-    }
-    
-    // Helper function to detect payment transactions
-    private func isPaymentTransaction(_ description: String) -> Bool {
-        let paymentKeywords = [
-            "BBPS PAYMENT", "PAYMENT RECEIVED", "PAYMENT THANK YOU",
-            "CREDIT RECEIVED", "AMOUNT RECEIVED", "PAYMENT PROCESSED",
-            "ONLINE PAYMENT", "NEFT PAYMENT", "RTGS PAYMENT", "UPI PAYMENT",
-            "IMPS PAYMENT", "CHEQUE PAYMENT", "CASH PAYMENT", "AUTOPAY",
-            "REFUND", "REVERSAL", "CASHBACK", "REWARD POINTS"
-        ]
-        
-        let upperDescription = description.uppercased()
-        return paymentKeywords.contains { upperDescription.contains($0) }
-    }
-    
-    // Helper function to save bill metadata for UI display
-    private func saveBillMetadata(account: CDAccount, billInfo: CreditCardBillInfo, pdfFileName: String) {
-        var metadata = account.metadataDictionary
-        let dateFormatter = ISO8601DateFormatter()
-        
-        // Create a unique key for this statement
-        let statementKey = "statement_\(dateFormatter.string(from: billInfo.statementDate))"
-        
-        // Check if bill already exists and preserve paid status
-        var existingPaidStatus: String?
-        var existingPaidDate: String?
-        
-        if let existingJsonString = metadata[statementKey],
-           let existingJsonData = existingJsonString.data(using: .utf8),
-           let existingBillData = try? JSONSerialization.jsonObject(with: existingJsonData) as? [String: String] {
-            existingPaidStatus = existingBillData["manuallyPaid"]
-            existingPaidDate = existingBillData["paidDate"]
-            print("DEBUG: 📋 Found existing bill - Paid status: \(existingPaidStatus ?? "nil")")
-        }
-        
-        // Create bill data dictionary
-        var billData: [String: String] = [
-            "statementDate": dateFormatter.string(from: billInfo.statementDate),
-            "dueDate": dateFormatter.string(from: billInfo.dueDate),
-            "dueAmount": String(billInfo.dueAmount),
-            "currentUsage": String(billInfo.totalAmount),
-            "creditLimit": String(billInfo.creditLimit ?? 0.0),
-            "bankName": billInfo.bankName,
-            "cardNumber": billInfo.cardNumber,
-            "pdfFileName": pdfFileName,
-            "transactionCount": String(billInfo.transactions.count)
-        ]
-        
-        // Preserve existing paid status if it exists
-        if let paidStatus = existingPaidStatus {
-            billData["manuallyPaid"] = paidStatus
-            print("DEBUG: ✅ Preserved paid status: \(paidStatus)")
-        }
-        if let paidDate = existingPaidDate {
-            billData["paidDate"] = paidDate
-            print("DEBUG: ✅ Preserved paid date: \(paidDate)")
-        }
-        
-        // Convert to JSON string
-        if let jsonData = try? JSONSerialization.data(withJSONObject: billData),
-           let jsonString = String(data: jsonData, encoding: .utf8) {
-            metadata[statementKey] = jsonString
-            
-            // Also save the latest statement date for balance update logic
-            if let existingLastDateString = metadata["lastStatementDate"],
-               let existingLastDate = dateFormatter.date(from: existingLastDateString) {
-                // Only update if this statement is newer
-                if billInfo.statementDate >= existingLastDate {
-                    metadata["lastStatementDate"] = dateFormatter.string(from: billInfo.statementDate)
-                }
-            } else {
-                // No previous statement date, save this one
-                metadata["lastStatementDate"] = dateFormatter.string(from: billInfo.statementDate)
-            }
-            
-            // Update account metadata
-            account.metadataDictionary = metadata
-            
-            print("DEBUG: 💾 Saved bill metadata for statement: \(billInfo.statementDate)")
-            print("DEBUG: - Key: \(statementKey)")
-            print("DEBUG: - Due Amount: ₹\(billInfo.dueAmount)")
-            print("DEBUG: - PDF: \(pdfFileName)")
-            let paidStatus = billData["manuallyPaid"] ?? "unpaid"
-            print("DEBUG: - Paid Status: \(paidStatus)")
-            print("DEBUG: - Total metadata keys: \(metadata.keys.count)")
-        } else {
-            print("DEBUG: ❌ Failed to save bill metadata for statement: \(billInfo.statementDate)")
-        }
-    }
-    
-    // MARK: - Incremental Credit Card Processing Helper Methods
-    
-    private func shouldPerformFullCheck() -> Bool {
-        guard let lastCheck = UserDefaults.standard.object(forKey: "lastFullCreditCardCheck") as? Date else {
-            return true // Never done a full check
-        }
-        
-        let daysSinceLastCheck = Calendar.current.dateComponents([.day], from: lastCheck, to: Date()).day ?? 0
-        return daysSinceLastCheck >= 15
-    }
-    
-    private func getLatestStatementDate(for account: CDAccount) -> Date {
-        let metadata = account.metadataDictionary
-        
-        // Look for the latest statement date in metadata
-        if let latestDateString = metadata["latestStatementDate"],
-           let latestDate = ISO8601DateFormatter().date(from: latestDateString) {
-            return latestDate
-        }
-        
-        // Fallback: look through all statement dates and find the latest
-        var latestDate = Calendar.current.date(byAdding: .month, value: -6, to: Date()) ?? Date()
-        
-        for (key, value) in metadata {
-            if key.contains("statementDate") || key.contains("Statement") {
-                if let dateString = value as? String,
-                   let date = ISO8601DateFormatter().date(from: dateString) {
-                    if date > latestDate {
-                        latestDate = date
-                    }
-                }
-            }
-        }
-        
-        return latestDate
-    }
-    
-    private func getBankEmailFromAccount(_ account: CDAccount) -> String {
-        let accountName = account.wrappedAccountName.lowercased()
-        
-        if accountName.contains("axis") {
-            return "cc.statements@axisbank.com"
-        } else if accountName.contains("icici") {
-            return "credit_cards@icicibank.com"
-        } else if accountName.contains("sbi") {
-            return "sbicard.com"
-        }
-        
-        // Default to Axis Bank
-        return "cc.statements@axisbank.com"
-    }
-    
-    private func getBankNameFromAccount(_ account: CDAccount) -> String {
-        let accountName = account.wrappedAccountName.lowercased()
-        
-        if accountName.contains("axis") {
-            return "Axis Bank"
-        } else if accountName.contains("icici") {
-            return "ICICI Bank"
-        } else if accountName.contains("sbi") {
-            return "SBI Card"
-        }
-        
-        return "Unknown Bank"
-    }
-    
-    private func checkForNewStatements(account: CDAccount, bankEmail: String, bankName: String, since: Date) async -> Int {
-        var newStatementsCount = 0
-        
-        let providers: [EmailServiceManager.EmailProvider] = [.outlook, .gmail]
-        
-        for provider in providers {
-            let providerName = provider == .outlook ? "Outlook" : "Gmail"
-            print("DEBUG: 🔍 Checking \(bankName) via \(providerName) since \(since)")
-            
-            // Temporarily switch to this provider
-            let originalProvider = EmailServiceManager.shared.preferredProvider
-            EmailServiceManager.shared.preferredProvider = provider
-            
-            defer {
-                EmailServiceManager.shared.preferredProvider = originalProvider
-            }
-            
-            let emailService = EmailServiceManager.shared.getEmailService()
-            
-            // Fetch emails with timeout
-            guard let emails = await withTimeout(seconds: 60, operation: {
-                try await emailService.fetchEmails(from: bankEmail)
-            }) else {
-                print("DEBUG: ⏰ \(bankName) via \(providerName) timed out")
-                continue
-            }
-            
-            // Filter emails to only those newer than the latest statement date
-            let newEmails = emails.filter { email in
-                guard let emailDate = ISO8601DateFormatter().date(from: email.receivedDateTime) else {
-                    return false
-                }
-                return emailDate > since
-            }
-            
-            print("DEBUG: 📧 Found \(newEmails.count) new emails from \(bankName) via \(providerName)")
-            
-            if newEmails.isEmpty {
-                continue
-            }
-            
-            // Process new emails
-            for email in newEmails {
-                guard let attachments = await withTimeout(seconds: 30, operation: {
-                    try await emailService.fetchAttachments(for: email.id)
-                }) else {
-                    continue
-                }
-                
-                let pdfAttachments = attachments.filter { attachment in
-                    attachment.contentType?.lowercased().contains("pdf") == true ||
-                    attachment.name?.lowercased().hasSuffix(".pdf") == true
-                }
-                
-                for attachment in pdfAttachments {
-                    if let pdfDataOptional = await withTimeout(seconds: 60, operation: {
-                        try await emailService.downloadAttachment(messageId: email.id, attachmentId: attachment.id)
-                    }), let pdfData = pdfDataOptional {
-                        await processPDFStatement(
-                            pdfData: pdfData,
-                            pdfFileName: attachment.name ?? "\(bankName)_Statement.pdf",
-                            email: email
-                        )
-                        newStatementsCount += 1
-                        
-                        // Update the latest statement date for this account
-                        await updateLatestStatementDate(for: account, email: email)
-                    }
-                }
-            }
-        }
-        
-        return newStatementsCount
-    }
-    
-    private func updateLatestStatementDate(for account: CDAccount, email: EmailMessage) async {
-        guard let emailDate = ISO8601DateFormatter().date(from: email.receivedDateTime) else {
-            return
-        }
-        
-        var metadata = account.metadataDictionary
-        metadata["latestStatementDate"] = ISO8601DateFormatter().string(from: emailDate)
-        
-        // Save updated metadata
-        if let jsonData = try? JSONSerialization.data(withJSONObject: metadata) {
-            account.metadata = jsonData
-            
-            do {
-                try expenseViewModel.viewContext.save()
-                print("DEBUG: ✅ Updated latest statement date for \(account.wrappedAccountName)")
-            } catch {
-                print("DEBUG: ❌ Failed to save latest statement date: \(error)")
-            }
-        }
-    }
-    
-    @MainActor
-    private func performFullCreditCardCheck() async {
-        // This is the original full check method
-        await loadCreditCardBills()
-    }
 }
+
+// MARK: - Supporting Views
 
 struct CollapsibleSection<Content: View>: View {
     let title: String
@@ -1347,34 +678,11 @@ struct CollapsibleSection<Content: View>: View {
     
     var body: some View {
         Section {
-            // Header Button
-            Button(action: {
-                withAnimation(.easeInOut(duration: 0.3)) {
-                    isExpanded.toggle()
-                }
-            }) {
-                HStack {
-                    Image(systemName: icon)
-                        .foregroundColor(.blue)
-                        .frame(width: 20)
-                    
-                    Text(title)
-                        .font(.headline)
-                        .foregroundColor(.primary)
-                    
-                    Spacer()
-                    
-                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                        .foregroundColor(.secondary)
-                        .font(.system(size: 12, weight: .medium))
-                }
-                .padding(.vertical, 4)
-            }
-            .buttonStyle(PlainButtonStyle())
-            
-            // Collapsible Content
-            if isExpanded {
+            DisclosureGroup(isExpanded: $isExpanded) {
                 content
+            } label: {
+                Label(title, systemImage: icon)
+                    .font(.headline)
             }
         }
     }
@@ -1382,38 +690,40 @@ struct CollapsibleSection<Content: View>: View {
 
 struct ProfileButtonView: View {
     @EnvironmentObject var authManager: AuthenticationManager
+    @Binding var showingProfile: Bool
     
     var body: some View {
-        ZStack {
-            Circle()
-                .fill(Color.blue.opacity(0.1))
-                .frame(width: 32, height: 32)
-            
-            if let user = authManager.currentUser {
-                if user.isGuest {
-                    Image(systemName: "person.fill")
-                        .font(.system(size: 16))
-                        .foregroundColor(.blue)
-                } else {
-                    Text(initials)
+        Button(action: {
+            showingProfile = true
+        }) {
+            if authManager.isAuthenticated, let user = authManager.currentUser {
+                // Show user initials
+                ZStack {
+                    Circle()
+                        .fill(Color.blue)
+                        .frame(width: 32, height: 32)
+                    
+                    Text(getUserInitials())
                         .font(.system(size: 14, weight: .semibold))
-                        .foregroundColor(.blue)
+                        .foregroundColor(.white)
                 }
             } else {
+                // Show guest icon
                 Image(systemName: "person.circle")
-                    .font(.system(size: 16))
+                    .font(.system(size: 28))
                     .foregroundColor(.blue)
             }
         }
     }
     
-    private var initials: String {
+    private func getUserInitials() -> String {
         guard let user = authManager.currentUser else { return "" }
         let first = user.firstName?.first?.uppercased() ?? ""
         let last = user.lastName?.first?.uppercased() ?? ""
         return first + last
     }
 }
+
 
 struct ExpenseDataDocument: FileDocument {
     let viewModel: ExpenseViewModel

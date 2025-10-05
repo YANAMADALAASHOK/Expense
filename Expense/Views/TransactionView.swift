@@ -10,6 +10,7 @@ struct TransactionView: View {
     @State private var selectedTransactionType: TransactionType?
     @State private var selectedCategoryFilter: String? = nil
     @State private var selectedSubcategoryFilter: String? = nil
+    @State private var selectedAccountFilter: CDAccount? = nil
     @State private var showingFilter = false
     @State private var searchKeywords: String = ""
     
@@ -159,6 +160,14 @@ struct TransactionView: View {
                 NavigationView {
                     Form {
                         Section("Filter") {
+                            // Account Filter
+                            Picker("Account", selection: $selectedAccountFilter) {
+                                Text("All Accounts").tag(nil as CDAccount?)
+                                ForEach(viewModel.accounts, id: \.id) { account in
+                                    Text(account.wrappedAccountName).tag(account as CDAccount?)
+                                }
+                            }
+                            
                             Picker("Category", selection: Binding(
                                 get: { selectedCategoryFilter ?? "All" },
                                 set: { selectedCategoryFilter = $0 == "All" ? nil : $0; selectedSubcategoryFilter = nil }
@@ -186,9 +195,10 @@ struct TransactionView: View {
                                 .textInputAutocapitalization(.never)
                                 .autocorrectionDisabled(true)
                         }
-                        if selectedCategoryFilter != nil || !searchKeywords.trimmingCharacters(in: .whitespaces).isEmpty {
+                        if selectedAccountFilter != nil || selectedCategoryFilter != nil || !searchKeywords.trimmingCharacters(in: .whitespaces).isEmpty {
                             Section {
                                 Button("Clear Filters") {
+                                    selectedAccountFilter = nil
                                     selectedCategoryFilter = nil
                                     selectedSubcategoryFilter = nil
                                     searchKeywords = ""
@@ -211,6 +221,11 @@ struct TransactionView: View {
         
         // Filter out 0 amount transactions
         items = items.filter { $0.amount > 0 }
+        
+        // Filter by account
+        if let accountFilter = selectedAccountFilter {
+            items = items.filter { $0.account == accountFilter }
+        }
         
         if let filter = selectedCategoryFilter {
             items = items.filter { txn in

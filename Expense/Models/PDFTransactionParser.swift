@@ -16,9 +16,11 @@ struct CreditCardBillInfo {
     let cardNumber: String
     let statementDate: Date
     let dueDate: Date
-    let totalAmount: Double // Current usage/balance
+    let totalAmount: Double // Total amount due
     let dueAmount: Double // Amount due to be paid
     let creditLimit: Double?
+    let currentUsage: Double? // Calculated: Credit Limit - Available Limit
+    let availableLimit: Double? // Available credit limit
     let transactions: [CreditCardTransaction]
 }
 
@@ -141,6 +143,7 @@ class PDFTransactionParser {
             return parseSBICardStatement(fullText)
         }
         
+        // For other banks, use standard extraction
         let fullText = quickText
         print("Extracted PDF text (\(fullText.count) characters)")
         
@@ -326,6 +329,8 @@ class PDFTransactionParser {
             totalAmount: 5750.00, // Current usage
             dueAmount: 4200.00, // Amount due to be paid (different from usage)
             creditLimit: 100000.00,
+            currentUsage: nil,
+            availableLimit: nil,
             transactions: sampleTransactions
         )
         
@@ -578,6 +583,8 @@ class PDFTransactionParser {
             totalAmount: currentUsage, // Current usage/balance
             dueAmount: dueAmount, // Amount due to be paid
             creditLimit: creditLimit,
+            currentUsage: currentUsage > 0 ? currentUsage : nil,
+            availableLimit: availableCreditLimit,
             transactions: transactions
         )
     }
@@ -608,8 +615,8 @@ class PDFTransactionParser {
             print("DEBUG: ICICI - Found card number: \(cardNumber)")
         }
         
-        // Extract statement date
-        let statementDate = extractStatementDate(from: text) ?? Date()
+        // Extract statement date - ICICI format is different from Axis
+        let statementDate = extractICICIStatementDate(from: text) ?? Date()
         
         // Extract due date
         var dueDate = extractDueDate(from: text) ?? Calendar.current.date(byAdding: .day, value: 30, to: statementDate) ?? Date()
@@ -887,6 +894,8 @@ class PDFTransactionParser {
             totalAmount: currentUsage > 0 ? currentUsage : totalAmount, // Use current usage for account balance
             dueAmount: totalAmount,   // Use total amount due for bill payment (₹3,818.92)
             creditLimit: creditLimit,
+            currentUsage: currentUsage > 0 ? currentUsage : nil,
+            availableLimit: availableLimit > 0 ? availableLimit : nil,
             transactions: transactions
         )
         
@@ -1784,12 +1793,13 @@ class PDFTransactionParser {
             ])
         ]
         
-        // First, try to find the statement generation date pattern from the actual text
-        // From your PDF: "Statement Generation Date 13,433.58 Dr 11,808.00 Dr 16/08/2025 - 15/09/2025 05/10/2025 15/09/"
+        // PRIORITY: Extract Statement Generation Date (not period start date)
+        // Pattern: "Statement Period start - end duedate generationdate"
+        // Example: "30/08/2024 - 10/12/2024 30/12/2024 10/12/2024"
         let specificPatterns = [
+            "(\\d{2}/\\d{2}/\\d{4})\\s*-\\s*(\\d{2}/\\d{2}/\\d{4})\\s+(\\d{2}/\\d{2}/\\d{4})\\s+(\\d{2}/\\d{2}/\\d{4})", // Full pattern: get generation date (group 4)
             "(\\d{2}/\\d{2}/\\d{4})\\s*-\\s*(\\d{2}/\\d{2}/\\d{4})\\s+(\\d{2}/\\d{2}/\\d{4})\\s+(\\d{2}/\\d{2})/", // Complex pattern
-            "(\\d{2}/\\d{2}/\\d{4})$", // Date at end of line
-            "15/09/2025" // Your specific statement date
+            "(\\d{2}/\\d{2}/\\d{4})$" // Date at end of line
         ]
         
         let dateFormatter = DateFormatter()
@@ -1895,9 +1905,56 @@ class PDFTransactionParser {
         return nil
     }
     
+    private func extractICICIStatementDate(from text: String) -> Date? {
+        // ICICI PDFs have statement date in format "DDMMYYYY_XXXX" near the top
+        // Example: "20092025_8278" means 20/09/2025
+        
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "ddMMyyyy"
+        
+        // Pattern to match DDMMYYYY_digits (e.g., 20092025_8278)
+        let pattern = #"(\d{8})_\d+"#
+        
+        if let regex = try? NSRegularExpression(pattern: pattern, options: []),
+           let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+           let range = Range(match.range(at: 1), in: text) {
+            let dateString = String(text[range])
+            if let date = dateFormatter.date(from: dateString) {
+                print("DEBUG: ICICI - Extracted statement date from format 'DDMMYYYY': \(dateString) -> \(date)")
+                return date
+            }
+        }
+        
+        // Fallback: Try to find "Statement Date" in text
+        let fallbackPatterns = [
+            "Statement Date[:\\s]+(\\d{2}/\\d{2}/\\d{4})",
+            "Statement Generated[:\\s]+(\\d{2}/\\d{2}/\\d{4})",
+            "Generated on[:\\s]+(\\d{2}/\\d{2}/\\d{4})"
+        ]
+        
+        dateFormatter.dateFormat = "dd/MM/yyyy"
+        for pattern in fallbackPatterns {
+            if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive),
+               let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+               let range = Range(match.range(at: 1), in: text) {
+                let dateString = String(text[range])
+                if let date = dateFormatter.date(from: dateString) {
+                    print("DEBUG: ICICI - Extracted statement date from pattern: \(dateString) -> \(date)")
+                    return date
+                }
+            }
+        }
+        
+        print("DEBUG: ICICI - No statement date found")
+        return nil
+    }
+    
     private func extractTotalAmount(from text: String) -> Double? {
         // Axis Bank specific patterns - look for the payment due amount
         let patterns = [
+            // Pattern for "Total Payment Due ... 0.00" or "Total Payment Due ... 21,473.43 Dr"
+            // This handles both paid (0.00) and unpaid (amount Dr) bills from PAYMENT SUMMARY section
+            "Total Payment Due\\s+Minimum Payment Due.*?\\n\\s*([\\d,]+\\.\\d{2})(?:\\s+(?:Dr|Cr))?",
             // Pattern for "21,473.43 Dr" format from Axis Bank statements
             "Total Payment Due[\\s\\S]*?([\\d,]+\\.\\d{2})\\s+Dr",
             "Payment Due[\\s\\S]*?([\\d,]+\\.\\d{2})\\s+Dr",
@@ -2375,6 +2432,11 @@ class PDFTransactionParser {
         // Parse transactions
         var transactions: [CreditCardTransaction] = []
         
+        // Debug: Print sample of text to see actual format
+        print("DEBUG: Sample text for transaction parsing (first 2000 chars):")
+        print(String(text.prefix(2000)))
+        print("DEBUG: ---")
+        
         // NEW APPROACH: SBI Card has dates/descriptions on one line, amounts on next lines
         // First, find the "TRANSACTIONS FOR" section
         var transactionText = text
@@ -2410,6 +2472,7 @@ class PDFTransactionParser {
                     }
                     
                     dateDescPairs.append((date: dateStr, desc: cleanDesc))
+                    print("DEBUG: Date-Desc pair: \(dateStr) | \(cleanDesc.prefix(50))")
                 }
             }
         }
@@ -2432,6 +2495,7 @@ class PDFTransactionParser {
                     let typeStr = nsText.substring(with: match.range(at: 2))
                     
                     amounts.append((amount: amountStr, type: typeStr))
+                    print("DEBUG: Amount: \(amountStr) \(typeStr)")
                 }
             }
         }
@@ -2452,6 +2516,7 @@ class PDFTransactionParser {
                 desc: dateDescPairs[i].desc,
                 amount: debitAmounts[i].amount
             ))
+            print("DEBUG: Matched transaction \(i+1): \(dateDescPairs[i].date) | \(dateDescPairs[i].desc.prefix(30)) | ₹\(debitAmounts[i].amount)")
         }
         
         print("DEBUG: Total potential transactions found: \(allMatches.count)")
@@ -2539,9 +2604,11 @@ class PDFTransactionParser {
             cardNumber: cardNumber,
             statementDate: statementDate,
             dueDate: dueDate,
-            totalAmount: finalCurrentUsage, // Use calculated current usage
+            totalAmount: totalAmount,
             dueAmount: dueAmount,
             creditLimit: creditLimit,
+            currentUsage: finalCurrentUsage,
+            availableLimit: availableLimit,
             transactions: transactions
         )
         
