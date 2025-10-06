@@ -370,7 +370,7 @@ struct EnhancedDashboardView: View {
             }
             
             // Only add if this is truly the latest bill (unpaid)
-            if let latestDate = latestStatementDate, let latestKey = latestBillKey {
+            if let latestDate = latestStatementDate, let _ = latestBillKey {
                 // Check if this is the most recent statement for this account
                 let allDates = billHistoryKeys.compactMap { key -> Date? in
                     guard let statementJsonString = metadata[key],
@@ -1161,7 +1161,7 @@ struct FinancialInsightsView: View {
             if let topCategory = topCategory {
                 let categoryTotal = topCategory.value.reduce(0) { $0 + $1.amount }
                 let percentage = (categoryTotal / totalExpenses) * 100
-                insights.append("Your biggest expense category is \(topCategory.key) at \(String(format: "%.1f", percentage))%")
+                insights.append("Your biggest expense category is \(topCategory.key ?? "Unknown") at \(String(format: "%.1f", percentage))%")
             }
             
             let averageExpense = totalExpenses / Double(expenses.count)

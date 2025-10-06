@@ -23,8 +23,8 @@ class NotificationManager: ObservableObject {
     func requestNotificationPermission() async -> Bool {
         do {
             let granted = try await notificationCenter.requestAuthorization(options: [.alert, .badge, .sound])
-            DispatchQueue.main.async {
-                self.isNotificationsEnabled = granted
+            DispatchQueue.main.async { [weak self] in
+                self?.isNotificationsEnabled = granted
             }
             return granted
         } catch {
@@ -35,8 +35,8 @@ class NotificationManager: ObservableObject {
     
     private func checkNotificationPermission() {
         notificationCenter.getNotificationSettings { settings in
-            DispatchQueue.main.async {
-                self.isNotificationsEnabled = settings.authorizationStatus == .authorized
+            DispatchQueue.main.async { [weak self] in
+                self?.isNotificationsEnabled = settings.authorizationStatus == .authorized
             }
         }
     }

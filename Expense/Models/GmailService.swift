@@ -94,7 +94,8 @@ final class GmailService {
     
     func fetchAttachments(for messageId: String) async throws -> [GmailAttachment] {
         return try await withCheckedThrowingContinuation { continuation in
-            GmailOAuthManager.shared.getValidAccessToken { token in
+            Task { @MainActor in
+                GmailOAuthManager.shared.getValidAccessToken { token in
                 guard let token = token else {
                     continuation.resume(throwing: NSError(domain: "Gmail", code: 401, userInfo: [NSLocalizedDescriptionKey: "Not signed in to Gmail"]))
                     return
@@ -123,6 +124,7 @@ final class GmailService {
                         continuation.resume(throwing: error)
                     }
                 }.resume()
+                }
             }
         }
     }
@@ -131,7 +133,8 @@ final class GmailService {
         return try await withCheckedThrowingContinuation { continuation in
             print("DEBUG: Gmail downloading attachment - MessageID: \(messageId), AttachmentID: \(attachmentId)")
             
-            GmailOAuthManager.shared.getValidAccessToken { token in
+            Task { @MainActor in
+                GmailOAuthManager.shared.getValidAccessToken { token in
                 guard let token = token else {
                     print("DEBUG: Gmail download failed - No access token")
                     continuation.resume(throwing: NSError(domain: "Gmail", code: 401, userInfo: [NSLocalizedDescriptionKey: "Not signed in to Gmail"]))
@@ -185,6 +188,7 @@ final class GmailService {
                         continuation.resume(throwing: error)
                     }
                 }.resume()
+                }
             }
         }
     }
@@ -418,14 +422,13 @@ final class GmailService {
         
         // Extract email address from "Name <email@domain.com>" format
         var emailAddress: GmailMessage.EmailAddress?
-        var fromName: String?
+        var _ = ""  // fromName was never read
         
         if let fromHeader = fromHeader {
             if let emailMatch = fromHeader.range(of: #"<(.+?)>"#, options: .regularExpression) {
                 let email = String(fromHeader[emailMatch]).replacingOccurrences(of: "<", with: "").replacingOccurrences(of: ">", with: "")
                 let name = fromHeader.replacingOccurrences(of: #"\s*<.+?>"#, with: "", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines)
                 emailAddress = GmailMessage.EmailAddress(address: email, name: name.isEmpty ? nil : name)
-                fromName = name.isEmpty ? nil : name
             } else {
                 emailAddress = GmailMessage.EmailAddress(address: fromHeader, name: nil)
             }

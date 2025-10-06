@@ -55,7 +55,7 @@ struct EditCreditCardView: View {
                             Text(bank.displayName).tag(bank)
                         }
                     }
-                    .onChange(of: selectedBank) { _ in
+                    .onChange(of: selectedBank) {
                         // Don't reset card type when bank changes during edit
                     }
                     
@@ -79,7 +79,7 @@ struct EditCreditCardView: View {
                             .padding(8)
                             .background(Color(.systemGray6))
                             .cornerRadius(8)
-                            .onChange(of: cardSection1) { newValue in
+                            .onChange(of: cardSection1) { oldValue, newValue in
                                 if newValue.count > 4 {
                                     cardSection1 = String(newValue.prefix(4))
                                 }
@@ -93,7 +93,7 @@ struct EditCreditCardView: View {
                             .padding(8)
                             .background(Color(.systemGray6))
                             .cornerRadius(8)
-                            .onChange(of: cardSection2) { newValue in
+                            .onChange(of: cardSection2) { oldValue, newValue in
                                 if newValue.count > 4 {
                                     cardSection2 = String(newValue.prefix(4))
                                 }
@@ -107,7 +107,7 @@ struct EditCreditCardView: View {
                             .padding(8)
                             .background(Color(.systemGray6))
                             .cornerRadius(8)
-                            .onChange(of: cardSection3) { newValue in
+                            .onChange(of: cardSection3) { oldValue, newValue in
                                 if newValue.count > 4 {
                                     cardSection3 = String(newValue.prefix(4))
                                 }
@@ -121,7 +121,7 @@ struct EditCreditCardView: View {
                             .padding(8)
                             .background(Color(.systemGray6))
                             .cornerRadius(8)
-                            .onChange(of: cardSection4) { newValue in
+                            .onChange(of: cardSection4) { oldValue, newValue in
                                 if newValue.count > 4 {
                                     cardSection4 = String(newValue.prefix(4))
                                 }
@@ -133,7 +133,7 @@ struct EditCreditCardView: View {
                         TextField("MM", text: $expiryMonth)
                             .keyboardType(.numberPad)
                             .frame(width: 50)
-                            .onChange(of: expiryMonth) { newValue in
+                            .onChange(of: expiryMonth) { oldValue, newValue in
                                 if newValue.count > 2 {
                                     expiryMonth = String(newValue.prefix(2))
                                 }
@@ -144,7 +144,7 @@ struct EditCreditCardView: View {
                         TextField("YY", text: $expiryYear)
                             .keyboardType(.numberPad)
                             .frame(width: 50)
-                            .onChange(of: expiryYear) { newValue in
+                            .onChange(of: expiryYear) { oldValue, newValue in
                                 if newValue.count > 2 {
                                     expiryYear = String(newValue.prefix(2))
                                 }
@@ -160,7 +160,7 @@ struct EditCreditCardView: View {
                         SecureField("CVV", text: $cvv)
                             .keyboardType(.numberPad)
                             .frame(width: 80)
-                            .onChange(of: cvv) { newValue in
+                            .onChange(of: cvv) { oldValue, newValue in
                                 if newValue.count > 3 {
                                     cvv = String(newValue.prefix(3))
                                 }

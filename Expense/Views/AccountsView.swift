@@ -211,7 +211,7 @@ struct AccountsView: View {
                 viewModel.fetchAccounts()
                 updateCachedAccounts() // PERFORMANCE: Initialize cache
             }
-            .onChange(of: viewModel.accounts) { _ in
+            .onChange(of: viewModel.accounts) {
                 updateCachedAccounts() // PERFORMANCE: Update cache only when accounts change
             }
             .sheet(isPresented: $showingAddAccount) {

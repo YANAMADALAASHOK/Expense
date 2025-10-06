@@ -29,7 +29,7 @@ struct EditTransactionView: View {
             _category = State(initialValue: TransactionCategory(rawValue: parent))
             _subcategoryInput = State(initialValue: String(raw[range.upperBound...]))
         } else {
-            _category = State(initialValue: TransactionCategory(rawValue: raw) ?? .other)
+            _category = State(initialValue: TransactionCategory(rawValue: raw))
         }
         _isCredit = State(initialValue: transaction.isCredit)
         _notes = State(initialValue: transaction.wrappedNotes)

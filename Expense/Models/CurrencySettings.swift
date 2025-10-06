@@ -35,19 +35,22 @@ class CurrencySettings: ObservableObject {
     }
     
     func syncToCloud() {
-        guard let userId = AuthenticationManager.shared.currentUser?.id else { return }
+        Task { @MainActor in
+            guard let userId = AuthenticationManager.shared.currentUser?.id else { return }
         
-        db.collection("settings").document(userId).setData([
-            "currency": selectedCurrency.rawValue
-        ], merge: true) { error in
-            if let error = error {
-                print("Error syncing currency settings: \(error)")
+            db.collection("settings").document(userId).setData([
+                "currency": selectedCurrency.rawValue
+            ], merge: true) { error in
+                if let error = error {
+                    print("Error syncing currency settings: \(error)")
+                }
             }
         }
     }
     
     func loadFromCloud() {
-        guard let userId = AuthenticationManager.shared.currentUser?.id else { return }
+        Task { @MainActor in
+            guard let userId = AuthenticationManager.shared.currentUser?.id else { return }
         
         db.collection("settings").document(userId).getDocument { [weak self] document, error in
             if let document = document, document.exists,
@@ -57,6 +60,7 @@ class CurrencySettings: ObservableObject {
                     self?.selectedCurrency = currency
                 }
             }
+        }
         }
     }
 } 

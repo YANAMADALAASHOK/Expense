@@ -93,7 +93,7 @@ struct AddInsurancePolicyView: View {
     private func savePolicy() {
         guard let accountId = selectedAccountId else { return }
         let amount = Double(premiumAmount.replacingOccurrences(of: ",", with: "")) ?? 0
-        var policy = InsurancePolicy(
+        let policy = InsurancePolicy(
             id: initial?.id ?? UUID(),
             name: name.trimmingCharacters(in: .whitespacesAndNewlines),
             premiumAmount: amount,

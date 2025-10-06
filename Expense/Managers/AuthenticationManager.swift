@@ -1,7 +1,8 @@
 import Foundation
-import FirebaseAuth
+@preconcurrency import FirebaseAuth
 import FirebaseFirestore
 
+@MainActor
 class AuthenticationManager: ObservableObject {
     static let shared = AuthenticationManager()
     private let db = Firestore.firestore()
@@ -150,7 +151,7 @@ class AuthenticationManager: ObservableObject {
     
     func signOut() {
         // Sync data before signing out
-        if let userId = currentUser?.id, !currentUser!.isGuest {
+        if let _ = currentUser?.id, !currentUser!.isGuest {
             NotificationCenter.default.post(name: .syncDataToCloud, object: nil)
         }
         

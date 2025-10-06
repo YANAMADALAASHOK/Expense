@@ -183,7 +183,7 @@ struct TransactionView: View {
                 }
             }
             .refreshable {
-                await refreshData()
+                refreshData()
             }
             .sheet(isPresented: $showingAddTransaction) {
                 if let type = selectedTransactionType {

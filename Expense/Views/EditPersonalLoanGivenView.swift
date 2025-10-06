@@ -123,7 +123,7 @@ struct EditPersonalLoanGivenView: View {
     
     private func saveLoan() {
         guard let principal = Double(principalAmount),
-              let rate = Double(interestRate),
+              let _ = Double(interestRate),
               !borrowerName.isEmpty else {
             errorMessage = "Please fill in all required fields"
             showingError = true

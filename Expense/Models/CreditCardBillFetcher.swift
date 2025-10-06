@@ -30,7 +30,7 @@ class CreditCardBillFetcher {
         
         print("DEBUG: Using profile data - Name: \(firstName), DOB: \(dateOfBirth)")
         progressCallback?("Using profile: \(firstName)")
-        guard let metadata = account.metadataDictionary as? [String: String],
+        guard let metadata = account.metadataDictionary as [String: String]?,
               let bankEmail = metadata["emailAddress"] else {
             print("ERROR: No email address found in metadata")
             return []
@@ -185,7 +185,7 @@ class CreditCardBillFetcher {
         var skippedCount = 0
         
         // Re-fetch account in viewContext to ensure proper context management
-        guard let accountInViewContext = try? viewModel.viewContext.object(with: account.objectID) as? CDAccount else {
+        guard let accountInViewContext = viewModel.viewContext.object(with: account.objectID) as? CDAccount else {
             print("DEBUG: ❌ Failed to fetch account in viewContext")
             return
         }
@@ -227,13 +227,13 @@ class CreditCardBillFetcher {
                 print("DEBUG: ⏭️ Skipping duplicate: \(transaction.description) - ₹\(transaction.amount)")
             } else {
                 // Re-fetch account for each transaction to ensure context validity
-                guard let freshAccount = try? viewModel.viewContext.object(with: account.objectID) as? CDAccount else {
+                guard let freshAccount = viewModel.viewContext.object(with: account.objectID) as? CDAccount else {
                     print("DEBUG: ⚠️ Failed to re-fetch account for transaction")
                     continue
                 }
                 
                 // Convert category string to TransactionCategory
-                let transactionCategory = TransactionCategory(rawValue: transaction.category) ?? .other
+                let transactionCategory = TransactionCategory(rawValue: transaction.category)
                 
                 // Create transaction directly WITHOUT adjusting balance
                 // Balance should ONLY come from PDF (Credit Limit - Available Limit)

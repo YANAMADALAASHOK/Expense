@@ -2,6 +2,7 @@ import SwiftUI
 import CoreData
 import FirebaseFirestore
 
+@MainActor
 class ExpenseViewModel: ObservableObject {
     let viewContext: NSManagedObjectContext
     private let db = Firestore.firestore()
@@ -211,10 +212,12 @@ class ExpenseViewModel: ObservableObject {
     /// Perform a single bulk sync to Firestore after processing all statements
     /// This is much more efficient than syncing after each transaction
     func performBulkSync() async {
-        guard let userId = AuthenticationManager.shared.currentUser?.id,
-              !AuthenticationManager.shared.currentUser!.isGuest else { 
-            print("DEBUG: ⏭️ Skipping bulk sync - no authenticated user")
-            return 
+        await MainActor.run {
+            guard let _ = AuthenticationManager.shared.currentUser?.id,
+                  !AuthenticationManager.shared.currentUser!.isGuest else { 
+                print("DEBUG: ⏭️ Skipping bulk sync - no authenticated user")
+                return 
+            }
         }
         
         print("DEBUG: ☁️ Starting bulk sync to Firestore...")
@@ -604,11 +607,13 @@ class ExpenseViewModel: ObservableObject {
         // BATTERY SAVING: Check every 6 hours instead of 1 hour
         // Reduced from 3600 (1 hour) to 21600 (6 hours)
         Timer.scheduledTimer(withTimeInterval: 21600, repeats: true) { [weak self] _ in
-            PerformanceMonitor.shared.measure("Timer: Process EMI/Interest/Insurance") {
-                self?.processDueLoanEMIs()
-                self?.processDueLoanInterest()
-                self?.processDueInsurancePremiums()
-                self?.autoSync() // Check for 3 AM sync opportunity
+            Task { @MainActor in
+                PerformanceMonitor.shared.measure("Timer: Process EMI/Interest/Insurance") {
+                    self?.processDueLoanEMIs()
+                    self?.processDueLoanInterest()
+                    self?.processDueInsurancePremiums()
+                    self?.autoSync() // Check for 3 AM sync opportunity
+                }
             }
         }
     }
@@ -1304,7 +1309,7 @@ class ExpenseViewModel: ObservableObject {
 
         do {
             let content = try String(contentsOf: url, encoding: .utf8)
-            var lines = content.components(separatedBy: .newlines)
+            let lines = content.components(separatedBy: .newlines)
                 .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
             guard !lines.isEmpty else { completion(.success(0)); return }
 
@@ -2233,7 +2238,7 @@ class ExpenseViewModel: ObservableObject {
             isCredit: item.isCredit,
             notes: notes
         )
-        let finalCategory = TransactionCategory(rawValue: aiSuggested) ?? .other
+        let finalCategory = TransactionCategory(rawValue: aiSuggested)
         addTransaction(
             amount: item.amount,
             category: finalCategory,
@@ -2355,11 +2360,11 @@ class ExpenseViewModel: ObservableObject {
             // Clear existing data
             let fetchRequest: NSFetchRequest<NSFetchRequestResult> = NSFetchRequest(entityName: "CDAccount")
             let deleteRequest = NSBatchDeleteRequest(fetchRequest: fetchRequest)
-            try? viewContext.execute(deleteRequest)
+            _ = try? viewContext.execute(deleteRequest)
             
             let transactionsFetchRequest: NSFetchRequest<NSFetchRequestResult> = NSFetchRequest(entityName: "CDTransaction")
             let deleteTransactionsRequest = NSBatchDeleteRequest(fetchRequest: transactionsFetchRequest)
-            try? viewContext.execute(deleteTransactionsRequest)
+            _ = try? viewContext.execute(deleteTransactionsRequest)
             
             // Create accounts dictionary for lookup
             var accountsDict: [UUID: CDAccount] = [:]
@@ -2767,53 +2772,55 @@ class ExpenseViewModel: ObservableObject {
                 }
             }
             // Update mutual funds
-            var updated = false
-            for account in self.accounts where account.accountType == AccountType.mutualFund.rawValue {
-                var metadata = account.metadataDictionary
-                // Units can be stored in metadata["units"] if available; else fall back to creditLimit
-                let units: Double = {
-                    if let uStr = metadata["units"], let u = Double(uStr) { return u }
-                    return account.creditLimit
-                }()
-                // Resolve scheme code and NAV
-                var resolvedCode: String? = metadata["amfiSchemeCode"]
-                var nav: Double? = nil
-                var navDate: String = ""
-                if let code = resolvedCode, let found = navs[code] {
-                    nav = found
-                } else {
-                    let key = account.wrappedAccountName.lowercased()
-                    if let tuple = nameIndex[key] {
-                        resolvedCode = tuple.code
-                        nav = tuple.nav
-                        navDate = tuple.date
-                    } else if let match = nameIndex.first(where: { key.contains($0.key) || $0.key.contains(key) }) {
-                        resolvedCode = match.value.code
-                        nav = match.value.nav
-                        navDate = match.value.date
+            Task { @MainActor in
+                var updated = false
+                for account in self.accounts where account.accountType == AccountType.mutualFund.rawValue {
+                    var metadata = account.metadataDictionary
+                    // Units can be stored in metadata["units"] if available; else fall back to creditLimit
+                    let units: Double = {
+                        if let uStr = metadata["units"], let u = Double(uStr) { return u }
+                        return account.creditLimit
+                    }()
+                    // Resolve scheme code and NAV
+                    var resolvedCode: String? = metadata["amfiSchemeCode"]
+                    var nav: Double? = nil
+                    var navDate: String = ""
+                    if let code = resolvedCode, let found = navs[code] {
+                        nav = found
+                    } else {
+                        let key = account.wrappedAccountName.lowercased()
+                        if let tuple = nameIndex[key] {
+                            resolvedCode = tuple.code
+                            nav = tuple.nav
+                            navDate = tuple.date
+                        } else if let match = nameIndex.first(where: { key.contains($0.key) || $0.key.contains(key) }) {
+                            resolvedCode = match.value.code
+                            nav = match.value.nav
+                            navDate = match.value.date
+                        }
+                    }
+                    // Apply updates and persist metadata so UI can show code and timestamps
+                    if let nav = nav {
+                        let newValue = nav * units
+                        if abs(account.balance - newValue) > 0.0001 { // lower threshold
+                            account.balance = newValue
+                            updated = true
+                        }
+                        if let code = resolvedCode { metadata["amfiSchemeCode"] = code }
+                        metadata["lastNAV"] = String(nav)
+                        if !navDate.isEmpty { metadata["lastNAVDate"] = navDate }
+                        metadata["lastNAVUpdateAt"] = ISO8601DateFormatter().string(from: Date())
+                        account.metadataDictionary = metadata
                     }
                 }
-                // Apply updates and persist metadata so UI can show code and timestamps
-                if let nav = nav {
-                    let newValue = nav * units
-                    if abs(account.balance - newValue) > 0.0001 { // lower threshold
-                        account.balance = newValue
-                        updated = true
-                    }
-                    if let code = resolvedCode { metadata["amfiSchemeCode"] = code }
-                    metadata["lastNAV"] = String(nav)
-                    if !navDate.isEmpty { metadata["lastNAVDate"] = navDate }
-                    metadata["lastNAVUpdateAt"] = ISO8601DateFormatter().string(from: Date())
-                    account.metadataDictionary = metadata
+                if updated {
+                    self.saveContext()
+                    let now = Date()
+                    self.lastNAVUpdateAt = now
+                    UserDefaults.standard.set(now, forKey: "LastNAVUpdateAt")
                 }
+                DispatchQueue.main.async { completion?(updated) }
             }
-            if updated {
-                self.saveContext()
-                let now = Date()
-                self.lastNAVUpdateAt = now
-                UserDefaults.standard.set(now, forKey: "LastNAVUpdateAt")
-            }
-            DispatchQueue.main.async { completion?(updated) }
         }
         task.resume()
     }
@@ -2829,7 +2836,7 @@ class ExpenseViewModel: ObservableObject {
             } else if let latin1 = try? String(contentsOf: url, encoding: .isoLatin1) {
                 fileContent = latin1
             } else {
-                fileContent = try String(contentsOf: url) // system default
+                fileContent = try String(contentsOf: url, encoding: .utf8) // system default
             }
             let lines = fileContent.components(separatedBy: .newlines)
             print("[Groww] Read file with \(lines.count) lines")

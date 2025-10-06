@@ -42,7 +42,7 @@ struct AddMutualFundView: View {
                             })
                             .autocapitalization(.none)
                             .disableAutocorrection(true)
-                            .onChange(of: fundSearchText) { _ in showFundSuggestions = true }
+                            .onChange(of: fundSearchText) { showFundSuggestions = true }
                             .onSubmit { showFundSuggestions = false }
                             .textInputAutocapitalization(.never)
                             .keyboardType(.default)

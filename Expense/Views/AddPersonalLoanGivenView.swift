@@ -104,7 +104,7 @@ struct AddPersonalLoanGivenView: View {
     
     private func saveLoan() {
         guard let principal = Double(principalAmount),
-              let rate = Double(interestRate),
+              let _ = Double(interestRate),
               !borrowerName.isEmpty else {
             errorMessage = "Please fill in all required fields"
             showingError = true
@@ -121,13 +121,15 @@ struct AddPersonalLoanGivenView: View {
             "notes": notes
         ]
         
-        viewModel.addAccount(
-            name: "Loan to \(borrowerName)",
-            type: .personalLoanGiven,
-            balance: principal,  // Start with principal amount
-            creditLimit: principal,  // Store principal amount in creditLimit
-            metadata: metadata
-        )
+        Task { @MainActor in
+            viewModel.addAccount(
+                name: "Loan to \(borrowerName)",
+                type: .personalLoanGiven,
+                balance: principal,  // Start with principal amount
+                creditLimit: principal,  // Store principal amount in creditLimit
+                metadata: metadata
+            )
+        }
         
         dismiss()
     }

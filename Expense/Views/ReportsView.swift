@@ -184,13 +184,15 @@ struct ReportsView: View {
                 }
             }
             .navigationTitle("Reports")
-            .sheet(item: $selectedCategory) { category in
-                CategoryDetailView(
-                    category: category,
-                    transactions: categoryTransactions,
-                    currencyCode: currencySettings.selectedCurrency.rawValue,
-                    onDismiss: { selectedCategory = nil }
-                )
+            .sheet(isPresented: .constant(selectedCategory != nil)) {
+                if let category = selectedCategory {
+                    CategoryDetailView(
+                        category: category,
+                        transactions: categoryTransactions,
+                        currencyCode: currencySettings.selectedCurrency.rawValue,
+                        onDismiss: { selectedCategory = nil }
+                    )
+                }
             }
         }
     }
@@ -205,9 +207,8 @@ extension Calendar {
     }
 }
 
-extension String: Identifiable {
-    public var id: String { self }
-}
+// Note: String+Identifiable extension removed to avoid future conflicts
+// Using explicit ID in ForEach loops instead
 
 // MARK: - Category Detail View with Subcategory Filtering
 struct CategoryDetailView: View {

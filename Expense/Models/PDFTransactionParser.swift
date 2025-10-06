@@ -988,7 +988,7 @@ class PDFTransactionParser {
         
         let lines = text.components(separatedBy: .newlines)
         
-        for (index, line) in lines.enumerated() {
+        for (_, line) in lines.enumerated() {
             let trimmedLine = line.trimmingCharacters(in: .whitespaces)
             
             // Skip empty lines and headers
@@ -1317,7 +1317,7 @@ class PDFTransactionParser {
                         ("dd-MM-yyyy", "08-10-2025")
                     ]
                     
-                    for (format, example) in formatters {
+                    for (format, _) in formatters {
                         let formatter = DateFormatter()
                         formatter.dateFormat = format
                         if let date = formatter.date(from: trimmedLine) {
@@ -2070,8 +2070,8 @@ class PDFTransactionParser {
         let lines = text.components(separatedBy: .newlines)
         
         // Look for transaction table sections
-        var inTransactionSection = false
-        var transactionLines: [String] = []
+        var _ = false  // inTransactionSection is written to but never read
+        var _ = [String]()  // transactionLines was never used
         
         for (index, line) in lines.enumerated() {
             let trimmedLine = line.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2084,7 +2084,7 @@ class PDFTransactionParser {
             // Detect transaction section start
             if trimmedLine.lowercased().contains("transaction") && 
                (trimmedLine.lowercased().contains("date") || trimmedLine.lowercased().contains("description")) {
-                inTransactionSection = true
+                _ = true  // inTransactionSection was never read
                 print("DEBUG: ICICI - Found transaction section header: \(trimmedLine)")
                 continue
             }
@@ -2890,7 +2890,7 @@ class PDFTransactionParser {
         }
         
         // Extract minimum amount due - SBI format: "**Minimum Amount Due ( ` ) 1,852.00"
-        var dueAmount: Double = totalAmount
+        let dueAmount: Double = totalAmount
         
         // Look for minimum amount AFTER the asterisks pattern
         if let minPattern = text.range(of: #"\*\*Minimum Amount Due"#, options: .regularExpression) {

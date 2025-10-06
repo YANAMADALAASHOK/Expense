@@ -250,7 +250,7 @@ extension AICategorizationManager {
         var entities: [String: Double] = [:]
         
         tagger.enumerateTags(in: text.startIndex..<text.endIndex, unit: .word, scheme: .nameType) { tag, tokenRange in
-            if let tag = tag {
+            if let _ = tag {
                 let word = String(text[tokenRange]).lowercased()
                 entities[word] = 1.0
             }

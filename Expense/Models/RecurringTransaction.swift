@@ -161,14 +161,14 @@ class RecurringTransactionManager: ObservableObject {
     }
     
     func processRecurringTransactions(context: NSManagedObjectContext) {
-        let today = Date()
+        let _ = Date()  // today was never used
         
         for i in 0..<recurringTransactions.count {
             var transaction = recurringTransactions[i]
             
             if transaction.shouldProcessToday() {
                 // Create the transaction
-                let newTransaction = CDTransaction.createFromRecurring(transaction, context: context)
+                let _ = CDTransaction.createFromRecurring(transaction, context: context)  // newTransaction was never used
                 
                 // Update the recurring transaction
                 transaction.updateNextDueDate()

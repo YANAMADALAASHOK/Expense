@@ -436,7 +436,7 @@ struct CreditCardBillsListView: View {
                 }
                 
                 // Adjust card balance to reflect the payment
-                guard let freshAccount = try? viewModel.viewContext.object(with: account.objectID) as? CDAccount else {
+                guard let freshAccount = viewModel.viewContext.object(with: account.objectID) as? CDAccount else {
                     print("DEBUG: ❌ Failed to re-fetch account for balance adjustment")
                     continue
                 }
