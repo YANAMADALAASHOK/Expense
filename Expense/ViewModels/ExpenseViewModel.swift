@@ -294,6 +294,9 @@ class ExpenseViewModel: ObservableObject {
         loadPendingTransactions()
         loadEmailIngestionState()
         
+        // Migrate SBI Card email addresses from old to new
+        migrateSBICardEmailAddresses()
+        
         // Load last sync time from UserDefaults
         if let savedDate = UserDefaults.standard.object(forKey: "lastSyncTime") as? Date {
             self.lastSyncTime = savedDate
@@ -2152,6 +2155,7 @@ class ExpenseViewModel: ObservableObject {
         let accounts: [AccountData]
         let transactions: [TransactionData]
         let customCategories: [String]
+        let userRules: [UserRule]
     }
     
     func exportData() throws -> Data {
@@ -2178,10 +2182,14 @@ class ExpenseViewModel: ObservableObject {
             )
         }
         
+        // Get user category rules from AICategorizationManager
+        let userRules = AICategorizationManager.shared.getUserRules()
+        
         let exportData = ExportData(
             accounts: accountsData,
             transactions: transactionsData,
-            customCategories: customCategories
+            customCategories: customCategories,
+            userRules: userRules
         )
         
         let encoder = JSONEncoder()
@@ -2236,6 +2244,10 @@ class ExpenseViewModel: ObservableObject {
             // Import custom categories
             customCategories = importData.customCategories
             UserDefaults.standard.set(customCategories, forKey: "CustomCategories")
+            
+            // Import user category rules
+            AICategorizationManager.shared.replaceUserRules(importData.userRules)
+            print("DEBUG: Imported \(importData.userRules.count) category rules from Firebase")
             
             // Save changes
             try? viewContext.save()
@@ -2928,6 +2940,47 @@ class ExpenseViewModel: ObservableObject {
                     completion(false)
                 }
             }
+        }
+    }
+    
+    // MARK: - Migration Functions
+    
+    /// Migrate SBI Card accounts from old email address to new one
+    private func migrateSBICardEmailAddresses() {
+        let oldEmail = "sbicard.alert@sbicard.com"
+        let newEmail = "Statements@sbicard.com"
+        
+        let fetchRequest = NSFetchRequest<CDAccount>(entityName: "CDAccount")
+        fetchRequest.predicate = NSPredicate(format: "accountType == %@", "Credit Card")
+        
+        do {
+            let accounts = try viewContext.fetch(fetchRequest)
+            var migratedCount = 0
+            
+            for account in accounts {
+                guard let metadata = account.metadataDictionary as? [String: String],
+                      let emailAddress = metadata["emailAddress"],
+                      emailAddress == oldEmail else {
+                    continue
+                }
+                
+                // Update the email address in metadata
+                var updatedMetadata = metadata
+                updatedMetadata["emailAddress"] = newEmail
+                account.metadataDictionary = updatedMetadata
+                
+                migratedCount += 1
+                print("✅ Migrated SBI Card account '\(account.wrappedAccountName)' to new email: \(newEmail)")
+            }
+            
+            if migratedCount > 0 {
+                try viewContext.save()
+                print("✅ Successfully migrated \(migratedCount) SBI Card account(s) to new email address")
+            } else {
+                print("ℹ️ No SBI Card accounts found requiring migration")
+            }
+        } catch {
+            print("⚠️ Failed to migrate SBI Card accounts: \(error)")
         }
     }
 }

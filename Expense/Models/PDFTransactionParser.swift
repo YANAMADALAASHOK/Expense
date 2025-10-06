@@ -32,12 +32,14 @@ class PDFTransactionParser {
     // TODO: These should be configurable from user settings/preferences
     private var userFirstName = "YANAMADALA" // First name
     private var userDOB = "19/06/1990" // DD/MM/YYYY format (DD/MM/YYYY)
+    private var userCardNumber: String? = nil // Card number for SBI Card passwords
     
     // Function to update user details for password generation
-    func updateUserDetails(firstName: String, dateOfBirth: String) {
+    func updateUserDetails(firstName: String, dateOfBirth: String, cardNumber: String? = nil) {
         self.userFirstName = firstName.uppercased()
         self.userDOB = dateOfBirth
-        print("DEBUG: Updated user details - Name: \(firstName), DOB: \(dateOfBirth)")
+        self.userCardNumber = cardNumber
+        print("DEBUG: Updated user details - Name: \(firstName), DOB: \(dateOfBirth), Card: \(cardNumber != nil ? "****\(String(cardNumber!.suffix(4)))" : "None")")
     }
     
     // Generate dynamic passwords based on user details
@@ -47,18 +49,34 @@ class PDFTransactionParser {
         
         // Extract date and month from DOB (19/06/1990 -> 1906)
         let dobComponents = userDOB.components(separatedBy: "/")
-        guard dobComponents.count >= 2,
+        guard dobComponents.count >= 3,
               let day = Int(dobComponents[0]),
-              let month = Int(dobComponents[1]) else {
+              let month = Int(dobComponents[1]),
+              let year = Int(dobComponents[2]) else {
             return ["YANA1906"] // Fallback to known working password
         }
         
         let dateMonth = String(format: "%02d%02d", day, month) // "1906"
+        let fullDOB = String(format: "%02d%02d%04d", day, month, year) // "19061996"
         
-        // Generate password variations
+        var passwords: [String] = []
+        
+        // SBI Card passwords: DOB (DDMMYYYY) + Last 4 digits of card
+        if let cardNumber = userCardNumber, cardNumber.count >= 4 {
+            let last4 = String(cardNumber.suffix(4))
+            passwords.append(contentsOf: [
+                "\(fullDOB)\(last4)", // "190619964418" - SBI Card primary
+                "\(last4)\(fullDOB)", // "441819061996" - Reverse order
+                fullDOB, // "19061996" - Just DOB
+                last4 // "4418" - Just last 4
+            ])
+            print("DEBUG: Generated SBI Card passwords with DOB \(fullDOB) + Last4 \(last4)")
+        }
+        
+        // Generate password variations for Axis Bank
         let basePassword = "\(firstFourChars)\(dateMonth)" // "YANA1906"
         
-        return [
+        passwords.append(contentsOf: [
             basePassword, // "YANA1906" - Primary password
             basePassword.lowercased(), // "yana1906"
             "\(firstFourChars)@\(dateMonth)", // "YANA@1906"
@@ -70,7 +88,9 @@ class PDFTransactionParser {
             dateMonth, // "1906"
             String(day), // "19"
             String(format: "%02d", month), // "06"
-        ]
+        ])
+        
+        return passwords
     }
     
     // Get passwords optimized for specific bank content
@@ -88,28 +108,41 @@ class PDFTransactionParser {
                 passwords.append(contentsOf: [
                     // ICICI Bank passwords first
                     "icici", "ICICI", "Icici", "icicibank", "ICICIBANK",
-                    // Then Axis Bank passwords
-                    "axis", "AXIS", "Axis", "axisbank", "AXISBANK"
+                    // Then other banks
+                    "axis", "AXIS", "Axis", "axisbank", "AXISBANK",
+                    "sbi", "SBI", "Sbi", "sbicard", "SBICARD", "SBICard"
                 ])
             } else if content.contains("axis") {
                 passwords.append(contentsOf: [
                     // Axis Bank passwords first
                     "axis", "AXIS", "Axis", "axisbank", "AXISBANK",
-                    // Then ICICI Bank passwords
+                    // Then other banks
+                    "icici", "ICICI", "Icici", "icicibank", "ICICIBANK",
+                    "sbi", "SBI", "Sbi", "sbicard", "SBICARD", "SBICard"
+                ])
+            } else if content.contains("sbi") || content.contains("state bank") {
+                print("DEBUG: Detected SBI Card PDF, prioritizing SBI passwords")
+                passwords.append(contentsOf: [
+                    // SBI Card passwords first
+                    "sbi", "SBI", "Sbi", "sbicard", "SBICARD", "SBICard",
+                    // Then other banks
+                    "axis", "AXIS", "Axis", "axisbank", "AXISBANK",
                     "icici", "ICICI", "Icici", "icicibank", "ICICIBANK"
                 ])
             } else {
                 // Unknown bank, try all
                 passwords.append(contentsOf: [
                     "axis", "AXIS", "Axis", "axisbank", "AXISBANK",
-                    "icici", "ICICI", "Icici", "icicibank", "ICICIBANK"
+                    "icici", "ICICI", "Icici", "icicibank", "ICICIBANK",
+                    "sbi", "SBI", "Sbi", "sbicard", "SBICARD", "SBICard"
                 ])
             }
         } else {
             // No content available, try all bank passwords
             passwords.append(contentsOf: [
                 "axis", "AXIS", "Axis", "axisbank", "AXISBANK",
-                "icici", "ICICI", "Icici", "icicibank", "ICICIBANK"
+                "icici", "ICICI", "Icici", "icicibank", "ICICIBANK",
+                "sbi", "SBI", "Sbi", "sbicard", "SBICARD", "SBICard"
             ])
         }
         
@@ -130,6 +163,17 @@ class PDFTransactionParser {
     }
     
     func parseCreditCardBill(from url: URL) -> CreditCardBillInfo? {
+        // Try to extract card number from PDF filename for SBI Card
+        // Format: 4095261653003215_24062025.pdf
+        let filename = url.lastPathComponent
+        if let cardNumberMatch = filename.range(of: #"^\d{16}"#, options: .regularExpression) {
+            let cardNumberFromFile = String(filename[cardNumberMatch])
+            if userCardNumber == nil || userCardNumber?.isEmpty == true {
+                userCardNumber = cardNumberFromFile
+                print("DEBUG: Extracted card number from filename: ****\(String(cardNumberFromFile.suffix(4)))")
+            }
+        }
+        
         guard let pdfDocument = loadPDFDocument(from: url) else {
             print("Failed to load PDF document")
             return nil

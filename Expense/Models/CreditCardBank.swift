@@ -5,7 +5,7 @@ enum CreditCardBank: String, CaseIterable {
     case axis = "cc.statements@axisbank.com"
     case icici = "credit_cards@icicibank.com"
     case hdfc = "emailstatements.cards@hdfcbank.net"
-    case sbi = "sbicard.alert@sbicard.com"
+    case sbi = "Statements@sbicard.com"
     case kotak = "creditcard@kotak.com"
     
     var displayName: String {

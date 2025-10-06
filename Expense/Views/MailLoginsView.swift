@@ -9,41 +9,78 @@ struct MailLoginsView: View {
 
     var body: some View {
         Form {
-            Section(header: Text("Email Login")) {
-                Button("Connect Outlook (Mail.Read)") {
-                    MicrosoftOAuthManager.shared.signIn { result in
-                        switch result {
-                        case .success: show("Outlook connected.")
-                        case .failure(let err): show("Outlook sign-in failed: \(err.localizedDescription)")
+            // Outlook Section
+            Section(header: Text("Outlook")) {
+                HStack {
+                    Image(systemName: "envelope.badge.fill")
+                        .foregroundColor(.blue)
+                    VStack(alignment: .leading) {
+                        Text("Outlook Mail")
+                            .font(.headline)
+                        Text(MicrosoftOAuthManager.shared.isSignedIn ? "Connected" : "Not connected")
+                            .font(.caption)
+                            .foregroundColor(MicrosoftOAuthManager.shared.isSignedIn ? .green : .secondary)
+                    }
+                    Spacer()
+                }
+                
+                if MicrosoftOAuthManager.shared.isSignedIn {
+                    Button(action: {
+                        MicrosoftOAuthManager.shared.signOut()
+                        show("Signed out of Outlook")
+                    }) {
+                        Label("Sign Out", systemImage: "arrow.backward.circle")
+                            .foregroundColor(.red)
+                    }
+                } else {
+                    Button(action: {
+                        MicrosoftOAuthManager.shared.signIn { result in
+                            switch result {
+                            case .success: show("Outlook connected.")
+                            case .failure(let err): show("Outlook sign-in failed: \(err.localizedDescription)")
+                            }
                         }
+                    }) {
+                        Label("Sign In to Outlook", systemImage: "arrow.forward.circle")
                     }
-                }
-                Button("Sign in to Gmail") {
-                    GmailOAuthManager.shared.signIn { success, message in
-                        show(success ? "Gmail connected." : (message ?? "Gmail sign-in failed"))
-                    }
-                }
-                if GmailService.shared.isSignedIn {
-                    Button("Sign Out of Gmail") { GmailService.shared.signOut(); show("Signed out of Gmail") }
                 }
             }
-
-            Section(header: Text("Inboxes")) {
+            
+            // Gmail Section
+            Section(header: Text("Gmail")) {
                 HStack {
-                    Image(systemName: "envelope.badge")
-                    NavigationLink(destination: EmailInboxView(viewModel: viewModel, initialSender: "alerts@axisbank.com")) {
-                        Text("Axis Alerts (Outlook)")
+                    Image(systemName: "envelope.fill")
+                        .foregroundColor(.red)
+                    VStack(alignment: .leading) {
+                        Text("Gmail")
+                            .font(.headline)
+                        Text(GmailService.shared.isSignedIn ? "Connected" : "Not connected")
+                            .font(.caption)
+                            .foregroundColor(GmailService.shared.isSignedIn ? .green : .secondary)
                     }
+                    Spacer()
                 }
-                HStack {
-                    Image(systemName: "tray.full")
-                    NavigationLink(destination: GmailInboxView(viewModel: viewModel)) {
-                        Text("ICICI Gmail")
+                
+                if GmailService.shared.isSignedIn {
+                    Button(action: {
+                        GmailService.shared.signOut()
+                        show("Signed out of Gmail")
+                    }) {
+                        Label("Sign Out", systemImage: "arrow.backward.circle")
+                            .foregroundColor(.red)
+                    }
+                } else {
+                    Button(action: {
+                        GmailOAuthManager.shared.signIn { success, message in
+                            show(success ? "Gmail connected." : (message ?? "Gmail sign-in failed"))
+                        }
+                    }) {
+                        Label("Sign In to Gmail", systemImage: "arrow.forward.circle")
                     }
                 }
             }
         }
-        .navigationTitle("Email Login")
+        .navigationTitle("Mail Logins")
         .alert("Info", isPresented: $showingInfo) {
             Button("OK", role: .cancel) { }
         } message: { Text(infoMessage) }

@@ -17,6 +17,15 @@ final class MicrosoftOAuthManager: NSObject, ASWebAuthenticationPresentationCont
     private let kAccessTokenExpiry = "ms_access_token_expiry"
 
     private var currentSession: ASWebAuthenticationSession?
+    
+    // Check if user is signed in
+    var isSignedIn: Bool {
+        do {
+            return try KeychainHelper.shared.getString(for: kRefreshToken) != nil
+        } catch {
+            return false
+        }
+    }
 
     func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
         #if canImport(UIKit)
@@ -83,6 +92,16 @@ final class MicrosoftOAuthManager: NSObject, ASWebAuthenticationPresentationCont
             }
         } catch {
             completion(.failure(error))
+        }
+    }
+    
+    func signOut() {
+        do {
+            try KeychainHelper.shared.deleteString(for: kAccessToken)
+            try KeychainHelper.shared.deleteString(for: kRefreshToken)
+            UserDefaults.standard.removeObject(forKey: kAccessTokenExpiry)
+        } catch {
+            print("Error signing out of Outlook: \(error)")
         }
     }
 

@@ -136,9 +136,6 @@ struct SettingsView: View {
     @State private var isDangerZoneExpanded = false
     @State private var isCategoriesExpanded = false
     @State private var isCurrencyExpanded = false
-    @State private var isBillSettingsExpanded = false
-    @State private var isPerformanceExpanded = false
-    @State private var showingPerformanceLog = false
     
     var body: some View {
         NavigationView {
@@ -176,98 +173,7 @@ struct SettingsView: View {
                     icon: "envelope"
                 ) {
                     NavigationLink(destination: MailLoginsView(viewModel: expenseViewModel)) {
-                        Label("Mail Logins (Outlook & Gmail)", systemImage: "envelope")
-                    }
-                    
-                    NavigationLink(destination: EmailInboxView(viewModel: expenseViewModel, initialSender: "alerts@axisbank.com")) {
-                        Label("Axis Alerts (Outlook)", systemImage: "envelope.badge")
-                    }
-                    NavigationLink(destination: GmailInboxView(viewModel: expenseViewModel)) {
-                        Label("ICICI Gmail", systemImage: "tray.full")
-                    }
-                }
-
-                // Gmail Configuration Section
-                CollapsibleSection(
-                    title: "Gmail Configuration",
-                    isExpanded: $isGmailExpanded,
-                    icon: "envelope.circle"
-                ) {
-                    HStack {
-                        Text("Status: ")
-                        Text(GmailService.shared.isSignedIn ? "Signed In" : "Not Signed In")
-                            .foregroundColor(GmailService.shared.isSignedIn ? .green : .secondary)
-                    }
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("OAuth Configuration")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                        TextField("Gmail Client ID", text: $gmailClientId)
-                            .textInputAutocapitalization(.never)
-                            .disableAutocorrection(true)
-                        TextField("Redirect URI (e.g., com.googleusercontent.apps.<CLIENT_ID>:/oauth2redirect)", text: $gmailRedirectUri)
-                            .textInputAutocapitalization(.never)
-                            .disableAutocorrection(true)
-                        HStack {
-                            Button("Save OAuth Settings") {
-                                GmailOAuthManager.shared.clientId = gmailClientId.trimmingCharacters(in: .whitespacesAndNewlines)
-                                GmailOAuthManager.shared.redirectUri = gmailRedirectUri.trimmingCharacters(in: .whitespacesAndNewlines)
-                                errorMessage = "Saved Gmail OAuth settings"
-                                showingError = true
-                            }
-                            .disabled(gmailClientId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || gmailRedirectUri.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        }
-                    }
-                    if GmailService.shared.isSignedIn {
-                        Button("Fetch ICICI from Gmail (30d)") {
-                            let since = Calendar.current.date(byAdding: .day, value: -30, to: Date())
-                            GmailService.shared.fetchICICIMessages(since: since) { result in
-                                DispatchQueue.main.async {
-                                    switch result {
-                                    case .failure(let err):
-                                        errorMessage = "Gmail fetch failed: \(err.localizedDescription)"
-                                        showingError = true
-                                    case .success(let msgs):
-                                        var queued = 0
-                                        for (subject, body, _) in msgs {
-                                            do {
-                                                let parsed = try EmailParser.parse(subject: subject, body: body)
-                                                let pending = PendingTransactionItem(
-                                                    subject: parsed.subject,
-                                                    body: parsed.body,
-                                                    amount: parsed.amount,
-                                                    date: parsed.date,
-                                                    isCredit: parsed.isCredit,
-                                                    suggestedCategory: parsed.suggestedCategory,
-                                                    notes: parsed.description
-                                                )
-                                                expenseViewModel.addPendingTransaction(pending)
-                                                queued += 1
-                                            } catch { }
-                                        }
-                                        errorMessage = "Queued \(queued) pending from Gmail"
-                                        showingError = true
-                                    }
-                                }
-                            }
-                        }
-                        Button("Sign Out of Gmail") {
-                            GmailService.shared.signOut()
-                            errorMessage = "Signed out of Gmail"
-                            showingError = true
-                        }
-                    } else {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("Client ID and Redirect URI (from Google Cloud)")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                            Button("Sign in to Gmail") {
-                                GmailOAuthManager.shared.signIn { success, message in
-                                    errorMessage = success ? "Gmail connected." : (message ?? "Gmail sign-in failed")
-                                    showingError = true
-                                }
-                            }
-                        }
+                        Label("Mail Logins", systemImage: "envelope.circle.fill")
                     }
                 }
 
@@ -349,132 +255,6 @@ struct SettingsView: View {
                     }
                 }
                 
-                // Bill Settings Section
-                CollapsibleSection(
-                    title: "Credit Card Bill Settings",
-                    isExpanded: $isBillSettingsExpanded,
-                    icon: "doc.text"
-                ) {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("PDF passwords are automatically generated from your profile")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                        
-                        if let currentUser = authManager.currentUser {
-                            VStack(alignment: .leading, spacing: 8) {
-                                HStack {
-                                    Text("First Name:")
-                                        .font(.subheadline)
-                                        .foregroundColor(.secondary)
-                                    Spacer()
-                                    Text(currentUser.firstName ?? "Not set")
-                                        .font(.subheadline)
-                                        .fontWeight(.medium)
-                                }
-                                
-                                HStack {
-                                    Text("Date of Birth:")
-                                        .font(.subheadline)
-                                        .foregroundColor(.secondary)
-                                    Spacer()
-                                    if let dob = currentUser.dateOfBirth {
-                                        Text(formatDate(dob))
-                                            .font(.subheadline)
-                                            .fontWeight(.medium)
-                                    } else {
-                                        Text("Not set")
-                                            .font(.subheadline)
-                                            .fontWeight(.medium)
-                                    }
-                                }
-                                
-                                if let firstName = currentUser.firstName,
-                                   let dob = currentUser.dateOfBirth {
-                                    Divider()
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        Text("PDF Password Preview:")
-                                            .font(.caption)
-                                            .foregroundColor(.secondary)
-                                        let preview = generatePasswordPreviewFromProfile(firstName: firstName, dob: dob)
-                                        Text(preview)
-                                            .font(.system(.body, design: .monospaced))
-                                            .padding(8)
-                                            .background(Color(.systemGray6))
-                                            .cornerRadius(4)
-                                    }
-                                } else {
-                                    Divider()
-                                    VStack(alignment: .leading, spacing: 8) {
-                                        HStack {
-                                            Image(systemName: "exclamationmark.triangle.fill")
-                                                .foregroundColor(.orange)
-                                            Text("Profile Incomplete")
-                                                .font(.subheadline)
-                                                .fontWeight(.medium)
-                                        }
-                                        Text("Please update your profile with First Name and Date of Birth to use bill fetching")
-                                            .font(.caption)
-                                            .foregroundColor(.secondary)
-                                        
-                                        Button(action: {
-                                            showingProfile = true
-                                        }) {
-                                            Text("Update Profile")
-                                                .frame(maxWidth: .infinity)
-                                                .foregroundColor(.white)
-                                                .padding()
-                                                .background(Color.blue)
-                                                .cornerRadius(8)
-                                        }
-                                    }
-                                }
-                            }
-                            .padding()
-                            .background(Color(.systemGray6))
-                            .cornerRadius(8)
-                        }
-                    }
-                }
-                
-                // Performance Monitoring Section
-                CollapsibleSection(
-                    title: "Performance Monitor",
-                    isExpanded: $isPerformanceExpanded,
-                    icon: "speedometer"
-                ) {
-                    Button(action: {
-                        PerformanceMonitor.shared.printSummary()
-                    }) {
-                        HStack {
-                            Image(systemName: "chart.bar")
-                            Text("Print Performance Summary")
-                        }
-                    }
-                    
-                    Button(action: {
-                        showingPerformanceLog = true
-                    }) {
-                        HStack {
-                            Image(systemName: "doc.text")
-                            Text("View Performance Log")
-                        }
-                    }
-                    
-                    Button(action: {
-                        PerformanceMonitor.shared.reset()
-                    }) {
-                        HStack {
-                            Image(systemName: "trash")
-                            Text("Clear Performance Data")
-                        }
-                        .foregroundColor(.orange)
-                    }
-                    
-                    Text("Log file: \(PerformanceMonitor.shared.getLogFilePath())")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-                
                 // Danger Zone Section
                 CollapsibleSection(
                     title: "Danger Zone",
@@ -505,9 +285,6 @@ struct SettingsView: View {
             }
             .sheet(isPresented: $showingCustomCategorySheet) {
                 CustomCategoryView()
-            }
-            .sheet(isPresented: $showingPerformanceLog) {
-                PerformanceLogView()
             }
             .fileExporter(
                 isPresented: $showingExportSheet,

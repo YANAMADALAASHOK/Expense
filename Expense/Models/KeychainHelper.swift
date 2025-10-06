@@ -42,6 +42,21 @@ final class KeychainHelper {
         guard let data = try get(for: key) else { return nil }
         return String(data: data, encoding: .utf8)
     }
+    
+    func delete(for key: String) throws {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrAccount as String: key
+        ]
+        let status = SecItemDelete(query as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw KeychainError.unexpectedStatus(status)
+        }
+    }
+    
+    func deleteString(for key: String) throws {
+        try delete(for: key)
+    }
 }
 
 

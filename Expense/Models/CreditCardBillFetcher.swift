@@ -344,10 +344,15 @@ class CreditCardBillFetcher {
         dateOfBirth: String,
         account: CDAccount
     ) async -> CreditCardBill? {
-        // Update PDFTransactionParser with user details
+        // Get card number from account metadata for SBI Card password generation
+        let accountMetadata = account.metadataDictionary
+        let cardNumber = accountMetadata["cardNumber"] ?? accountMetadata["fullCardNumber"]
+        
+        // Update PDFTransactionParser with user details and card number
         PDFTransactionParser.shared.updateUserDetails(
             firstName: firstName,
-            dateOfBirth: dateOfBirth
+            dateOfBirth: dateOfBirth,
+            cardNumber: cardNumber
         )
         
         // Use the existing working parser
@@ -357,19 +362,25 @@ class CreditCardBillFetcher {
         }
         
         // CRITICAL: Validate card number - only process bills for THIS specific card
-        let accountMetadata = account.metadataDictionary
         if let accountCardNumber = accountMetadata["cardNumber"] ?? accountMetadata["fullCardNumber"] {
             // Get last 4 digits from account
             let last4Digits = String(accountCardNumber.suffix(4))
             
-            // Get last 4 digits from bill (bill card number format is like "451457******6988")
-            let billLast4 = billInfo.cardNumber.replacingOccurrences(of: "*", with: "").suffix(4)
+            // Get digits from bill (bill card number format is like "451457******6988" or "XX18")
+            let billCardDigits = billInfo.cardNumber.replacingOccurrences(of: "*", with: "")
+                                                     .replacingOccurrences(of: "X", with: "")
+                                                     .replacingOccurrences(of: "x", with: "")
             
-            if billLast4 != last4Digits {
-                print("DEBUG: ❌ Skipping bill for card ****\(billLast4) - does not match account card ****\(last4Digits)")
+            // Compare: if bill has only 2 digits (SBI Card), compare last 2; otherwise compare last 4
+            let digitsToCompare = min(billCardDigits.count, 4)
+            let billSuffix = String(billCardDigits.suffix(digitsToCompare))
+            let accountSuffix = String(last4Digits.suffix(digitsToCompare))
+            
+            if billSuffix != accountSuffix {
+                print("DEBUG: ❌ Skipping bill for card ****\(billSuffix) - does not match account card ****\(accountSuffix)")
                 return nil
             } else {
-                print("DEBUG: ✅ Bill card ****\(billLast4) matches account card ****\(last4Digits)")
+                print("DEBUG: ✅ Bill card ****\(billSuffix) matches account card ****\(accountSuffix)")
             }
         }
         
