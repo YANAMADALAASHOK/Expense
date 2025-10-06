@@ -1486,7 +1486,35 @@ class ExpenseViewModel: ObservableObject {
 
     private func inferCategory(from description: String, amount: Double, isCredit: Bool) -> String {
         let text = description.lowercased()
-        // Priority: user rules
+        
+        // PRIORITY 1: Hardcoded categorization rules (highest priority)
+        // Healthcare
+        if text.contains("hospital") || text.contains("clinic") || text.contains("medical") || text.contains("pharmacy") {
+            return TransactionCategory.healthcare.rawValue
+        }
+        
+        // Food & Dining
+        if text.contains("zomato") || text.contains("swiggy") {
+            return TransactionCategory.food.rawValue
+        }
+        
+        // Credit Card Payments
+        if text.contains("cred") && !text.contains("credit balance") {
+            return TransactionCategory.creditCardPayment.rawValue
+        }
+        
+        // Shopping - Reliance
+        if text.contains("reliance smart") || text.contains("reliance retail") {
+            return TransactionCategory.shopping.rawValue
+        }
+        
+        // Fuel
+        if text.contains("fue") || text.contains("fuel") || text.contains("petrol") || text.contains("diesel") || 
+           text.contains("hp ") || text.contains("iocl") || text.contains("bpcl") || text.contains("shell") {
+            return TransactionCategory.fuel.rawValue
+        }
+        
+        // PRIORITY 2: User custom rules
         if let matched = AICategorizationManager.shared.userRules.first(where: { 
             switch $0.scope {
             case .all: break
@@ -1497,7 +1525,8 @@ class ExpenseViewModel: ObservableObject {
         }) {
             return matched.category
         }
-        // Specific heuristics for Axis Bank statements
+        
+        // PRIORITY 3: Specific heuristics for Axis Bank statements
         if isCredit {
             // Credits are not assumed to be income unless explicitly matched by rules or keywords
             if text.contains("salary") || text.contains("payroll") || text.contains("cognizant") {
@@ -1712,6 +1741,30 @@ class ExpenseViewModel: ObservableObject {
         }
     }
     
+    func loadAllTransactions() {
+        guard hasMoreTransactions else { return }
+        
+        PerformanceMonitor.shared.measureCoreData("Load All Transactions") {
+            self.performLoadAllTransactions()
+        }
+    }
+    
+    private func performLoadAllTransactions() {
+        let request = NSFetchRequest<CDTransaction>(entityName: "CDTransaction")
+        request.sortDescriptors = [NSSortDescriptor(keyPath: \CDTransaction.date, ascending: false)]
+        
+        do {
+            let allTransactions = try viewContext.fetch(request)
+            recentTransactions = allTransactions
+            hasMoreTransactions = false
+            currentTransactionOffset = allTransactions.count
+            
+            print("✅ Loaded ALL \(allTransactions.count) transactions")
+        } catch {
+            print("❌ Error loading all transactions: \(error)")
+        }
+    }
+    
     private func performLoadMoreTransactions() {
         isLoadingMoreTransactions = true
         
@@ -1749,6 +1802,32 @@ class ExpenseViewModel: ObservableObject {
         fetchAccounts()
         fetchRecentTransactions()
         // PERFORMANCE: Removed objectWillChange.send() - @Published handles this automatically
+    }
+    
+    // MARK: - Fetch All Transactions for Reports (No Pagination)
+    func fetchAllTransactions(in dateInterval: DateInterval) -> [CDTransaction] {
+        let request = NSFetchRequest<CDTransaction>(entityName: "CDTransaction")
+        request.sortDescriptors = [NSSortDescriptor(keyPath: \CDTransaction.date, ascending: false)]
+        
+        // Filter by date range
+        request.predicate = NSPredicate(
+            format: "date >= %@ AND date <= %@",
+            dateInterval.start as NSDate,
+            dateInterval.end as NSDate
+        )
+        
+        do {
+            let transactions = try viewContext.fetch(request)
+            print("📊 Reports: Fetched \(transactions.count) transactions for date range")
+            return transactions.filter { txn in
+                // Exclude excluded transactions
+                guard let id = txn.id else { return true }
+                return !excludedTransactionIds.contains(id)
+            }
+        } catch {
+            print("❌ Error fetching all transactions: \(error)")
+            return []
+        }
     }
     
     // MARK: - Email Ingestion State

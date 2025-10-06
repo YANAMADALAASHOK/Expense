@@ -55,6 +55,7 @@ enum CreditCardBank: String, CaseIterable {
                 "SimplyCLICK",
                 "SimplySAVE",
                 "Cashback",
+                "BPCL",
                 "Elite",
                 "Prime",
                 "Octane"

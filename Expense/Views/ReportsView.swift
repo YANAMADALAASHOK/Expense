@@ -53,11 +53,11 @@ struct ReportsView: View {
     
     var filteredTransactions: [CDTransaction] {
         let interval = dateInterval
-        return viewModel.dashboardTransactions.filter { transaction in
-            guard let date = transaction.date else { return false }
+        // Fetch ALL transactions in date range (no pagination limit)
+        return viewModel.fetchAllTransactions(in: interval).filter { transaction in
             // Exclude self transfers from charts and totals
             if TransactionCategory(rawValue: transaction.wrappedCategory) == .selfTransfer { return false }
-            return interval.contains(date)
+            return true
         }
     }
     

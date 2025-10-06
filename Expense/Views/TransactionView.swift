@@ -127,6 +127,20 @@ struct TransactionView: View {
                             .animation(isRefreshing ? .linear(duration: 1).repeatForever(autoreverses: false) : .default, value: isRefreshing)
                     }
                 }
+                ToolbarItem(placement: .navigationBarLeading) {
+                    if viewModel.hasMoreTransactions {
+                        Button(action: { viewModel.loadAllTransactions() }) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "square.stack.3d.down.right")
+                                    .font(.caption)
+                                Text("Load All")
+                                    .font(.caption)
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
+                }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Menu {
                         Button(action: { 
@@ -313,7 +327,25 @@ struct TransactionView: View {
     }
     
     private var filteredTransactions: [CDTransaction] {
-        var items = viewModel.recentTransactions
+        // If filter is active, fetch ALL transactions, not just paginated ones
+        var items: [CDTransaction]
+        
+        if hasActiveFilter {
+            // Fetch ALL transactions when filtering
+            let request = NSFetchRequest<CDTransaction>(entityName: "CDTransaction")
+            request.sortDescriptors = [NSSortDescriptor(keyPath: \CDTransaction.date, ascending: false)]
+            
+            do {
+                items = try viewModel.viewContext.fetch(request)
+                print("🔍 Filter active: Fetched \(items.count) total transactions")
+            } catch {
+                print("❌ Error fetching all transactions for filter: \(error)")
+                items = viewModel.recentTransactions
+            }
+        } else {
+            // No filter, use paginated transactions
+            items = viewModel.recentTransactions
+        }
         
         // Filter out 0 amount transactions
         items = items.filter { $0.amount > 0 }

@@ -4,12 +4,14 @@ enum TransactionCategory: Hashable {
     case selfTransfer
     case food
     case transportation
+    case fuel
     case shopping
     case entertainment
     case utilities
     case healthcare
     case education
     case rent
+    case insurance
     case salary
     case investment
     case interest
@@ -23,12 +25,14 @@ enum TransactionCategory: Hashable {
         case .selfTransfer: return "Self Transfer"
         case .food: return "Food"
         case .transportation: return "Transportation"
+        case .fuel: return "Fuel"
         case .shopping: return "Shopping"
         case .entertainment: return "Entertainment"
         case .utilities: return "Utilities"
         case .healthcare: return "Healthcare"
         case .education: return "Education"
         case .rent: return "Rent"
+        case .insurance: return "Insurance"
         case .salary: return "Salary"
         case .investment: return "Investment"
         case .interest: return "Interest"
@@ -44,12 +48,14 @@ enum TransactionCategory: Hashable {
         case .selfTransfer: return "Self Transfer"
         case .food: return "Food"
         case .transportation: return "Transportation"
+        case .fuel: return "Fuel"
         case .shopping: return "Shopping"
         case .entertainment: return "Entertainment"
         case .utilities: return "Utilities"
         case .healthcare: return "Healthcare"
         case .education: return "Education"
         case .rent: return "Rent"
+        case .insurance: return "Insurance"
         case .salary: return "Salary"
         case .investment: return "Investment"
         case .interest: return "Interest"
@@ -61,7 +67,7 @@ enum TransactionCategory: Hashable {
     }
     
     static var allCases: [TransactionCategory] {
-        [.selfTransfer, .food, .transportation, .shopping, .entertainment, .utilities, .healthcare, .education, .rent, .salary, .investment, .interest, .emiPayment, .creditCardPayment, .other]
+        [.selfTransfer, .food, .transportation, .fuel, .shopping, .entertainment, .utilities, .healthcare, .education, .rent, .insurance, .salary, .investment, .interest, .emiPayment, .creditCardPayment, .other]
     }
     
     init(rawValue: String) {
@@ -69,12 +75,14 @@ enum TransactionCategory: Hashable {
         case "Self Transfer": self = .selfTransfer
         case "Food": self = .food
         case "Transportation": self = .transportation
+        case "Fuel": self = .fuel
         case "Shopping": self = .shopping
         case "Entertainment": self = .entertainment
         case "Utilities": self = .utilities
         case "Healthcare": self = .healthcare
         case "Education": self = .education
         case "Rent": self = .rent
+        case "Insurance": self = .insurance
         case "Salary": self = .salary
         case "Investment": self = .investment
         case "Interest": self = .interest
