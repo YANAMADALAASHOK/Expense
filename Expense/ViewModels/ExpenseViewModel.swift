@@ -1459,6 +1459,12 @@ class ExpenseViewModel: ObservableObject {
                 self?.fetchRecentTransactions()
                 self?.objectWillChange.send()
             }
+            
+            // Match transactions with email timestamps from pending transactions
+            if imported > 0 {
+                matchAndUpdateTransactionTimestamps(for: targetAccount)
+            }
+            
             if imported == 0 {
                 completion(.failure(AxisImportError.noTransactionsFound))
             } else {
@@ -1466,6 +1472,109 @@ class ExpenseViewModel: ObservableObject {
             }
         } catch {
             completion(.failure(error))
+        }
+    }
+    
+    // MARK: - Match and Update Transaction Timestamps from Emails
+    
+    /// Public function to manually update timestamps for all accounts or a specific account
+    func updateTransactionTimestampsFromEmails(accountId: UUID? = nil) {
+        if let accountId = accountId {
+            // Update specific account
+            if let account = accounts.first(where: { $0.id == accountId }) {
+                matchAndUpdateTransactionTimestamps(for: account)
+            }
+        } else {
+            // Update all accounts
+            print("[TimestampMatch] Updating timestamps for all accounts")
+            for account in accounts {
+                matchAndUpdateTransactionTimestamps(for: account)
+            }
+        }
+    }
+    
+    private func matchAndUpdateTransactionTimestamps(for account: CDAccount) {
+        guard !pendingTransactions.isEmpty else {
+            print("[TimestampMatch] No pending transactions available for matching")
+            return
+        }
+        
+        // Fetch transactions for this account from the last 30 days
+        let thirtyDaysAgo = Calendar.current.date(byAdding: .day, value: -30, to: Date()) ?? Date()
+        let fetchRequest = NSFetchRequest<CDTransaction>(entityName: "CDTransaction")
+        fetchRequest.predicate = NSPredicate(
+            format: "account == %@ AND date >= %@",
+            account,
+            thirtyDaysAgo as NSDate
+        )
+        
+        do {
+            let transactions = try viewContext.fetch(fetchRequest)
+            var matchedCount = 0
+            var updatedCount = 0
+            
+            print("[TimestampMatch] Found \(transactions.count) transactions to match with \(pendingTransactions.count) pending items")
+            
+            for transaction in transactions {
+                // Try to find matching pending transaction by amount and date (±1 day)
+                let txnDate = transaction.date ?? Date()
+                let txnAmount = transaction.amount
+                let isCredit = transaction.isCredit
+                
+                // Look for pending transactions within ±1 day with matching amount
+                let dayBefore = Calendar.current.date(byAdding: .day, value: -1, to: txnDate) ?? txnDate
+                let dayAfter = Calendar.current.date(byAdding: .day, value: 1, to: txnDate) ?? txnDate
+                
+                let matches = pendingTransactions.filter { pending in
+                    // Check if amount matches (within ₹1 tolerance)
+                    let amountMatches = abs(pending.amount - txnAmount) < 1.0
+                    
+                    // Check if date is within ±1 day
+                    let dateMatches = pending.date >= dayBefore && pending.date <= dayAfter
+                    
+                    // Check if credit/debit type matches
+                    let typeMatches = pending.isCredit == isCredit
+                    
+                    return amountMatches && dateMatches && typeMatches
+                }
+                
+                if let bestMatch = matches.first {
+                    matchedCount += 1
+                    
+                    // Check if the email date is more accurate (has time component)
+                    let calendar = Calendar.current
+                    let emailHour = calendar.component(.hour, from: bestMatch.date)
+                    let emailMinute = calendar.component(.minute, from: bestMatch.date)
+                    
+                    // If email has actual time (not midnight), update the transaction
+                    if emailHour != 0 || emailMinute != 0 {
+                        transaction.date = bestMatch.date
+                        updatedCount += 1
+                        
+                        print("[TimestampMatch] ✅ Updated: \(transaction.notes ?? "") - ₹\(txnAmount)")
+                        print("   Old: \(txnDate) → New: \(bestMatch.date)")
+                    } else {
+                        print("[TimestampMatch] ⏭️ Matched but no time info: \(transaction.notes ?? "") - ₹\(txnAmount)")
+                    }
+                }
+            }
+            
+            // Save all updates at once
+            if updatedCount > 0 {
+                try viewContext.save()
+                print("[TimestampMatch] 🎉 Updated \(updatedCount) transactions with accurate timestamps from emails")
+                print("[TimestampMatch] 📊 Total matched: \(matchedCount), Updated: \(updatedCount)")
+                
+                DispatchQueue.main.async { [weak self] in
+                    self?.fetchRecentTransactions()
+                    self?.objectWillChange.send()
+                }
+            } else {
+                print("[TimestampMatch] No transactions needed timestamp updates")
+            }
+            
+        } catch {
+            print("[TimestampMatch] Error fetching transactions: \(error)")
         }
     }
 
@@ -1645,13 +1754,20 @@ class ExpenseViewModel: ObservableObject {
             let fetchedAccounts = try viewContext.fetch(request)
             
             // Additional filtering to ensure data integrity
-            let validAccounts = fetchedAccounts.filter { account in
+            let validAccounts = fetchedAccounts.compactMap { account -> CDAccount? in
+                // Fix nil IDs
+                if account.id == nil {
+                    print("DEBUG: ⚠️ Found account with nil ID, assigning new UUID: \(account.accountName ?? "unknown")")
+                    account.id = UUID()
+                    try? viewContext.save()
+                }
+                
                 guard let name = account.accountName,
                       !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                     print("DEBUG: Filtering out account with invalid name: \(account.id?.uuidString ?? "unknown")")
-                    return false
+                    return nil
                 }
-                return true
+                return account
             }
             
             // Group by bank/account type: Credit Cards (Axis, ICICI), then Banks, then Others
@@ -1722,7 +1838,19 @@ class ExpenseViewModel: ObservableObject {
         request.fetchOffset = 0
         
         do {
-            recentTransactions = try viewContext.fetch(request)
+            let fetchedTransactions = try viewContext.fetch(request)
+            
+            // Fix any transactions with nil IDs
+            let validTransactions = fetchedTransactions.compactMap { transaction -> CDTransaction? in
+                if transaction.id == nil {
+                    print("DEBUG: ⚠️ Found transaction with nil ID, assigning new UUID: \(transaction.notes ?? "unknown")")
+                    transaction.id = UUID()
+                    try? viewContext.save()
+                }
+                return transaction
+            }
+            
+            recentTransactions = validTransactions
             
             // Check if there are more transactions
             let totalCount = try viewContext.count(for: NSFetchRequest<CDTransaction>(entityName: "CDTransaction"))
@@ -1757,12 +1885,23 @@ class ExpenseViewModel: ObservableObject {
         request.sortDescriptors = [NSSortDescriptor(keyPath: \CDTransaction.date, ascending: false)]
         
         do {
-            let allTransactions = try viewContext.fetch(request)
-            recentTransactions = allTransactions
-            hasMoreTransactions = false
-            currentTransactionOffset = allTransactions.count
+            let fetchedTransactions = try viewContext.fetch(request)
             
-            print("✅ Loaded ALL \(allTransactions.count) transactions")
+            // Fix any transactions with nil IDs
+            let validTransactions = fetchedTransactions.compactMap { transaction -> CDTransaction? in
+                if transaction.id == nil {
+                    print("DEBUG: ⚠️ Found transaction with nil ID in load all, assigning new UUID: \(transaction.notes ?? "unknown")")
+                    transaction.id = UUID()
+                    try? viewContext.save()
+                }
+                return transaction
+            }
+            
+            recentTransactions = validTransactions
+            hasMoreTransactions = false
+            currentTransactionOffset = validTransactions.count
+            
+            print("✅ Loaded ALL \(validTransactions.count) transactions")
         } catch {
             print("❌ Error loading all transactions: \(error)")
         }
@@ -1777,19 +1916,29 @@ class ExpenseViewModel: ObservableObject {
         request.fetchOffset = currentTransactionOffset
         
         do {
-            let moreTransactions = try viewContext.fetch(request)
+            let fetchedTransactions = try viewContext.fetch(request)
             
-            if moreTransactions.isEmpty {
+            // Fix any transactions with nil IDs
+            let validTransactions = fetchedTransactions.compactMap { transaction -> CDTransaction? in
+                if transaction.id == nil {
+                    print("DEBUG: ⚠️ Found transaction with nil ID in pagination, assigning new UUID: \(transaction.notes ?? "unknown")")
+                    transaction.id = UUID()
+                    try? viewContext.save()
+                }
+                return transaction
+            }
+            
+            if validTransactions.isEmpty {
                 hasMoreTransactions = false
             } else {
-                recentTransactions.append(contentsOf: moreTransactions)
-                currentTransactionOffset += moreTransactions.count
+                recentTransactions.append(contentsOf: validTransactions)
+                currentTransactionOffset += validTransactions.count
                 
                 // Check if there are still more
                 let totalCount = try viewContext.count(for: NSFetchRequest<CDTransaction>(entityName: "CDTransaction"))
                 hasMoreTransactions = recentTransactions.count < totalCount
                 
-                print("DEBUG: 📊 Loaded \(moreTransactions.count) more transactions, Total: \(recentTransactions.count), More: \(hasMoreTransactions)")
+                print("DEBUG: 📊 Loaded \(validTransactions.count) more transactions, Total: \(recentTransactions.count), More: \(hasMoreTransactions)")
             }
             
             isLoadingMoreTransactions = false

@@ -136,6 +136,7 @@ struct SettingsView: View {
     @State private var isDangerZoneExpanded = false
     @State private var isCategoriesExpanded = false
     @State private var isCurrencyExpanded = false
+    @State private var isUpdatingTimestamps = false
     
     var body: some View {
         NavigationView {
@@ -224,6 +225,22 @@ struct SettingsView: View {
                             if isImportingAxis { Spacer(); ProgressView() }
                         }
                     }
+                    
+                    Button(action: {
+                        isUpdatingTimestamps = true
+                        expenseViewModel.updateTransactionTimestampsFromEmails()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                            isUpdatingTimestamps = false
+                            errorMessage = "Transaction timestamps updated from email data"
+                            showingError = true
+                        }
+                    }) {
+                        HStack {
+                            Image(systemName: isUpdatingTimestamps ? "clock.arrow.circlepath" : "clock.badge.checkmark")
+                            Text(isUpdatingTimestamps ? "Updating Timestamps..." : "Update Timestamps from Emails")
+                        }
+                    }
+                    .disabled(isUpdatingTimestamps || expenseViewModel.pendingTransactions.isEmpty)
                     
                     Link(destination: URL(string: "https://groww.in/p/portfolio")!) {
                         Label("Get Groww Statement", systemImage: "link")

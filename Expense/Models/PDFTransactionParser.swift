@@ -61,6 +61,19 @@ class PDFTransactionParser {
         
         var passwords: [String] = []
         
+        // HDFC Bank passwords: First 4 letters + Last 4 digits of card
+        // Example: "YANA" + "6988" = "YANA6988"
+        if let cardNumber = userCardNumber, cardNumber.count >= 4 {
+            let last4 = String(cardNumber.suffix(4))
+            passwords.append(contentsOf: [
+                "\(firstFourChars)\(last4)", // "YANA6988" - HDFC primary
+                "\(firstFourChars.lowercased())\(last4)", // "yana6988" - HDFC lowercase
+                "\(firstFourChars)\(last4)".lowercased(), // "yana6988" - All lowercase
+                "\(firstFourChars)\(last4)".uppercased(), // "YANA6988" - All uppercase
+            ])
+            print("DEBUG: Generated HDFC passwords with Name \(firstFourChars) + Last4 \(last4)")
+        }
+        
         // SBI Card passwords: DOB (DDMMYYYY) + Last 4 digits of card
         if let cardNumber = userCardNumber, cardNumber.count >= 4 {
             let last4 = String(cardNumber.suffix(4))
@@ -103,13 +116,24 @@ class PDFTransactionParser {
         
         // Add bank-specific passwords based on content (if available)
         if let content = pdfContent?.lowercased() {
-            if content.contains("icici") {
+            if content.contains("hdfc") {
+                print("DEBUG: Detected HDFC Bank PDF, prioritizing HDFC passwords")
+                passwords.append(contentsOf: [
+                    // HDFC Bank passwords first
+                    "hdfc", "HDFC", "Hdfc", "hdfcbank", "HDFCBANK",
+                    // Then other banks
+                    "axis", "AXIS", "Axis", "axisbank", "AXISBANK",
+                    "icici", "ICICI", "Icici", "icicibank", "ICICIBANK",
+                    "sbi", "SBI", "Sbi", "sbicard", "SBICARD", "SBICard"
+                ])
+            } else if content.contains("icici") {
                 print("DEBUG: Detected ICICI Bank PDF, prioritizing ICICI passwords")
                 passwords.append(contentsOf: [
                     // ICICI Bank passwords first
                     "icici", "ICICI", "Icici", "icicibank", "ICICIBANK",
                     // Then other banks
                     "axis", "AXIS", "Axis", "axisbank", "AXISBANK",
+                    "hdfc", "HDFC", "Hdfc", "hdfcbank", "HDFCBANK",
                     "sbi", "SBI", "Sbi", "sbicard", "SBICARD", "SBICard"
                 ])
             } else if content.contains("axis") {
@@ -118,6 +142,7 @@ class PDFTransactionParser {
                     "axis", "AXIS", "Axis", "axisbank", "AXISBANK",
                     // Then other banks
                     "icici", "ICICI", "Icici", "icicibank", "ICICIBANK",
+                    "hdfc", "HDFC", "Hdfc", "hdfcbank", "HDFCBANK",
                     "sbi", "SBI", "Sbi", "sbicard", "SBICARD", "SBICard"
                 ])
             } else if content.contains("sbi") || content.contains("state bank") {
@@ -127,13 +152,15 @@ class PDFTransactionParser {
                     "sbi", "SBI", "Sbi", "sbicard", "SBICARD", "SBICard",
                     // Then other banks
                     "axis", "AXIS", "Axis", "axisbank", "AXISBANK",
-                    "icici", "ICICI", "Icici", "icicibank", "ICICIBANK"
+                    "icici", "ICICI", "Icici", "icicibank", "ICICIBANK",
+                    "hdfc", "HDFC", "Hdfc", "hdfcbank", "HDFCBANK"
                 ])
             } else {
                 // Unknown bank, try all
                 passwords.append(contentsOf: [
                     "axis", "AXIS", "Axis", "axisbank", "AXISBANK",
                     "icici", "ICICI", "Icici", "icicibank", "ICICIBANK",
+                    "hdfc", "HDFC", "Hdfc", "hdfcbank", "HDFCBANK",
                     "sbi", "SBI", "Sbi", "sbicard", "SBICARD", "SBICard"
                 ])
             }
@@ -142,6 +169,7 @@ class PDFTransactionParser {
             passwords.append(contentsOf: [
                 "axis", "AXIS", "Axis", "axisbank", "AXISBANK",
                 "icici", "ICICI", "Icici", "icicibank", "ICICIBANK",
+                "hdfc", "HDFC", "Hdfc", "hdfcbank", "HDFCBANK",
                 "sbi", "SBI", "Sbi", "sbicard", "SBICARD", "SBICard"
             ])
         }
@@ -634,8 +662,414 @@ class PDFTransactionParser {
     }
     
     private func parseHDFCBankStatement(_ text: String) -> CreditCardBillInfo? {
-        // Similar implementation for HDFC
-        return nil
+        print("DEBUG: Starting HDFC Bank statement parsing")
+        print("DEBUG: Text length: \(text.count) characters")
+        
+        let bankName = "HDFC Bank"
+        
+        // Extract card number from text (look for patterns like XXXX-XXXX-XXXX-6988 or 00361135XXXX4405)
+        var cardNumber = "****0000"
+        let cardPatterns = [
+            #"X{4}-X{4}-X{4}-(\d{4})"#,     // XXXX-XXXX-XXXX-6988
+            #"X{12}(\d{4})"#,                // XXXXXXXXXXXX6988
+            #"\*{12}(\d{4})"#,               // ************6988
+            #"\d{8}X{4}(\d{4})"#,            // 00361135XXXX4405 (HDFC format)
+            #"Credit Card No\.?\s*\d{8}X{4}(\d{4})"#,  // Credit Card No. 00361135XXXX4405
+            #"Card No\.?\s*\d{8}X{4}(\d{4})"#,         // Card No. 00361135XXXX4405
+            #"(\d{4})\s+\d{4}\s+\d{4}\s+(\d{4})"#      // 0036 1135 XXXX 4405
+        ]
+        
+        for pattern in cardPatterns {
+            if let cardMatch = text.range(of: pattern, options: .regularExpression) {
+                let fullCard = String(text[cardMatch])
+                // Extract all 4-digit sequences and take the last one
+                let regex = try! NSRegularExpression(pattern: #"\d{4}"#)
+                let nsString = fullCard as NSString
+                let matches = regex.matches(in: fullCard, range: NSRange(location: 0, length: nsString.length))
+                
+                if let lastMatch = matches.last {
+                    let digits = nsString.substring(with: lastMatch.range)
+                    cardNumber = "****" + digits
+                    print("DEBUG: HDFC - Found card number: \(cardNumber) from pattern: \(fullCard)")
+                    break
+                }
+            }
+        }
+        
+        // If still not found, try a simpler approach - look for the specific HDFC format
+        if cardNumber == "****0000" {
+            if let range = text.range(of: #"\d{8}X{4}\d{4}"#, options: .regularExpression) {
+                let match = String(text[range])
+                let last4 = String(match.suffix(4))
+                cardNumber = "****" + last4
+                print("DEBUG: HDFC - Found card number (fallback): \(cardNumber) from: \(match)")
+            }
+        }
+        
+        // Extract statement date - HDFC specific format
+        var statementDate = Date()
+        
+        // Try HDFC-specific patterns first
+        let hdfcDatePatterns = [
+            #"Statement Date[:\s]*(\d{2}/\d{2}/\d{4})"#,  // Statement Date:22/07/2025
+            #"Statement Date[:\s]*(\d{1,2}\s+\w{3},?\s+\d{4})"#,  // 22 Sep, 2025
+            #"(\d{1,2}\s+\w{3},?\s+\d{4})"#  // 22 Sep, 2025
+        ]
+        
+        for pattern in hdfcDatePatterns {
+            if let dateMatch = text.range(of: pattern, options: .regularExpression) {
+                let dateText = String(text[dateMatch])
+                print("DEBUG: HDFC - Found statement date text: \(dateText)")
+                
+                // Try parsing DD MMM, YYYY format
+                let dateFormatter = DateFormatter()
+                dateFormatter.dateFormat = "dd MMM, yyyy"
+                if let date = dateFormatter.date(from: dateText.replacingOccurrences(of: "Statement Date:", with: "").trimmingCharacters(in: .whitespaces)) {
+                    statementDate = date
+                    print("DEBUG: HDFC - Parsed statement date: \(statementDate)")
+                    break
+                }
+                
+                // Try DD/MM/YYYY format
+                dateFormatter.dateFormat = "dd/MM/yyyy"
+                if let date = dateFormatter.date(from: dateText.replacingOccurrences(of: "Statement Date:", with: "").trimmingCharacters(in: .whitespaces)) {
+                    statementDate = date
+                    print("DEBUG: HDFC - Parsed statement date: \(statementDate)")
+                    break
+                }
+            }
+        }
+        
+        // Fallback to generic extraction
+        if statementDate == Date() {
+            statementDate = extractStatementDate(from: text) ?? Date()
+        }
+        
+        // Extract due date using ChatGPT approach - much cleaner!
+        var dueDate = Date()
+        
+        print("DEBUG: HDFC - Starting due date extraction using ChatGPT approach...")
+        
+        // ChatGPT-style regex patterns (clean and effective)
+        let dueDatePatterns: [String: String] = [
+            "Due Date": #"DUE DATE\s*([\d]{1,2}\s\w{3},\s\d{4})"#,
+            "Payment Due Date": #"Payment Due Date[:\s]*([\d]{1,2}/[\d]{1,2}/[\d]{4})"#,
+            "Due Date Table": #"Due Date[:\s]*([\d]{1,2}/[\d]{1,2}/[\d]{4})"#,
+            "Standalone Date": #"(\d{1,2}\s+(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC),?\s*\d{4})"#
+        ]
+        
+        for (key, regex) in dueDatePatterns {
+            print("DEBUG: HDFC - Trying pattern '\(key)': \(regex)")
+            if let match = text.range(of: regex, options: .regularExpression) {
+                let matched = String(text[match])
+                print("DEBUG: HDFC - Found due date with pattern '\(key)': \(matched)")
+                
+                // Extract the actual date from the match
+                let dateFormatter = DateFormatter()
+                dateFormatter.locale = Locale(identifier: "en_US")
+                
+                // Clean the matched string
+                let cleanDate = matched
+                    .replacingOccurrences(of: "DUE DATE", with: "")
+                    .replacingOccurrences(of: "Payment Due Date", with: "")
+                    .replacingOccurrences(of: "Due Date", with: "")
+                    .replacingOccurrences(of: ":", with: "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                
+                print("DEBUG: HDFC - Cleaned date string: '\(cleanDate)'")
+                
+                // Try different date formats
+                let dateFormats = ["dd MMM, yyyy", "dd MMM yyyy", "dd/MM/yyyy", "d MMM, yyyy", "d MMM yyyy"]
+                
+                for format in dateFormats {
+                    dateFormatter.dateFormat = format
+                    if let date = dateFormatter.date(from: cleanDate) {
+                        dueDate = date
+                        print("DEBUG: HDFC - ✅ Successfully parsed due date: \(dueDate) from '\(cleanDate)' using format '\(format)'")
+                        break
+                    }
+                }
+                
+                if dueDate != Date() {
+                    break
+                }
+            }
+        }
+        
+        // Enhanced fallback with comprehensive regex patterns (inspired by ChatGPT approach)
+        if dueDate == Date() {
+            print("DEBUG: HDFC - Due date not found with patterns, trying comprehensive regex approach...")
+            
+            // Comprehensive regex patterns for HDFC due dates
+            let comprehensivePatterns: [String: String] = [
+                "DUE DATE with day and month": #"DUE DATE\s*([\d]{1,2}\s\w{3},?\s?\d{4})"#,
+                "Standalone day month": #"(\d{1,2}\s+(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC),?\s*\d{4})"#,
+                "Payment Due Date": #"Payment Due Date[:\s]*([\d]{1,2}/[\d]{1,2}/[\d]{4})"#,
+                "Due date in table": #"Due Date[:\s]*([\d]{1,2}/[\d]{1,2}/[\d]{4})"#
+            ]
+            
+            for (patternName, regex) in comprehensivePatterns {
+                if let match = text.range(of: regex, options: .regularExpression) {
+                    let matched = String(text[match])
+                    print("DEBUG: HDFC - Found due date with pattern '\(patternName)': \(matched)")
+                    
+                    // Extract the date part
+                    let dateFormatter = DateFormatter()
+                    dateFormatter.locale = Locale(identifier: "en_US")
+                    
+                    // Try different date formats
+                    let dateFormats = ["dd MMM yyyy", "dd MMM, yyyy", "dd/MM/yyyy"]
+                    
+                    for format in dateFormats {
+                        dateFormatter.dateFormat = format
+                        // Clean the matched string
+                        let cleanDate = matched
+                            .replacingOccurrences(of: "DUE DATE", with: "")
+                            .replacingOccurrences(of: "Payment Due Date", with: "")
+                            .replacingOccurrences(of: "Due Date", with: "")
+                            .replacingOccurrences(of: ":", with: "")
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                        
+                        if let date = dateFormatter.date(from: cleanDate) {
+                            dueDate = date
+                            print("DEBUG: HDFC - Successfully parsed due date: \(dueDate) from '\(cleanDate)' using format '\(format)'")
+                            break
+                        }
+                    }
+                    
+                    if dueDate != Date() {
+                        break
+                    }
+                }
+            }
+            
+            // If still not found, check for month names in text
+            if dueDate == Date() {
+                print("DEBUG: HDFC - Searching for month names in text...")
+                let monthNames = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
+                
+                for month in monthNames {
+                    if text.contains(month) {
+                        print("DEBUG: HDFC - Found month '\(month)' in text")
+                        // Look for a number before this month
+                        if let monthRange = text.range(of: month) {
+                            let beforeMonth = String(text[..<monthRange.lowerBound])
+                            let words = beforeMonth.components(separatedBy: .whitespacesAndNewlines)
+                            
+                            // Find the last number before the month
+                            for word in words.reversed() {
+                                if let day = Int(word.trimmingCharacters(in: .punctuationCharacters)), day >= 1 && day <= 31 {
+                                    // Infer year from statement date
+                                    let calendar = Calendar.current
+                                    let statementYear = calendar.component(.year, from: statementDate)
+                                    let statementMonth = calendar.component(.month, from: statementDate)
+                                    
+                                    let monthNumber = ["JAN": 1, "FEB": 2, "MAR": 3, "APR": 4, "MAY": 5, "JUN": 6,
+                                                     "JUL": 7, "AUG": 8, "SEP": 9, "OCT": 10, "NOV": 11, "DEC": 12][month] ?? 10
+                                    let dueYear = (monthNumber < statementMonth) ? statementYear + 1 : statementYear
+                                    
+                                    let dateString = "\(day) \(month) \(dueYear)"
+                                    let dateFormatter = DateFormatter()
+                                    dateFormatter.locale = Locale(identifier: "en_US")
+                                    dateFormatter.dateFormat = "dd MMM yyyy"
+                                    
+                                    if let date = dateFormatter.date(from: dateString) {
+                                        dueDate = date
+                                        print("DEBUG: HDFC - Constructed due date: \(dueDate) from day=\(day), month=\(month), year=\(dueYear)")
+                                        break
+                                    }
+                                }
+                            }
+                        }
+                        if dueDate != Date() {
+                            break
+                        }
+                    }
+                }
+            }
+            
+            // Final fallback
+            if dueDate == Date() {
+                dueDate = Calendar.current.date(byAdding: .day, value: 30, to: statementDate) ?? Date()
+                print("DEBUG: HDFC - Using fallback due date (30 days from statement): \(dueDate)")
+            }
+        }
+        
+        // Extract all fields using ChatGPT approach
+        var creditLimit: Double = 0
+        var availableLimit: Double = 0
+        var totalAmountDue: Double = 0
+        var minimumDue: Double = 0
+        
+        print("DEBUG: HDFC - Extracting all fields using ChatGPT approach...")
+        
+        // ChatGPT-style regex patterns for all fields (handle line breaks)
+        let patterns: [String: String] = [
+            "Total Credit Limit": #"TOTAL CREDIT LIMIT[\s\S]*?C([\d,]+)"#,
+            "Available Credit Limit": #"AVAILABLE CREDIT LIMIT[\s\S]*?C[\d,]+(?:\.\d{2})?[\s\n]+C([\d,]+)"#,  // Get the SECOND C amount
+            "Total Amount Due": #"TOTAL AMOUNT DUE[\s\S]*?C([\d,]+\.\d{2})"#,
+            "Minimum Due": #"MINIMUM DUE[\s\S]*?C([\d,]+\.\d{2})"#
+        ]
+        
+        for (key, regex) in patterns {
+            if let match = text.range(of: regex, options: .regularExpression) {
+                let matched = String(text[match])
+                print("DEBUG: HDFC - Found \(key): \(matched)")
+                
+                // Extract the captured group directly from the regex match
+                let nsString = text as NSString
+                let nsRange = NSRange(match, in: text)
+                
+                if let regexObj = try? NSRegularExpression(pattern: regex) {
+                    if let regexMatch = regexObj.firstMatch(in: text, range: nsRange) {
+                        if regexMatch.numberOfRanges > 1 {
+                            let capturedRange = regexMatch.range(at: 1)
+                            let capturedText = nsString.substring(with: capturedRange)
+                            let cleanNumber = capturedText.replacingOccurrences(of: ",", with: "")
+                            
+                            if let value = Double(cleanNumber) {
+                                switch key {
+                                case "Total Credit Limit":
+                                    creditLimit = value
+                                    print("DEBUG: HDFC - Credit limit: ₹\(creditLimit)")
+                                case "Available Credit Limit":
+                                    availableLimit = value
+                                    print("DEBUG: HDFC - Available limit: ₹\(availableLimit)")
+                                case "Total Amount Due":
+                                    totalAmountDue = value
+                                    print("DEBUG: HDFC - Total amount due: ₹\(totalAmountDue)")
+                                case "Minimum Due":
+                                    minimumDue = value
+                                    print("DEBUG: HDFC - Minimum due: ₹\(minimumDue)")
+                                default:
+                                    break
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Calculate current usage (Credit Limit - Available Limit)
+        let currentUsage = creditLimit - availableLimit
+        print("DEBUG: HDFC - Current usage: ₹\(currentUsage) (Limit: ₹\(creditLimit) - Available: ₹\(availableLimit))")
+        
+        // Use totalAmountDue from patterns, fallback to currentUsage if needed
+        let finalTotalAmount = totalAmountDue > 0 ? totalAmountDue : currentUsage
+        let finalMinimumDue = minimumDue > 0 ? minimumDue : finalTotalAmount
+        
+        // Extract transactions
+        let transactions = extractHDFCTransactions(from: text)
+        print("DEBUG: HDFC - Extracted \(transactions.count) transactions")
+        
+        return CreditCardBillInfo(
+            bankName: bankName,
+            cardNumber: cardNumber,
+            statementDate: statementDate,
+            dueDate: dueDate,
+            totalAmount: finalTotalAmount,
+            dueAmount: finalMinimumDue,
+            creditLimit: creditLimit > 0 ? creditLimit : nil,
+            currentUsage: currentUsage > 0 ? currentUsage : nil,
+            availableLimit: availableLimit > 0 ? availableLimit : nil,
+            transactions: transactions
+        )
+    }
+    
+    // MARK: - HDFC Transaction Extraction
+    private func extractHDFCTransactions(from text: String) -> [CreditCardTransaction] {
+        print("DEBUG: Starting HDFC transaction extraction")
+        var transactions: [CreditCardTransaction] = []
+        
+        // HDFC transaction format typically:
+        // Date Description Amount
+        // DD/MM/YYYY MERCHANT NAME Rs. 1,234.56
+        
+        let lines = text.components(separatedBy: .newlines)
+        
+        for (index, line) in lines.enumerated() {
+            let trimmedLine = line.trimmingCharacters(in: .whitespaces)
+            
+            // Skip empty lines and headers
+            if trimmedLine.isEmpty || 
+               trimmedLine.contains("Transaction") ||
+               trimmedLine.contains("Date") ||
+               trimmedLine.contains("Description") {
+                continue
+            }
+            
+            // Look for date pattern at start of line (DD/MM/YYYY or DD-MM-YYYY)
+            let datePattern = #"^(\d{2}[/-]\d{2}[/-]\d{4})"#
+            guard let dateMatch = trimmedLine.range(of: datePattern, options: .regularExpression) else {
+                continue
+            }
+            
+            let dateString = String(trimmedLine[dateMatch])
+            
+            // Parse date
+            let dateFormatter = DateFormatter()
+            dateFormatter.dateFormat = "dd/MM/yyyy"
+            var transactionDate = dateFormatter.date(from: dateString.replacingOccurrences(of: "-", with: "/"))
+            
+            if transactionDate == nil {
+                dateFormatter.dateFormat = "dd-MM-yyyy"
+                transactionDate = dateFormatter.date(from: dateString)
+            }
+            
+            guard let date = transactionDate else { continue }
+            
+            // Extract description and amount from rest of line
+            let afterDate = String(trimmedLine[dateMatch.upperBound...]).trimmingCharacters(in: .whitespaces)
+            
+            // Look for amount pattern (Rs. 1,234.56 or 1,234.56)
+            let amountPattern = #"(Rs\.?\s*)?(\d+(?:,\d{3})*(?:\.\d{2})?)\s*(Cr|Dr)?$"#
+            guard let amountMatch = afterDate.range(of: amountPattern, options: .regularExpression) else {
+                continue
+            }
+            
+            let amountText = String(afterDate[amountMatch])
+            let description = String(afterDate[..<amountMatch.lowerBound]).trimmingCharacters(in: .whitespaces)
+            
+            // Skip if description is empty or too short
+            if description.isEmpty || description.count < 3 {
+                continue
+            }
+            
+            // Extract amount value
+            guard let digitMatch = amountText.range(of: #"\d+(?:,\d{3})*(?:\.\d{2})?"#, options: .regularExpression) else {
+                continue
+            }
+            
+            let amountStr = String(amountText[digitMatch]).replacingOccurrences(of: ",", with: "")
+            guard let amount = Double(amountStr), amount > 0 else {
+                continue
+            }
+            
+            // Skip payment transactions (credits to the card)
+            let isPayment = isPaymentTransaction(description)
+            if isPayment {
+                print("DEBUG: HDFC - Skipping payment transaction: \(description)")
+                continue
+            }
+            
+            // Categorize transaction
+            let category = categorizeTransaction(description)
+            
+            let transaction = CreditCardTransaction(
+                date: date,
+                description: description,
+                amount: amount,
+                category: category,
+                referenceNumber: nil
+            )
+            
+            transactions.append(transaction)
+            print("DEBUG: HDFC - Transaction: \(dateString) | \(description) | ₹\(amount) | \(category)")
+        }
+        
+        print("DEBUG: HDFC - Total transactions extracted: \(transactions.count)")
+        return transactions
     }
     
     private func parseICICIBankStatement(_ text: String) -> CreditCardBillInfo? {

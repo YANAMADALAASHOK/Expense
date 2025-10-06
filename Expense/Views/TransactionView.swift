@@ -40,7 +40,7 @@ struct TransactionView: View {
                             }
                         }
                     ) {
-                        ForEach(transactions, id: \.id) { transaction in
+                        ForEach(transactions.filter { $0.id != nil }, id: \.id) { transaction in
                             TransactionRow(transaction: transaction)
                                 .contentShape(Rectangle())
                                 .onTapGesture {

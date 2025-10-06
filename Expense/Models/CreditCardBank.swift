@@ -4,7 +4,7 @@ import Foundation
 enum CreditCardBank: String, CaseIterable {
     case axis = "cc.statements@axisbank.com"
     case icici = "credit_cards@icicibank.com"
-    case hdfc = "emailstatements.cards@hdfcbank.net"
+    case hdfc = "Emailstatements.cards@hdfcbank.net"
     case sbi = "Statements@sbicard.com"
     case kotak = "creditcard@kotak.com"
     

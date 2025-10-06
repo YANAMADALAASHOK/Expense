@@ -318,10 +318,36 @@ struct CreditCardBillsListView: View {
         // Reset balance to 0 (will be updated when bills are re-fetched)
         account.balance = 0
         
+        // Reset credit limit to 0
+        account.creditLimit = 0
+        
+        // Clear only bill-related metadata while preserving core account info
+        var preservedMetadata: [String: String] = [:]
+        let currentMetadata = account.metadataDictionary
+        
+        // Preserve essential account information
+        if let accountNumber = currentMetadata["accountNumber"] {
+            preservedMetadata["accountNumber"] = accountNumber
+        }
+        if let bankName = currentMetadata["bankName"] {
+            preservedMetadata["bankName"] = bankName
+        }
+        if let emailAddress = currentMetadata["emailAddress"] {
+            preservedMetadata["emailAddress"] = emailAddress
+        }
+        if let cardType = currentMetadata["cardType"] {
+            preservedMetadata["cardType"] = cardType
+        }
+        
+        // Set metadata to only preserved values (removes all bill-related data)
+        account.metadataDictionary = preservedMetadata
+        
         // Save changes
         try? viewModel.viewContext.save()
         
-        print("DEBUG: ✅ Reset complete! Balance set to ₹0. Re-fetch bills to update.")
+        print("DEBUG: ✅ Reset complete! Balance, credit limit, and bill metadata cleared.")
+        print("DEBUG: 🔒 Preserved: accountNumber, bankName, emailAddress, cardType")
+        print("DEBUG: 🗑️ Cleared: All bill-related metadata (statements, due dates, etc.)")
     }
     
     // Format statement period for logging
