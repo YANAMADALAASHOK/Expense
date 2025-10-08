@@ -7,6 +7,15 @@ struct EditCreditCardView: View {
     let account: CDAccount
     @StateObject private var currencySettings = CurrencySettings.shared
     
+    // Focus management for auto-navigation
+    @FocusState private var focusedField: Field?
+    
+    enum Field: Hashable {
+        case cardSection1, cardSection2, cardSection3, cardSection4
+        case expiryMonth, expiryYear, cvv
+        case totalLimit, availableLimit
+    }
+    
     // Card Details
     @State private var cardSection1 = ""
     @State private var cardSection2 = ""
@@ -79,9 +88,17 @@ struct EditCreditCardView: View {
                             .padding(8)
                             .background(Color(.systemGray6))
                             .cornerRadius(8)
+                            .focused($focusedField, equals: .cardSection1)
                             .onChange(of: cardSection1) { oldValue, newValue in
-                                if newValue.count > 4 {
-                                    cardSection1 = String(newValue.prefix(4))
+                                let filtered = newValue.filter { $0.isNumber }
+                                if filtered.count > 4 {
+                                    cardSection1 = String(filtered.prefix(4))
+                                } else {
+                                    cardSection1 = filtered
+                                }
+                                // Auto-navigate to next field when 4 digits entered
+                                if cardSection1.count == 4 {
+                                    focusedField = .cardSection2
                                 }
                             }
                         
@@ -93,9 +110,17 @@ struct EditCreditCardView: View {
                             .padding(8)
                             .background(Color(.systemGray6))
                             .cornerRadius(8)
+                            .focused($focusedField, equals: .cardSection2)
                             .onChange(of: cardSection2) { oldValue, newValue in
-                                if newValue.count > 4 {
-                                    cardSection2 = String(newValue.prefix(4))
+                                let filtered = newValue.filter { $0.isNumber }
+                                if filtered.count > 4 {
+                                    cardSection2 = String(filtered.prefix(4))
+                                } else {
+                                    cardSection2 = filtered
+                                }
+                                // Auto-navigate to next field when 4 digits entered
+                                if cardSection2.count == 4 {
+                                    focusedField = .cardSection3
                                 }
                             }
                         
@@ -107,9 +132,17 @@ struct EditCreditCardView: View {
                             .padding(8)
                             .background(Color(.systemGray6))
                             .cornerRadius(8)
+                            .focused($focusedField, equals: .cardSection3)
                             .onChange(of: cardSection3) { oldValue, newValue in
-                                if newValue.count > 4 {
-                                    cardSection3 = String(newValue.prefix(4))
+                                let filtered = newValue.filter { $0.isNumber }
+                                if filtered.count > 4 {
+                                    cardSection3 = String(filtered.prefix(4))
+                                } else {
+                                    cardSection3 = filtered
+                                }
+                                // Auto-navigate to next field when 4 digits entered
+                                if cardSection3.count == 4 {
+                                    focusedField = .cardSection4
                                 }
                             }
                         
@@ -121,9 +154,17 @@ struct EditCreditCardView: View {
                             .padding(8)
                             .background(Color(.systemGray6))
                             .cornerRadius(8)
+                            .focused($focusedField, equals: .cardSection4)
                             .onChange(of: cardSection4) { oldValue, newValue in
-                                if newValue.count > 4 {
-                                    cardSection4 = String(newValue.prefix(4))
+                                let filtered = newValue.filter { $0.isNumber }
+                                if filtered.count > 4 {
+                                    cardSection4 = String(filtered.prefix(4))
+                                } else {
+                                    cardSection4 = filtered
+                                }
+                                // Auto-navigate to expiry month when 4 digits entered
+                                if cardSection4.count == 4 {
+                                    focusedField = .expiryMonth
                                 }
                             }
                     }
@@ -133,20 +174,39 @@ struct EditCreditCardView: View {
                         TextField("MM", text: $expiryMonth)
                             .keyboardType(.numberPad)
                             .frame(width: 50)
+                            .multilineTextAlignment(.center)
+                            .focused($focusedField, equals: .expiryMonth)
                             .onChange(of: expiryMonth) { oldValue, newValue in
-                                if newValue.count > 2 {
-                                    expiryMonth = String(newValue.prefix(2))
+                                let filtered = newValue.filter { $0.isNumber }
+                                if filtered.count > 2 {
+                                    expiryMonth = String(filtered.prefix(2))
+                                } else {
+                                    expiryMonth = filtered
+                                }
+                                // Auto-navigate to year when 2 digits entered
+                                if expiryMonth.count == 2 {
+                                    focusedField = .expiryYear
                                 }
                             }
                         
                         Text("/")
+                            .foregroundColor(.secondary)
                         
                         TextField("YY", text: $expiryYear)
                             .keyboardType(.numberPad)
                             .frame(width: 50)
+                            .multilineTextAlignment(.center)
+                            .focused($focusedField, equals: .expiryYear)
                             .onChange(of: expiryYear) { oldValue, newValue in
-                                if newValue.count > 2 {
-                                    expiryYear = String(newValue.prefix(2))
+                                let filtered = newValue.filter { $0.isNumber }
+                                if filtered.count > 2 {
+                                    expiryYear = String(filtered.prefix(2))
+                                } else {
+                                    expiryYear = filtered
+                                }
+                                // Auto-navigate to CVV when 2 digits entered
+                                if expiryYear.count == 2 {
+                                    focusedField = .cvv
                                 }
                             }
                         
@@ -160,9 +220,17 @@ struct EditCreditCardView: View {
                         SecureField("CVV", text: $cvv)
                             .keyboardType(.numberPad)
                             .frame(width: 80)
+                            .focused($focusedField, equals: .cvv)
                             .onChange(of: cvv) { oldValue, newValue in
-                                if newValue.count > 3 {
-                                    cvv = String(newValue.prefix(3))
+                                let filtered = newValue.filter { $0.isNumber }
+                                if filtered.count > 3 {
+                                    cvv = String(filtered.prefix(3))
+                                } else {
+                                    cvv = filtered
+                                }
+                                // Auto-navigate to total limit when 3 digits entered
+                                if cvv.count == 3 {
+                                    focusedField = .totalLimit
                                 }
                             }
                         
@@ -178,6 +246,13 @@ struct EditCreditCardView: View {
                     HStack {
                         TextField("Total Credit Limit (Optional)", text: $totalLimit)
                             .keyboardType(.decimalPad)
+                            .focused($focusedField, equals: .totalLimit)
+                            .onChange(of: totalLimit) { oldValue, newValue in
+                                // Auto-navigate to available limit when user enters data
+                                if !newValue.isEmpty && totalLimit.count > 3 {
+                                    focusedField = .availableLimit
+                                }
+                            }
                         Picker("Currency", selection: $currencySettings.selectedCurrency) {
                             ForEach(Currency.allCases, id: \.self) { currency in
                                 Text(currency.symbol).tag(currency)
@@ -189,6 +264,7 @@ struct EditCreditCardView: View {
                     HStack {
                         TextField("Available Limit (Optional)", text: $availableLimit)
                             .keyboardType(.decimalPad)
+                            .focused($focusedField, equals: .availableLimit)
                         Picker("Currency", selection: $currencySettings.selectedCurrency) {
                             ForEach(Currency.allCases, id: \.self) { currency in
                                 Text(currency.symbol).tag(currency)

@@ -34,124 +34,10 @@ struct CreditCardBillsListView: View {
         NavigationView {
             ScrollView {
                 VStack(spacing: 20) {
-                    // Load Bills Button
                     if bills.isEmpty {
-                        VStack(spacing: 16) {
-                            Image(systemName: "doc.text.magnifyingglass")
-                                .font(.system(size: 60))
-                                .foregroundColor(.blue.opacity(0.5))
-                            
-                            Text("No Bills Loaded")
-                                .font(.title2)
-                                .fontWeight(.semibold)
-                            
-                            Text("Fetch bills from your email to get started")
-                                .font(.subheadline)
-                                .foregroundColor(.secondary)
-                                .multilineTextAlignment(.center)
-                            
-                            Button(action: fetchBills) {
-                                HStack {
-                                    if isFetchingBills {
-                                        ProgressView()
-                                            .progressViewStyle(CircularProgressViewStyle(tint: .white))
-                                    } else {
-                                        Image(systemName: "arrow.down.doc")
-                                    }
-                                    Text(isFetchingBills ? "Fetching Bills..." : "Fetch Bills from Email")
-                                }
-                                .font(.headline)
-                                .foregroundColor(.white)
-                                .frame(maxWidth: .infinity)
-                                .padding()
-                                .background(Color.blue)
-                                .cornerRadius(12)
-                            }
-                            .disabled(isFetchingBills)
-                            .padding(.horizontal)
-                        }
-                        .padding(.top, 100)
+                        emptyStateView
                     } else {
-                        // Action Buttons
-                        HStack(spacing: 12) {
-                            // Clear All Bills Button
-                            Button(action: { showingDeleteConfirmation = true }) {
-                                HStack(spacing: 6) {
-                                    Image(systemName: "trash")
-                                    Text("Clear All Bills")
-                                }
-                                .font(.subheadline.weight(.medium))
-                                .foregroundColor(.white)
-                                .padding(.horizontal, 16)
-                                .padding(.vertical, 10)
-                                .background(Color.red)
-                                .cornerRadius(10)
-                            }
-                            
-                            Spacer()
-                            
-                            // Refresh Button
-                            Button(action: fetchBills) {
-                                HStack(spacing: 4) {
-                                    Image(systemName: "arrow.clockwise")
-                                    Text("Refresh")
-                                }
-                                .font(.subheadline.weight(.medium))
-                                .foregroundColor(.blue)
-                            }
-                            .disabled(isFetchingBills)
-                        }
-                        .padding(.horizontal)
-                        
-                        // Unpaid Bills Section
-                        if !unpaidBills.isEmpty {
-                            VStack(alignment: .leading, spacing: 12) {
-                                Text("Unpaid Bills")
-                                    .font(.title2)
-                                    .fontWeight(.bold)
-                                    .padding(.horizontal)
-                                
-                                ForEach(unpaidBills) { bill in
-                                    BillRowView(
-                                        bill: bill,
-                                        onMarkPaid: { markBillAsPaid(bill) },
-                                        onPayBill: {
-                                            selectedBill = bill
-                                            showingPaymentSheet = true
-                                        },
-                                        onViewDetails: {
-                                            selectedBill = bill
-                                            showingBillDetails = true
-                                        }
-                                    )
-                                    .padding(.horizontal)
-                                }
-                            }
-                        }
-                        
-                        // Paid Bills Section
-                        if !paidBills.isEmpty {
-                            VStack(alignment: .leading, spacing: 12) {
-                                Text("Paid Bills")
-                                    .font(.title2)
-                                    .fontWeight(.bold)
-                                    .padding(.horizontal)
-                                    .padding(.top)
-                                
-                                ForEach(paidBills) { bill in
-                                    BillRowView(
-                                        bill: bill,
-                                        onMarkPaid: nil,
-                                        onPayBill: nil,
-                                        onViewDetails: {
-                                            selectedBill = bill
-                                            showingBillDetails = true
-                                        }
-                                    )
-                                    .padding(.horizontal)
-                                }
-                            }
-                        }
+                        billsContentView
                     }
                     
                     Spacer(minLength: 20)
@@ -161,29 +47,7 @@ struct CreditCardBillsListView: View {
             .navigationTitle("Credit Card Bills")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    Menu {
-                        Button(role: .destructive) {
-                            showingDeleteConfirmation = true
-                        } label: {
-                            Label("Clear All Bills", systemImage: "trash")
-                        }
-                        
-                        Button(role: .destructive) {
-                            resetBalanceAndClearTransactions()
-                        } label: {
-                            Label("Reset Balance & Clear Transactions", systemImage: "arrow.counterclockwise")
-                        }
-                    } label: {
-                        Image(systemName: "ellipsis.circle")
-                    }
-                }
-                
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Done") {
-                        dismiss()
-                    }
-                }
+                toolbarContent
             }
             .onAppear {
                 loadBills()
@@ -200,28 +64,272 @@ struct CreditCardBillsListView: View {
                     CreditCardBillDetailsView(bill: bill)
                 }
             }
-            .alert("Error", isPresented: $showingError) {
-                Button("OK") {}
-            } message: {
-                Text(errorMessage)
-            }
-            .alert("Clear All Bills?", isPresented: $showingDeleteConfirmation) {
-                Button("Cancel", role: .cancel) {}
-                Button("Clear All", role: .destructive) {
+            .alert("Delete All Bills", isPresented: $showingDeleteConfirmation) {
+                Button("Cancel", role: .cancel) { }
+                Button("Delete", role: .destructive) {
                     clearAllBills()
                 }
             } message: {
-                Text("This will delete all \(bills.count) bill(s) for this card. You can fetch them again from email.")
+                Text("Are you sure you want to delete all bills? This action cannot be undone.")
             }
         }
     }
     
+    private var emptyStateView: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "doc.text.magnifyingglass")
+                .font(.system(size: 60))
+                .foregroundColor(.blue.opacity(0.5))
+            
+            Text("No Bills Loaded")
+                .font(.title2)
+                .fontWeight(.semibold)
+            
+            Text("Fetch bills from your email to get started")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+            
+            fetchBillsButton
+        }
+        .padding(.top, 100)
+    }
+    
+    private var fetchBillsButton: some View {
+        Button(action: fetchBills) {
+            HStack {
+                if isFetchingBills {
+                    ProgressView()
+                        .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                } else {
+                    Image(systemName: "arrow.down.doc")
+                }
+                Text(isFetchingBills ? "Fetching Bills..." : "Fetch Bills from Email")
+            }
+            .font(.headline)
+            .foregroundColor(.white)
+            .frame(maxWidth: .infinity)
+            .padding()
+            .background(Color.blue)
+            .cornerRadius(12)
+        }
+        .disabled(isFetchingBills)
+        .padding(.horizontal)
+    }
+    
+    private var billsContentView: some View {
+        VStack(spacing: 20) {
+            actionButtonsView
+            unpaidBillsSection
+            paidBillsSection
+        }
+    }
+    
+    private var actionButtonsView: some View {
+        HStack(spacing: 12) {
+            Button(action: { showingDeleteConfirmation = true }) {
+                HStack(spacing: 6) {
+                    Image(systemName: "trash")
+                    Text("Clear All Bills")
+                }
+                .font(.subheadline.weight(.medium))
+                .foregroundColor(.white)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .background(Color.red)
+                .cornerRadius(10)
+            }
+            
+            Spacer()
+            
+            Button(action: fetchBills) {
+                HStack(spacing: 4) {
+                    Image(systemName: "arrow.clockwise")
+                    Text("Refresh")
+                }
+                .font(.subheadline.weight(.medium))
+                .foregroundColor(.blue)
+            }
+            .disabled(isFetchingBills)
+        }
+        .padding(.horizontal)
+    }
+    
+    private var unpaidBillsSection: some View {
+        Group {
+            if !unpaidBills.isEmpty {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Unpaid Bills")
+                        .font(.title2)
+                        .fontWeight(.bold)
+                        .padding(.horizontal)
+                    
+                    ForEach(unpaidBills) { bill in
+                        BillRowView(
+                            bill: bill,
+                            onMarkPaid: { markBillAsPaid(bill) },
+                            onPayBill: {
+                                selectedBill = bill
+                                showingPaymentSheet = true
+                            },
+                            onViewDetails: {
+                                selectedBill = bill
+                                showingBillDetails = true
+                            }
+                        )
+                        .padding(.horizontal)
+                    }
+                }
+            }
+        }
+    }
+    
+    @ViewBuilder
+    private var paidBillsSection: some View {
+        if !paidBills.isEmpty {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Paid Bills")
+                    .font(.title2)
+                    .fontWeight(.bold)
+                    .padding(.horizontal)
+                    .padding(.top)
+                
+                ForEach(paidBills) { bill in
+                    BillRowView(
+                        bill: bill,
+                        onMarkPaid: nil,
+                        onPayBill: nil,
+                        onViewDetails: {
+                            selectedBill = bill
+                            showingBillDetails = true
+                        }
+                    )
+                    .padding(.horizontal)
+                }
+            }
+        }
+    }
+    
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .navigationBarLeading) {
+            Menu {
+                Button(role: .destructive) {
+                    showingDeleteConfirmation = true
+                } label: {
+                    Label("Clear All Bills", systemImage: "trash")
+                }
+                
+                Button(role: .destructive) {
+                    resetBalanceAndClearTransactions()
+                } label: {
+                    Label("Reset Balance & Clear Transactions", systemImage: "arrow.counterclockwise")
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+            }
+        }
+        
+        ToolbarItem(placement: .navigationBarTrailing) {
+            Button("Fetch Bills") {
+                fetchBills()
+            }
+            .disabled(isLoading)
+        }
+    }
+    
+    // MARK: - Functions
+    
     private func loadBills() {
-        guard let accountId = account.id else {
-            print("ERROR: Account ID is nil, cannot load bills")
+        // Re-fetch account in the current context to ensure it's valid
+        guard let accountObjectID = account.objectID as? NSManagedObjectID else {
+            print("ERROR: Cannot get account object ID")
             return
         }
+        
+        // Get the account in the current view context
+        guard let currentAccount = try? viewModel.viewContext.existingObject(with: accountObjectID) as? CDAccount,
+              let accountId = currentAccount.id else {
+            print("ERROR: Cannot re-fetch account in current context")
+            return
+        }
+        
+        // Debug: Check what bills exist and what account we're looking for
+        let allBills = CreditCardBillStorage.shared.loadAllBills()
+        print("DEBUG: 🔍 Loading bills for account: \(currentAccount.wrappedAccountName) (ID: \(accountId))")
+        print("DEBUG: 📊 Total bills in storage: \(allBills.count)")
+        
+        // Show all bills with their card account IDs
+        for bill in allBills {
+            print("DEBUG: 📄 Bill: \(bill.statementDate) - Card ID: \(bill.cardAccountId), Amount: ₹\(bill.totalAmount)")
+        }
+        
+        // No migration needed - bills should be created with correct account ID from start
+        
         bills = CreditCardBillStorage.shared.loadBills(for: accountId)
+        print("DEBUG: ✅ Loaded \(bills.count) bills for this account")
+        
+        // Debug: Show which bills were loaded
+        for bill in bills {
+            print("DEBUG: 📄 Loaded bill: \(bill.statementDate) - ₹\(bill.totalAmount)")
+        }
+    }
+    
+    private func migrateBillsForHDFCCard(accountId: UUID) {
+        let allBills = CreditCardBillStorage.shared.loadAllBills()
+        var migratedBills: [CreditCardBill] = []
+        var hasChanges = false
+        
+        for bill in allBills {
+            // Check if this bill should belong to the current HDFC account
+            // Look for HDFC bills based on PDF filename or transaction patterns
+            let isHDFCBill = bill.pdfFileName?.contains("HDFC") == true ||
+                           bill.pdfFileName?.contains("Millennia") == true ||
+                           bill.transactions.contains { transaction in
+                               transaction.description.contains("FLIPKART") ||
+                               transaction.description.contains("IGST-VPS") ||
+                               transaction.description.contains("TELE TRANSFER") ||
+                               transaction.description.contains("MER EMI") ||
+                               transaction.description.contains("ZOMATO") ||
+                               transaction.description.contains("LATE FEE") ||
+                               transaction.description.contains("FINANCE CHARGES")
+                           }
+            
+            // If this is an HDFC bill and isn't already assigned to current account
+            if isHDFCBill && bill.cardAccountId != accountId {
+                print("DEBUG: 🔄 Migrating bill from \(bill.statementDate) to account \(accountId)")
+                
+                // Create a new bill with the updated account ID
+                let updatedBill = CreditCardBill(
+                    id: bill.id,
+                    cardAccountId: accountId, // Update to current account
+                    statementDate: bill.statementDate,
+                    dueDate: bill.dueDate,
+                    totalAmount: bill.totalAmount,
+                    minimumDue: bill.minimumDue,
+                    availableLimit: bill.availableLimit,
+                    creditLimit: bill.creditLimit,
+                    currentUsage: bill.currentUsage,
+                    isPaid: bill.isPaid,
+                    balanceAdjusted: bill.balanceAdjusted,
+                    pdfFileName: bill.pdfFileName,
+                    transactions: bill.transactions
+                )
+                migratedBills.append(updatedBill)
+                hasChanges = true
+            } else {
+                // Keep the original bill unchanged
+                migratedBills.append(bill)
+            }
+        }
+        
+        // Save the migrated bills if there were changes
+        if hasChanges {
+            if let encoded = try? JSONEncoder().encode(migratedBills) {
+                UserDefaults.standard.set(encoded, forKey: "CreditCardBills")
+                print("DEBUG: ✅ Migrated HDFC bills to current account")
+            }
+        }
     }
     
     private func fetchBills() {
@@ -245,7 +353,25 @@ struct CreditCardBillsListView: View {
             }
             
             await MainActor.run {
-                bills = fetchedBills
+                // Save fetched bills to storage
+                if !fetchedBills.isEmpty {
+                    for bill in fetchedBills {
+                        CreditCardBillStorage.shared.addBill(bill)
+                    }
+                    print("DEBUG: 💾 Saved \(fetchedBills.count) bills to storage")
+                }
+                
+                // Load all bills for this account (including newly saved ones)
+                // Re-fetch account in the current context to ensure it's valid
+                if let accountObjectID = account.objectID as? NSManagedObjectID,
+                   let currentAccount = try? viewModel.viewContext.existingObject(with: accountObjectID) as? CDAccount,
+                   let accountId = currentAccount.id {
+                    bills = CreditCardBillStorage.shared.loadBills(for: accountId)
+                    print("DEBUG: 📋 Loaded \(bills.count) bills from storage for display")
+                } else {
+                    print("DEBUG: ⚠️ Using fetched bills directly due to account context issue")
+                    bills = fetchedBills
+                }
                 
                 // FIRST: Check if latest bill is already paid (balance already adjusted)
                 let latestBillAlreadyPaid = bills.last?.isPaid ?? false
@@ -253,8 +379,14 @@ struct CreditCardBillsListView: View {
                 // Update account with latest bill info ONLY if not already paid
                 // If paid, balance has been adjusted and should not be overwritten
                 if let latestBill = bills.last, !latestBillAlreadyPaid {
-                    updateAccountWithBill(latestBill)
-                    print("DEBUG: 💳 Updated balance from PDF (bill not yet paid)")
+                    // Prefer the LATEST bill with credit limit data (not the first one)
+                    let bestBill = bills.last { $0.creditLimit > 0 && $0.availableLimit > 0 } ?? latestBill
+                    updateAccountWithBill(bestBill)
+                    if bestBill.creditLimit > 0 {
+                        print("DEBUG: 💳 Updated account with regular statement data - Limit: ₹\(bestBill.creditLimit), Usage: ₹\(bestBill.currentUsage)")
+                    } else {
+                        print("DEBUG: 💳 Updated balance from latest bill (no credit limit data available)")
+                    }
                 } else if latestBillAlreadyPaid {
                     print("DEBUG: 💳 Skipped balance update - latest bill already paid, keeping adjusted balance")
                 }
@@ -277,18 +409,42 @@ struct CreditCardBillsListView: View {
         metadata["totalLimit"] = String(bill.creditLimit)
         metadata["currentUsage"] = String(bill.currentUsage)
         metadata["lastStatementDate"] = ISO8601DateFormatter().string(from: bill.statementDate)
+        // Record when bills were loaded into the app (today's date)
+        metadata["lastBillLoadDate"] = ISO8601DateFormatter().string(from: Date())
         
         account.metadataDictionary = metadata
         
-        // ALWAYS update balance from PDF current usage
-        // Balance should reflect: Credit Limit - Available Limit from latest statement
-        // This is the actual current usage regardless of payment status
-        account.balance = -bill.currentUsage
-        print("DEBUG: ⚡ Updated balance to ₹\(account.balance) from PDF (Credit Limit - Available Limit)")
+        // Sort bills chronologically (oldest to latest)
+        let sortedBills = bills.sorted { $0.statementDate < $1.statementDate }
+        print("DEBUG: 📅 Processing \(sortedBills.count) bills chronologically...")
         
-        account.creditLimit = bill.creditLimit
+        // Mark all bills as paid except the latest one
+        if let latestBill = sortedBills.last {
+            print("DEBUG: 🆕 Latest bill: \(formatStatementPeriod(latestBill.statementDate)) - ₹\(latestBill.totalAmount)")
+            
+            // Mark all older bills as paid (they're superseded by the latest bill)
+            for oldBill in sortedBills.dropLast() {
+                if !oldBill.isPaid {
+                    print("DEBUG: ✅ Auto-marking older bill as paid: \(formatStatementPeriod(oldBill.statementDate)) - ₹\(oldBill.totalAmount)")
+                    CreditCardBillStorage.shared.markBillAsPaid(oldBill.id)
+                }
+            }
+            
+            // Card balance = current usage from latest bill (if available), otherwise bill amount
+            let balanceToUse = latestBill.currentUsage > 0 ? latestBill.currentUsage : latestBill.totalAmount
+            account.balance = -balanceToUse
+            print("DEBUG: ⚡ Updated balance to ₹\(account.balance) from latest bill: \(formatStatementPeriod(latestBill.statementDate))")
+        }
+        
+        // Update the account's credit limit property
+        if bill.creditLimit > 0 {
+            account.creditLimit = bill.creditLimit
+        }
         
         viewModel.saveContext()
+        
+        // Reload bills to reflect the paid status changes
+        loadBills()
     }
     
     private func markBillAsPaid(_ bill: CreditCardBill) {
@@ -297,10 +453,25 @@ struct CreditCardBillsListView: View {
     }
     
     private func clearAllBills() {
-        // Delete all bills for this card
-        CreditCardBillStorage.shared.saveBills([], for: account.id!)
+        // Re-fetch account in the current context to ensure it's valid
+        guard let accountObjectID = account.objectID as? NSManagedObjectID,
+              let currentAccount = try? viewModel.viewContext.existingObject(with: accountObjectID) as? CDAccount,
+              let accountId = currentAccount.id else {
+            print("ERROR: Cannot re-fetch account for clearing bills")
+            return
+        }
+        
+        CreditCardBillStorage.shared.saveBills([], for: accountId)
         bills = []
-        print("DEBUG: Cleared all bills for card \(account.wrappedAccountName)")
+        
+        // Reset the bill load date tag when bills are cleared
+        var metadata = account.metadataDictionary
+        metadata.removeValue(forKey: "lastBillLoadDate")
+        metadata.removeValue(forKey: "lastStatementDate")
+        account.metadataDictionary = metadata
+        viewModel.saveContext()
+        
+        print("DEBUG: 🧹 Cleared all bills for card \(currentAccount.wrappedAccountName) and reset load date tags")
     }
     
     private func resetBalanceAndClearTransactions() {
@@ -358,13 +529,26 @@ struct CreditCardBillsListView: View {
     }
     
     private func detectAndMarkPaidBills() {
-        // Load all bills (this will trigger migration on first load)
-        let allBills = CreditCardBillStorage.shared.loadAllBills()
+        // Re-fetch account in the current context to ensure it's valid
+        guard let accountObjectID = account.objectID as? NSManagedObjectID else {
+            print("ERROR: Cannot get account object ID for paid bills detection")
+            return
+        }
         
-        // Filter for unpaid bills (after migration has updated balanceAdjusted flags)
-        let unpaidBills = allBills.filter { !$0.isPaid }
+        // Get the account in the current view context
+        guard let currentAccount = try? viewModel.viewContext.existingObject(with: accountObjectID) as? CDAccount,
+              let accountId = currentAccount.id else {
+            print("ERROR: Cannot re-fetch account in current context for paid bills detection")
+            return
+        }
         
-        print("DEBUG: Total bills: \(allBills.count), Unpaid bills: \(unpaidBills.count)")
+        // Only check bills for THIS account, not all accounts
+        let accountBills = CreditCardBillStorage.shared.loadBills(for: accountId)
+        
+        // Filter for unpaid bills for this specific account
+        let unpaidBills = accountBills.filter { !$0.isPaid }
+        
+        print("DEBUG: Total bills for this account: \(accountBills.count), Unpaid bills: \(unpaidBills.count)")
         
         // Get ALL accounts to match bills with their card accounts
         let accountsFetchRequest = NSFetchRequest<CDAccount>(entityName: "CDAccount")
@@ -378,40 +562,59 @@ struct CreditCardBillsListView: View {
         let allTransactions = (try? viewModel.viewContext.fetch(fetchRequest)) ?? []
         print("DEBUG: Total transactions across all accounts: \(allTransactions.count)")
         
-        // Check each unpaid bill
-        for bill in unpaidBills {
+        // Only check the latest unpaid bill (should be only one after our logic)
+        let latestUnpaidBill = unpaidBills.sorted { $0.statementDate > $1.statementDate }.first
+        
+        if let bill = latestUnpaidBill {
             // Get the card account to extract card number from account name
             let billAccount = allAccounts.first { $0.id == bill.cardAccountId }
             let cardNumber = billAccount?.accountName?.components(separatedBy: "****").last ?? "Unknown"
             
-            print("DEBUG: 🔍 Checking bill for \(formatStatementPeriod(bill.statementDate)) - Card: ****\(cardNumber), Amount: ₹\(bill.totalAmount), Period: \(bill.statementDate) to \(bill.dueDate)")
+            print("DEBUG: 🔍 Checking bill for \(formatStatementPeriod(bill.statementDate)) - Card: ****\(cardNumber), Amount: ₹\(bill.totalAmount)")
+            print("DEBUG: 🔍 Bill period: \(bill.statementDate) to \(bill.dueDate)")
+            print("DEBUG: 🔍 Looking for payments in date range and amount within ±₹10 of ₹\(bill.totalAmount)")
             
-            // Look for payment transactions from the due date BACKWARDS to statement date
-            // (payments usually happen AFTER the bill is generated, near or on the due date)
+            // Look for payment transactions from BANK ACCOUNTS (not credit card account)
+            // These are payments made FROM bank accounts TO credit cards
             let paymentTransactions = allTransactions.filter { transaction in
                 guard let txnDate = transaction.date,
-                      let txnCategory = transaction.category else {
+                      let txnCategory = transaction.category,
+                      let txnAccount = transaction.account else {
                     return false
                 }
                 
                 let txnAmount = transaction.amount
-                let txnAccount = transaction.account
+                let description = transaction.notes?.lowercased() ?? ""
                 
-                // Check if transaction is in the date range (statement date to due date)
-                let isInDateRange = txnDate >= bill.statementDate && txnDate <= bill.dueDate
+                // IMPORTANT: Only look at transactions from BANK accounts, not credit card accounts
+                let isFromBankAccount = txnAccount.accountType != "Credit Card"
                 
-                // Check if it's a credit card payment category
-                let isPaymentCategory = txnCategory.lowercased() == "credit card payment"
+                // Check if transaction is in the date range (statement date to due date + 30 days buffer)
+                let extendedDueDate = Calendar.current.date(byAdding: .day, value: 30, to: bill.dueDate) ?? bill.dueDate
+                let isInDateRange = txnDate >= bill.statementDate && txnDate <= extendedDueDate
+                
+                // Check if it's a credit card payment (multiple ways to detect)
+                let isPaymentCategory = txnCategory.lowercased() == "credit card payment" ||
+                                      txnCategory.lowercased() == "others" ||
+                                      description.contains("bppy") ||
+                                      description.contains("cc payment") ||
+                                      description.contains("credit card") ||
+                                      description.contains("payment") ||
+                                      description.contains("hdfc") ||
+                                      description.contains("axis") ||
+                                      description.contains("icici")
                 
                 // Check if amount matches within ±10 rupees
                 let amountDiff = abs(txnAmount - bill.totalAmount)
                 let isAmountMatch = amountDiff <= 10
                 
-                if isInDateRange && txnCategory.lowercased().contains("credit card") {
-                    print("DEBUG:    📝 Transaction: Date: \(txnDate), Account: \(txnAccount?.accountName ?? "N/A"), Category: \(txnCategory), Amount: ₹\(txnAmount), Bill: ₹\(bill.totalAmount), Diff: ₹\(String(format: "%.2f", amountDiff)), Match: \(isPaymentCategory && isAmountMatch)")
+                let isMatch = isFromBankAccount && isInDateRange && isPaymentCategory && isAmountMatch
+                
+                if isInDateRange && isFromBankAccount && (isPaymentCategory || amountDiff <= 10) {
+                    print("DEBUG:    📝 Transaction: Date: \(txnDate), Account: \(txnAccount.accountName ?? "N/A") [\(txnAccount.accountType ?? "Unknown")], Category: \(txnCategory), Description: \(description), Amount: ₹\(txnAmount), Bill: ₹\(bill.totalAmount), Diff: ₹\(String(format: "%.2f", amountDiff)), Match: \(isMatch)")
                 }
                 
-                return isInDateRange && isPaymentCategory && isAmountMatch
+                return isMatch
             }
             
             print("DEBUG: Found \(paymentTransactions.count) matching payment transactions")
@@ -432,25 +635,31 @@ struct CreditCardBillsListView: View {
                 // Check if balance was already adjusted
                 if bill.balanceAdjusted {
                     print("DEBUG: ⏭️  Balance already adjusted for this bill, skipping")
-                    continue
+                    return
                 }
                 
                 // Adjust card balance to reflect the payment
                 guard let freshAccount = viewModel.viewContext.object(with: account.objectID) as? CDAccount else {
                     print("DEBUG: ❌ Failed to re-fetch account for balance adjustment")
-                    continue
+                    return
                 }
                 
                 let currentBalance = freshAccount.balance
-                // Credit card balances are negative (amount owed)
-                // Payment reduces the debt, so add the payment amount (makes balance less negative)
-                let newBalance = currentBalance + billAmount
+                let newBalance = currentBalance + billAmount // Add because balance is negative
                 freshAccount.balance = newBalance
+                
+                // Update the metadata to reflect reduced usage
+                var metadata = freshAccount.metadataDictionary
+                let currentUsage = Double(metadata["currentUsage"] ?? "0") ?? 0
+                let newUsage = max(0, currentUsage - billAmount) // Ensure it doesn't go negative
+                metadata["currentUsage"] = String(newUsage)
+                freshAccount.metadataDictionary = metadata
                 
                 print("DEBUG: 💳 Adjusted card balance after payment:")
                 print("DEBUG:    Before Payment: ₹\(String(format: "%.2f", currentBalance))")
                 print("DEBUG:    Payment Amount: +₹\(String(format: "%.2f", billAmount))")
                 print("DEBUG:    After Payment: ₹\(String(format: "%.2f", newBalance))")
+                print("DEBUG:    Current Usage: ₹\(String(format: "%.2f", currentUsage)) → ₹\(String(format: "%.2f", newUsage))")
                 if discount > 0 {
                     print("DEBUG:    🎉 You saved ₹\(String(format: "%.2f", discount))")
                 }

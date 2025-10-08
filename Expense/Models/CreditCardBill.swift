@@ -91,6 +91,23 @@ class CreditCardBillStorage {
         }
     }
     
+    // Add a single bill (used during fetching)
+    func addBill(_ bill: CreditCardBill) {
+        var allBills = loadAllBills()
+        
+        // Check if bill already exists (prevent duplicates)
+        if !allBills.contains(where: { $0.id == bill.id }) {
+            allBills.append(bill)
+            
+            if let encoded = try? JSONEncoder().encode(allBills) {
+                UserDefaults.standard.set(encoded, forKey: billsKey)
+                print("DEBUG: ✅ Added bill to storage: \(bill.statementDate) - ₹\(bill.totalAmount)")
+            }
+        } else {
+            print("DEBUG: ⚠️ Bill already exists, skipping: \(bill.statementDate)")
+        }
+    }
+    
     func loadBills(for cardId: UUID) -> [CreditCardBill] {
         return loadAllBills().filter { $0.cardAccountId == cardId }
             .sorted { $0.statementDate < $1.statementDate } // Oldest first
@@ -146,6 +163,38 @@ class CreditCardBillStorage {
             if let encoded = try? JSONEncoder().encode(allBills) {
                 UserDefaults.standard.set(encoded, forKey: billsKey)
             }
+        }
+    }
+    
+    // Clean up orphaned bills (bills for deleted credit card accounts)
+    func cleanupOrphanedBills(validAccountIds: Set<UUID>) {
+        let allBills = loadAllBills()
+        let validBills = allBills.filter { validAccountIds.contains($0.cardAccountId) }
+        let orphanedCount = allBills.count - validBills.count
+        
+        if orphanedCount > 0 {
+            if let encoded = try? JSONEncoder().encode(validBills) {
+                UserDefaults.standard.set(encoded, forKey: billsKey)
+                print("DEBUG: 🧹 Cleaned up \(orphanedCount) orphaned bills, kept \(validBills.count) valid bills")
+            }
+        }
+    }
+    
+    // Clear all bills (for testing/debugging)
+    func clearAllBills() {
+        UserDefaults.standard.removeObject(forKey: billsKey)
+        print("DEBUG: 🗑️ Cleared all bills from storage")
+    }
+    
+    // Clear bills for a specific account and return the account ID for metadata reset
+    func clearBillsForAccount(_ accountId: UUID) {
+        var allBills = loadAllBills()
+        let billsToRemove = allBills.filter { $0.cardAccountId == accountId }
+        allBills.removeAll { $0.cardAccountId == accountId }
+        
+        if let encoded = try? JSONEncoder().encode(allBills) {
+            UserDefaults.standard.set(encoded, forKey: billsKey)
+            print("DEBUG: 🧹 Cleared \(billsToRemove.count) bills for account \(accountId)")
         }
     }
     

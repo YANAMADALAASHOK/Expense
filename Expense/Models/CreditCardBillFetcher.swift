@@ -30,147 +30,265 @@ class CreditCardBillFetcher {
         
         print("DEBUG: Using profile data - Name: \(firstName), DOB: \(dateOfBirth)")
         progressCallback?("Using profile: \(firstName)")
+        
         guard let metadata = account.metadataDictionary as [String: String]?,
               let bankEmail = metadata["emailAddress"] else {
-            print("ERROR: No email address found in metadata")
             return []
         }
         
-        progressCallback?("Fetching emails from \(bankEmail)...")
+        // Determine which email addresses to check based on bank
+        let emailsToCheck: [String]
+        let isICICIBank = account.metadataDictionary["bankName"]?.contains("ICICI") == true
+        let isSBICard = account.metadataDictionary["bankName"]?.contains("SBI") == true
+        
+        if let bankName = account.metadataDictionary["bankName"], 
+           let bank = CreditCardBank(rawValue: bankName) {
+            emailsToCheck = [bank.rawValue]
+            if isICICIBank {
+                progressCallback?("Fetching emails from both Outlook and Gmail for ICICI Bank...")
+            } else if isSBICard {
+                progressCallback?("Searching for emails with SBI PDF attachments...")
+            } else {
+                progressCallback?("Fetching emails from \(bank.rawValue)...")
+            }
+        } else if let bankEmail = account.metadataDictionary["bankEmail"] {
+            emailsToCheck = [bankEmail]
+            progressCallback?("Fetching emails from \(bankEmail)...")
+        } else {
+            emailsToCheck = [bankEmail]
+            progressCallback?("Fetching emails from \(bankEmail)...")
+        }
         
         // Load existing bills to check for duplicates
         let existingBills = CreditCardBillStorage.shared.loadBills(for: account.id!)
+        print("DEBUG: 📋 Found \(existingBills.count) existing bills for account \(account.id!)")
+        for bill in existingBills {
+            print("DEBUG: 📋 Existing: \(formatStatementPeriod(bill.statementDate)) - ₹\(bill.totalAmount)")
+        }
         
-        // Get the latest bill date to only fetch newer emails
-        let latestBillDate = existingBills.map { $0.statementDate }.max()
-        if let latestDate = latestBillDate {
+        // Get the last bill load date from account metadata
+        var emailFilterDate: Date? = nil
+        if let lastLoadDateString = account.metadataDictionary["lastBillLoadDate"] {
+            if let lastLoadDate = ISO8601DateFormatter().date(from: lastLoadDateString) {
+                // Add 1 day to get tomorrow's date for email filtering
+                emailFilterDate = Calendar.current.date(byAdding: .day, value: 1, to: lastLoadDate)
+            }
+        }
+        
+        if let filterDate = emailFilterDate {
             let formatter = DateFormatter()
             formatter.dateStyle = .medium
-            print("DEBUG: Latest bill date: \(formatter.string(from: latestDate))")
-            progressCallback?("Checking for bills after \(formatter.string(from: latestDate))...")
+            print("DEBUG: 📅 Last bills loaded: \(formatter.string(from: Calendar.current.date(byAdding: .day, value: -1, to: filterDate)!)) - will fetch emails from \(formatter.string(from: filterDate)) onwards")
         } else {
-            progressCallback?("Fetching all bills...")
+            print("DEBUG: 📅 No previous load date found - will fetch all emails")
         }
         
-        var allBills: [CreditCardBill] = []
-        let providers: [EmailServiceManager.EmailProvider] = [.outlook, .gmail]
+        // Fetch emails from all addresses
+        var allEmails: [EmailMessage] = []
         
-        // Try both email providers
-        for provider in providers {
-            let providerName = provider == .outlook ? "Outlook" : "Gmail"
-            progressCallback?("Checking \(providerName)...")
+        for emailAddress in emailsToCheck {
+            print("DEBUG: Checking email address: \(emailAddress)")
+            progressCallback?("Checking emails for \(emailAddress)...")
             
-            // Switch to provider
-            let originalProvider = EmailServiceManager.shared.preferredProvider
-            EmailServiceManager.shared.preferredProvider = provider
-            defer { EmailServiceManager.shared.preferredProvider = originalProvider }
-            
-            do {
+            // For ICICI Bank, check both Outlook and Gmail
+            if isICICIBank {
+                print("DEBUG: 🏦 ICICI Bank detected - checking both Outlook and Gmail")
+                
+                // Check Outlook
+                do {
+                    let outlookService = OutlookEmailServiceAdapter()
+                    let outlookEmails = try await outlookService.fetchEmails(from: emailAddress)
+                    let filteredOutlookEmails = outlookEmails.filter { email in
+                        guard let filterDate = emailFilterDate,
+                              let receivedDate = ISO8601DateFormatter().date(from: email.receivedDateTime) else {
+                            return true
+                        }
+                        return receivedDate >= filterDate
+                    }
+                    allEmails.append(contentsOf: filteredOutlookEmails)
+                    print("DEBUG: 📧 Outlook: Found \(outlookEmails.count) total emails, \(filteredOutlookEmails.count) new emails")
+                } catch {
+                    print("ERROR: Failed to fetch Outlook emails: \(error)")
+                }
+                
+                // Check Gmail with broader query for ICICI
+                do {
+                    let gmailService = GmailEmailServiceAdapter()
+                    let gmailEmails = try await gmailService.fetchEmails(from: "icicibank") // Broader search
+                    let filteredGmailEmails = gmailEmails.filter { email in
+                        guard let filterDate = emailFilterDate,
+                              let receivedDate = ISO8601DateFormatter().date(from: email.receivedDateTime) else {
+                            return true
+                        }
+                        return receivedDate >= filterDate
+                    }
+                    allEmails.append(contentsOf: filteredGmailEmails)
+                    print("DEBUG: 📧 Gmail: Found \(gmailEmails.count) total emails, \(filteredGmailEmails.count) new emails")
+                } catch {
+                    print("ERROR: Failed to fetch Gmail emails: \(error)")
+                }
+            } else if isSBICard {
+                print("DEBUG: 💳 SBI Card detected - checking both Outlook and Gmail")
+                
+                // Check Outlook
+                do {
+                    let outlookService = OutlookEmailServiceAdapter()
+                    let outlookEmails = try await outlookService.fetchEmails(from: emailAddress)
+                    let filteredOutlookEmails = outlookEmails.filter { email in
+                        guard let filterDate = emailFilterDate,
+                              let receivedDate = ISO8601DateFormatter().date(from: email.receivedDateTime) else {
+                            return true
+                        }
+                        return receivedDate >= filterDate
+                    }
+                    allEmails.append(contentsOf: filteredOutlookEmails)
+                    print("DEBUG: 📧 Outlook SBI: Found \(outlookEmails.count) total emails, \(filteredOutlookEmails.count) new emails")
+                } catch {
+                    print("ERROR: Failed to fetch Outlook SBI emails: \(error)")
+                }
+                
+                // Check Gmail
+                do {
+                    let gmailService = GmailEmailServiceAdapter()
+                    let gmailEmails = try await gmailService.fetchEmails(from: emailAddress)
+                    let filteredGmailEmails = gmailEmails.filter { email in
+                        guard let filterDate = emailFilterDate,
+                              let receivedDate = ISO8601DateFormatter().date(from: email.receivedDateTime) else {
+                            return true
+                        }
+                        return receivedDate >= filterDate
+                    }
+                    allEmails.append(contentsOf: filteredGmailEmails)
+                    print("DEBUG: 📧 Gmail SBI: Found \(gmailEmails.count) total emails, \(filteredGmailEmails.count) new emails")
+                } catch {
+                    print("ERROR: Failed to fetch Gmail SBI emails: \(error)")
+                }
+            } else {
+                // For other banks, use unified email service
                 let emailService = EmailServiceManager.shared.getEmailService()
                 
-                // Fetch emails from the bank's email address (from account metadata)
-                let emails = try await emailService.fetchEmails(from: bankEmail)
-                
-                // Filter emails to only process those newer than latest bill
-                let emailsToProcess: [EmailMessage]
-                if let latestDate = latestBillDate {
-                    // Only process emails received after the latest bill date
-                    emailsToProcess = emails.filter { email in
-                        if let receivedDate = ISO8601DateFormatter().date(from: email.receivedDateTime) {
-                            return receivedDate > latestDate
+                do {
+                    let emails = try await emailService.fetchEmails(from: emailAddress)
+                    let filteredEmails = emails.filter { email in
+                        guard let filterDate = emailFilterDate,
+                              let receivedDate = ISO8601DateFormatter().date(from: email.receivedDateTime) else {
+                            return true
                         }
-                        return false
+                        return receivedDate >= filterDate
                     }
-                    print("DEBUG: Found \(emails.count) total emails, \(emailsToProcess.count) new emails after latest bill")
-                } else {
-                    // No existing bills, process all emails
-                    emailsToProcess = emails
-                    print("DEBUG: Found \(emails.count) emails in \(providerName) (fetching all)")
+                    allEmails.append(contentsOf: filteredEmails)
+                    print("DEBUG: Found \(emails.count) total emails, \(filteredEmails.count) new emails from \(emailAddress)")
+                } catch {
+                    print("ERROR: Failed to fetch emails from \(emailAddress): \(error)")
                 }
-                
-                if emailsToProcess.isEmpty {
-                    progressCallback?("No new emails found in \(providerName)")
-                    continue
-                }
-                
-                // Process each email with PDF attachments
-                for email in emailsToProcess {
-                    progressCallback?("Processing email from \(email.receivedDateTime)...")
-                    
-                    // Get attachments
-                    let attachments = try await emailService.fetchAttachments(for: email.id)
-                    
-                    // Find PDF attachments
-                    let pdfAttachments = attachments.filter { ($0.name ?? "").lowercased().hasSuffix(".pdf") }
-                    
-                    for attachment in pdfAttachments {
-                        if let bill = await processPDFAttachment(
-                            attachment,
-                            email: email,
-                            account: account,
-                            firstName: firstName,
-                            dateOfBirth: dateOfBirth,
-                            emailService: emailService
-                        ) {
-                            // Check for duplicates in both new bills and existing bills
-                            let isDuplicateInNew = isDuplicate(bill: bill, in: allBills)
-                            let isDuplicateInExisting = isDuplicate(bill: bill, in: existingBills)
-                            
-                            if !isDuplicateInNew && !isDuplicateInExisting {
-                                allBills.append(bill)
-                                print("DEBUG: Added bill for \(formatStatementPeriod(bill.statementDate))")
-                                
-                                // Auto-sync transactions to main list if viewModel provided
-                                if let viewModel = viewModel {
-                                    await syncBillTransactionsToMainList(
-                                        bill: bill,
-                                        account: account,
-                                        viewModel: viewModel
-                                    )
-                                }
-                            } else {
-                                print("DEBUG: Skipping duplicate bill for \(formatStatementPeriod(bill.statementDate))")
-                            }
-                        }
-                    }
-                }
-            } catch {
-                print("ERROR: Failed to fetch from \(providerName): \(error)")
             }
         }
         
-        // Merge new bills with existing bills
-        var mergedBills = existingBills
-        for newBill in allBills {
-            if !isDuplicate(bill: newBill, in: mergedBills) {
-                mergedBills.append(newBill)
-            }
+        print("DEBUG: Total emails found from all sources: \(allEmails.count)")
+        
+        if allEmails.isEmpty {
+            progressCallback?("No new emails found")
+            return []
         }
         
-        // Sort bills by statement date (oldest first)
-        mergedBills.sort { $0.statementDate < $1.statementDate }
+        progressCallback?("Processing \(allEmails.count) emails...")
         
-        // Save merged bills
-        CreditCardBillStorage.shared.saveBills(mergedBills, for: account.id!)
+        // Remove duplicates based on subject and date
+        let uniqueEmails = Array(Set(allEmails))
+        print("DEBUG: After removing duplicates: \(uniqueEmails.count) emails")
         
-        // Auto-mark old bills as paid (except the latest one)
-        if let latestBill = mergedBills.last {
-            CreditCardBillStorage.shared.autoMarkOldBillsAsPaid(
-                for: account.id!,
-                exceptBillId: latestBill.id
-            )
-        }
-        
-        let newBillsCount = allBills.count
-        let totalBillsCount = mergedBills.count
-        
-        if newBillsCount > 0 {
-            progressCallback?("Added \(newBillsCount) new bill(s)! Total: \(totalBillsCount)")
+        // Process all filtered emails
+        let emailsToProcess = uniqueEmails
+        if let filterDate = emailFilterDate {
+            let formatter = DateFormatter()
+            formatter.dateStyle = .medium
+            print("DEBUG: Found \(uniqueEmails.count) emails from \(formatter.string(from: filterDate)) onwards")
         } else {
-            progressCallback?("No new bills found. Total: \(totalBillsCount)")
+            print("DEBUG: Found \(uniqueEmails.count) emails (fetching all)")
         }
         
-        return mergedBills
+        if emailsToProcess.isEmpty {
+            progressCallback?("No new emails found")
+            return []
+        }
+        
+        // Process each email with PDF attachments
+        var newBills: [CreditCardBill] = []
+        
+        for email in emailsToProcess {
+            progressCallback?("Processing email from \(email.receivedDateTime)...")
+            print("DEBUG: 📧 Processing email: \(email.subject)")
+            print("DEBUG: 📧 Email date: \(email.receivedDateTime)")
+            
+            // Determine which email service to use based on email ID format
+            print("DEBUG: 🔍 Fetching attachments for email: \(email.id)")
+            let allAttachments: [EmailAttachment]
+            do {
+                // Gmail IDs are short (like "199616f75b544185")
+                // Outlook IDs are long (like "AQMkADAwATM0MDAAMS0wNmE4LWVlADc3AC0wMAItMDAKAEYAAAOIsJCWStWBT4Bz6_N3vAJ3BwD70_M6ii7xTag8L6Tadyz1AAACAQwAAAD70_M6ii7xTag8L6Tadyz1AAZytxmxAAAA")
+                if email.id.count < 50 {
+                    // Gmail email - use Gmail service
+                    print("DEBUG: 📧 Using Gmail service for email ID: \(email.id)")
+                    let gmailService = GmailEmailServiceAdapter()
+                    allAttachments = try await gmailService.fetchAttachments(for: email.id)
+                } else {
+                    // Outlook email - use Outlook service
+                    print("DEBUG: 📧 Using Outlook service for email ID: \(email.id)")
+                    let outlookService = OutlookEmailServiceAdapter()
+                    allAttachments = try await outlookService.fetchAttachments(for: email.id)
+                }
+                print("DEBUG: ✅ Successfully fetched \(allAttachments.count) attachments")
+            } catch {
+                print("DEBUG: ❌ Failed to fetch attachments: \(error)")
+                allAttachments = []
+            }
+            let pdfAttachments = allAttachments.filter { ($0.name ?? "").lowercased().hasSuffix(".pdf") }
+            
+            print("DEBUG: 📎 Found \(allAttachments.count) total attachments, \(pdfAttachments.count) PDFs")
+            for attachment in allAttachments {
+                print("DEBUG: 📎 Attachment: '\(attachment.name ?? "unknown")' (\(attachment.contentType ?? "unknown type"))")
+            }
+            for pdf in pdfAttachments {
+                print("DEBUG: 📄 PDF: \(pdf.name ?? "unknown")")
+            }
+            
+            for attachment in pdfAttachments {
+                print("DEBUG: 🔄 Processing PDF: \(attachment.name ?? "unknown")")
+                if let bill = await processPDFAttachment(
+                    attachment,
+                    email: email,
+                    account: account,
+                    firstName: firstName,
+                    dateOfBirth: dateOfBirth
+                ) {
+                    print("DEBUG: ✅ Successfully created bill from PDF: \(formatStatementPeriod(bill.statementDate)) - ₹\(bill.totalAmount)")
+                    // Check for duplicates in both new bills and existing bills
+                    let isDuplicateInNew = isDuplicate(bill: bill, in: newBills)
+                    let isDuplicateInExisting = isDuplicate(bill: bill, in: existingBills)
+                    
+                    if !isDuplicateInNew && !isDuplicateInExisting {
+                        newBills.append(bill)
+                        print("DEBUG: Added bill for \(formatStatementPeriod(bill.statementDate))")
+                        
+                        // Auto-sync transactions to main list if viewModel provided
+                        if let viewModel = viewModel {
+                            await syncBillTransactionsToMainList(
+                                bill: bill,
+                                account: account,
+                                viewModel: viewModel
+                            )
+                        }
+                    } else {
+                        print("DEBUG: Skipping duplicate bill for \(formatStatementPeriod(bill.statementDate))")
+                    }
+                } else {
+                    print("DEBUG: ❌ Failed to create bill from PDF: \(attachment.name ?? "unknown")")
+                }
+            }
+        }
+        
+        progressCallback?("Added \(newBills.count) new bill(s)! Total: \(existingBills.count + newBills.count)")
+        return newBills
     }
     
     // Sync bill transactions to main list (balance-neutral)
@@ -276,32 +394,50 @@ class CreditCardBillFetcher {
         email: EmailMessage,
         account: CDAccount,
         firstName: String,
-        dateOfBirth: String,
-        emailService: any EmailServiceProtocol
+        dateOfBirth: String
     ) async -> CreditCardBill? {
         do {
-            // Download PDF data
-            let pdfData = try await emailService.downloadAttachment(
-                messageId: email.id,
-                attachmentId: attachment.id
-            )
+            // Download PDF data using correct email service based on email ID
+            print("DEBUG: 📥 Downloading PDF attachment: \(attachment.name ?? "unknown")")
+            let pdfData: Data?
+            if email.id.count < 50 {
+                // Gmail email - use Gmail service
+                print("DEBUG: 📧 Using Gmail service to download attachment")
+                let gmailService = GmailEmailServiceAdapter()
+                pdfData = try? await gmailService.downloadAttachment(
+                    messageId: email.id,
+                    attachmentId: attachment.id
+                )
+            } else {
+                // Outlook email - use Outlook service
+                print("DEBUG: 📧 Using Outlook service to download attachment")
+                let outlookService = OutlookEmailServiceAdapter()
+                pdfData = try? await outlookService.downloadAttachment(
+                    messageId: email.id,
+                    attachmentId: attachment.id
+                )
+            }
             
             guard let pdfData = pdfData else {
                 print("ERROR: No data downloaded for attachment")
                 return nil
             }
             
+            print("DEBUG: 📄 Downloaded PDF data: \(pdfData.count) bytes")
+            
             // Save to temporary file
             let tempURL = FileManager.default.temporaryDirectory
                 .appendingPathComponent("\(UUID().uuidString).pdf")
             try pdfData.write(to: tempURL)
+            print("DEBUG: 💾 Saved PDF to temporary file: \(tempURL.path)")
             
             // Parse PDF with dynamic password and card number validation
             guard let bill = await parsePDFBill(
                 at: tempURL,
                 firstName: firstName,
                 dateOfBirth: dateOfBirth,
-                account: account
+                account: account,
+                email: email
             ) else {
                 try? FileManager.default.removeItem(at: tempURL)
                 return nil
@@ -319,15 +455,25 @@ class CreditCardBillFetcher {
     }
     
     // Check if bill is duplicate based on statement date (same month/year)
+    // Simple logic: if same month/year exists, it's a duplicate (keep first one processed)
     private func isDuplicate(bill: CreditCardBill, in bills: [CreditCardBill]) -> Bool {
         let calendar = Calendar.current
         let billComponents = calendar.dateComponents([.year, .month], from: bill.statementDate)
         
-        return bills.contains { existingBill in
+        let duplicateBill = bills.first { existingBill in
             let existingComponents = calendar.dateComponents([.year, .month], from: existingBill.statementDate)
             return billComponents.year == existingComponents.year && 
                    billComponents.month == existingComponents.month
         }
+        
+        if let duplicate = duplicateBill {
+            print("DEBUG: 🔄 Skipping duplicate for same month: \(formatStatementPeriod(bill.statementDate))")
+            print("DEBUG: 🔄 Existing bill: \(formatStatementPeriod(duplicate.statementDate)) - ₹\(duplicate.totalAmount) (Account: \(duplicate.cardAccountId))")
+            print("DEBUG: 🔄 New bill: \(formatStatementPeriod(bill.statementDate)) - ₹\(bill.totalAmount) (Account: \(bill.cardAccountId))")
+            return true
+        }
+        
+        return false
     }
     
     // Format statement period for logging
@@ -342,7 +488,8 @@ class CreditCardBillFetcher {
         at url: URL,
         firstName: String,
         dateOfBirth: String,
-        account: CDAccount
+        account: CDAccount,
+        email: EmailMessage? = nil
     ) async -> CreditCardBill? {
         // Get card number from account metadata for SBI Card password generation
         let accountMetadata = account.metadataDictionary
@@ -356,9 +503,31 @@ class CreditCardBillFetcher {
         )
         
         // Use the existing working parser
-        guard let billInfo = PDFTransactionParser.shared.parseCreditCardBill(from: url) else {
+        guard var billInfo = PDFTransactionParser.shared.parseCreditCardBill(from: url) else {
             print("ERROR: Failed to parse PDF")
             return nil
+        }
+        
+        // If PDF has no financial data (duplicate statement), try to extract from email content
+        if billInfo.dueAmount == 0 && billInfo.creditLimit == nil, let email = email {
+            print("DEBUG: 💡 PDF has no financial data, checking email content...")
+            if let emailFinancialData = extractFinancialDataFromEmail(email: email) {
+                print("DEBUG: 💰 Found financial data in email: Due=₹\(emailFinancialData.totalDue), Min=₹\(emailFinancialData.minimumDue)")
+                
+                // Update billInfo with email data
+                billInfo = CreditCardBillInfo(
+                    bankName: billInfo.bankName,
+                    cardNumber: billInfo.cardNumber,
+                    statementDate: billInfo.statementDate,
+                    dueDate: emailFinancialData.dueDate ?? billInfo.dueDate,
+                    totalAmount: emailFinancialData.totalDue,
+                    dueAmount: emailFinancialData.minimumDue,
+                    creditLimit: billInfo.creditLimit,
+                    currentUsage: emailFinancialData.totalDue, // Use total due as current usage
+                    availableLimit: billInfo.availableLimit,
+                    transactions: billInfo.transactions
+                )
+            }
         }
         
         // CRITICAL: Validate card number - only process bills for THIS specific card
@@ -371,16 +540,38 @@ class CreditCardBillFetcher {
                                                      .replacingOccurrences(of: "X", with: "")
                                                      .replacingOccurrences(of: "x", with: "")
             
-            // Compare: if bill has only 2 digits (SBI Card), compare last 2; otherwise compare last 4
-            let digitsToCompare = min(billCardDigits.count, 4)
-            let billSuffix = String(billCardDigits.suffix(digitsToCompare))
-            let accountSuffix = String(last4Digits.suffix(digitsToCompare))
+            // Special handling for HDFC duplicate statements that show ****0000
+            let isHDFCDuplicateStatement = billCardDigits == "0000" && accountMetadata["bankName"]?.contains("HDFC") == true
             
-            if billSuffix != accountSuffix {
-                print("DEBUG: ❌ Skipping bill for card ****\(billSuffix) - does not match account card ****\(accountSuffix)")
-                return nil
+            // For HDFC cards, also accept bills that match the account card number OR are duplicate statements
+            let isHDFCCard = accountMetadata["bankName"]?.contains("HDFC") == true
+            
+            if isHDFCDuplicateStatement {
+                print("DEBUG: ✅ Processing HDFC duplicate statement (****0000) for account ****\(last4Digits)")
+            } else if isHDFCCard && billCardDigits.contains(last4Digits) {
+                print("DEBUG: ✅ Processing HDFC statement (****\(billCardDigits)) for account ****\(last4Digits)")
+            } else if isHDFCCard {
+                // For HDFC, accept ANY bill since they use different formats
+                print("DEBUG: ✅ Processing HDFC statement (any format) for HDFC account ****\(last4Digits)")
             } else {
-                print("DEBUG: ✅ Bill card ****\(billSuffix) matches account card ****\(accountSuffix)")
+                // Compare: if bill has only 2 digits (SBI Card), compare last 2; otherwise compare last 4
+                let digitsToCompare = min(billCardDigits.count, 4)
+                let billSuffix = String(billCardDigits.suffix(digitsToCompare))
+                let accountSuffix = String(last4Digits.suffix(digitsToCompare))
+                
+                print("DEBUG: 🔍 Card matching details:")
+                print("DEBUG: 🔍 Bill card digits: '\(billCardDigits)' (length: \(billCardDigits.count))")
+                print("DEBUG: 🔍 Account last 4: '\(last4Digits)'")
+                print("DEBUG: 🔍 Digits to compare: \(digitsToCompare)")
+                print("DEBUG: 🔍 Bill suffix: '\(billSuffix)'")
+                print("DEBUG: 🔍 Account suffix: '\(accountSuffix)'")
+                
+                if billSuffix != accountSuffix {
+                    print("DEBUG: ❌ Skipping bill for card ****\(billSuffix) - does not match account card ****\(accountSuffix)")
+                    return nil
+                } else {
+                    print("DEBUG: ✅ Bill card ****\(billSuffix) matches account card ****\(accountSuffix)")
+                }
             }
         }
         
@@ -394,19 +585,112 @@ class CreditCardBillFetcher {
             )
         }
         
-        return CreditCardBill(
+        // Calculate bill amount from transactions if PDF has no financial data
+        let calculatedAmount: Double
+        if billInfo.dueAmount > 0 {
+            calculatedAmount = billInfo.dueAmount
+        } else {
+            // For HDFC duplicate statements, calculate from transactions
+            let debitTransactions = transactions.filter { $0.amount > 0 && !$0.description.contains("CREDIT") }
+            calculatedAmount = debitTransactions.reduce(0) { $0 + $1.amount }
+            print("DEBUG: 💰 Calculated bill amount from transactions: ₹\(calculatedAmount) (PDF had ₹0)")
+        }
+        
+        let bill = CreditCardBill(
             cardAccountId: account.id!,
             statementDate: billInfo.statementDate,
             dueDate: billInfo.dueDate,
-            totalAmount: billInfo.dueAmount,
-            minimumDue: billInfo.dueAmount * 0.05, // 5% minimum
+            totalAmount: calculatedAmount,
+            minimumDue: calculatedAmount * 0.05, // 5% minimum
             availableLimit: billInfo.availableLimit ?? 0,
             creditLimit: billInfo.creditLimit ?? 0,
-            currentUsage: billInfo.currentUsage ?? billInfo.totalAmount,
+            currentUsage: billInfo.currentUsage ?? calculatedAmount,
             isPaid: false,
             pdfFileName: url.lastPathComponent,
             transactions: transactions
         )
+        
+        print("DEBUG: 🎯 Created bill with Account ID: \(account.id!) for card ****\(billInfo.cardNumber.suffix(4))")
+        return bill
     }
     
+    // Extract financial data from HDFC email content
+    private func extractFinancialDataFromEmail(email: EmailMessage) -> (totalDue: Double, minimumDue: Double, dueDate: Date?)? {
+        let bodyText = email.body?.content ?? ""
+        let bodyPreview = email.bodyPreview ?? ""
+        let emailContent = bodyPreview + " " + bodyText
+        
+        // Extract total amount due
+        var totalDue: Double = 0
+        let totalDuePatterns = [
+            #"Total amount\s*due[^\d]*([\d,]+\.?\d*)"#,
+            #"Total Amount Due[^\d]*([\d,]+\.?\d*)"#,
+            #"Amount Due[^\d]*([\d,]+\.?\d*)"#
+        ]
+        
+        for pattern in totalDuePatterns {
+            if let match = emailContent.range(of: pattern, options: [String.CompareOptions.regularExpression, String.CompareOptions.caseInsensitive]) {
+                let matchText = String(emailContent[match])
+                let numbers = matchText.replacingOccurrences(of: ",", with: "")
+                if let extracted = Double(numbers.components(separatedBy: CharacterSet.decimalDigits.inverted).joined().prefix(10)) {
+                    totalDue = extracted
+                    print("DEBUG: 📧 Extracted total due from email: ₹\(totalDue)")
+                    break
+                }
+            }
+        }
+        
+        // Extract minimum amount due
+        var minimumDue: Double = 0
+        let minimumDuePatterns = [
+            #"Minimum amount\s*due[^\d]*([\d,]+\.?\d*)"#,
+            #"Minimum Due[^\d]*([\d,]+\.?\d*)"#,
+            #"Min\. Due[^\d]*([\d,]+\.?\d*)"#
+        ]
+        
+        for pattern in minimumDuePatterns {
+            if let match = emailContent.range(of: pattern, options: [String.CompareOptions.regularExpression, String.CompareOptions.caseInsensitive]) {
+                let matchText = String(emailContent[match])
+                let numbers = matchText.replacingOccurrences(of: ",", with: "")
+                if let extracted = Double(numbers.components(separatedBy: CharacterSet.decimalDigits.inverted).joined().prefix(10)) {
+                    minimumDue = extracted
+                    print("DEBUG: 📧 Extracted minimum due from email: ₹\(minimumDue)")
+                    break
+                }
+            }
+        }
+        
+        // Extract due date
+        var dueDate: Date?
+        let dueDatePatterns = [
+            #"Payment due date[^\d]*(\d{2}-\d{2}-\d{4})"#,
+            #"Due date[^\d]*(\d{2}-\d{2}-\d{4})"#,
+            #"(\d{2}-\d{2}-\d{4})"#
+        ]
+        
+        for pattern in dueDatePatterns {
+            if let match = emailContent.range(of: pattern, options: [String.CompareOptions.regularExpression, String.CompareOptions.caseInsensitive]) {
+                let matchText = String(emailContent[match])
+                let dateFormatter = DateFormatter()
+                dateFormatter.dateFormat = "dd-MM-yyyy"
+                
+                // Extract just the date part
+                if let dateMatch = matchText.range(of: #"\d{2}-\d{2}-\d{4}"#, options: [String.CompareOptions.regularExpression]) {
+                    let dateString = String(matchText[dateMatch])
+                    if let parsedDate = dateFormatter.date(from: dateString) {
+                        dueDate = parsedDate
+                        print("DEBUG: 📧 Extracted due date from email: \(parsedDate)")
+                        break
+                    }
+                }
+            }
+        }
+        
+        // Return data if we found at least the amounts
+        if totalDue > 0 || minimumDue > 0 {
+            return (totalDue: totalDue, minimumDue: minimumDue, dueDate: dueDate)
+        }
+        
+        return nil
+    }
 }

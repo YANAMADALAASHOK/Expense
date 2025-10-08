@@ -76,6 +76,138 @@ struct AddCreditCardView: View {
                     }
                 }
                 
+                // Card Number Section
+                Section("Card Number") {
+                    HStack(spacing: 8) {
+                        TextField("0000", text: $cardSection1)
+                            .keyboardType(.numberPad)
+                            .multilineTextAlignment(.center)
+                            .focused($focusedField, equals: .cardSection1)
+                            .onChange(of: cardSection1) { oldValue, newValue in
+                                let filtered = newValue.filter { $0.isNumber }
+                                if filtered.count > 4 {
+                                    cardSection1 = String(filtered.prefix(4))
+                                } else {
+                                    cardSection1 = filtered
+                                }
+                                // Auto-navigate to next field when 4 digits entered
+                                if cardSection1.count == 4 {
+                                    focusedField = .cardSection2
+                                }
+                            }
+                        
+                        Text("-")
+                            .foregroundColor(.secondary)
+                        
+                        TextField("0000", text: $cardSection2)
+                            .keyboardType(.numberPad)
+                            .multilineTextAlignment(.center)
+                            .focused($focusedField, equals: .cardSection2)
+                            .onChange(of: cardSection2) { oldValue, newValue in
+                                let filtered = newValue.filter { $0.isNumber }
+                                if filtered.count > 4 {
+                                    cardSection2 = String(filtered.prefix(4))
+                                } else {
+                                    cardSection2 = filtered
+                                }
+                                // Auto-navigate to next field when 4 digits entered
+                                if cardSection2.count == 4 {
+                                    focusedField = .cardSection3
+                                }
+                            }
+                        
+                        Text("-")
+                            .foregroundColor(.secondary)
+                        
+                        TextField("0000", text: $cardSection3)
+                            .keyboardType(.numberPad)
+                            .multilineTextAlignment(.center)
+                            .focused($focusedField, equals: .cardSection3)
+                            .onChange(of: cardSection3) { oldValue, newValue in
+                                let filtered = newValue.filter { $0.isNumber }
+                                if filtered.count > 4 {
+                                    cardSection3 = String(filtered.prefix(4))
+                                } else {
+                                    cardSection3 = filtered
+                                }
+                                // Auto-navigate to next field when 4 digits entered
+                                if cardSection3.count == 4 {
+                                    focusedField = .cardSection4
+                                }
+                            }
+                        
+                        Text("-")
+                            .foregroundColor(.secondary)
+                        
+                        TextField("0000", text: $cardSection4)
+                            .keyboardType(.numberPad)
+                            .multilineTextAlignment(.center)
+                            .focused($focusedField, equals: .cardSection4)
+                            .onChange(of: cardSection4) { oldValue, newValue in
+                                let filtered = newValue.filter { $0.isNumber }
+                                if filtered.count > 4 {
+                                    cardSection4 = String(filtered.prefix(4))
+                                } else {
+                                    cardSection4 = filtered
+                                }
+                                // Auto-navigate to expiry month when 4 digits entered
+                                if cardSection4.count == 4 {
+                                    focusedField = .expiryMonth
+                                }
+                            }
+                    }
+                    .font(.system(.body, design: .monospaced))
+                }
+                
+                // Expiry Date Section
+                Section("Expiry Date") {
+                    HStack {
+                        TextField("MM", text: $expiryMonth)
+                            .keyboardType(.numberPad)
+                            .multilineTextAlignment(.center)
+                            .frame(width: 50)
+                            .focused($focusedField, equals: .expiryMonth)
+                            .onChange(of: expiryMonth) { oldValue, newValue in
+                                let filtered = newValue.filter { $0.isNumber }
+                                if filtered.count > 2 {
+                                    expiryMonth = String(filtered.prefix(2))
+                                } else {
+                                    expiryMonth = filtered
+                                }
+                                // Auto-navigate to year when 2 digits entered
+                                if expiryMonth.count == 2 {
+                                    focusedField = .expiryYear
+                                }
+                            }
+                        
+                        Text("/")
+                            .foregroundColor(.secondary)
+                        
+                        TextField("YY", text: $expiryYear)
+                            .keyboardType(.numberPad)
+                            .multilineTextAlignment(.center)
+                            .frame(width: 50)
+                            .focused($focusedField, equals: .expiryYear)
+                            .onChange(of: expiryYear) { oldValue, newValue in
+                                let filtered = newValue.filter { $0.isNumber }
+                                if filtered.count > 2 {
+                                    expiryYear = String(filtered.prefix(2))
+                                } else {
+                                    expiryYear = filtered
+                                }
+                                // Auto-navigate to CVV when 2 digits entered
+                                if expiryYear.count == 2 {
+                                    focusedField = .cvv
+                                }
+                            }
+                        
+                        Spacer()
+                        
+                        Text("Month / Year")
+                            .foregroundColor(.secondary)
+                    }
+                }
+                
                 Section("Card Security") {
                     HStack {
                         SecureField("CVV", text: $cvv)

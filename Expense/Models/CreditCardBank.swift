@@ -70,4 +70,33 @@ enum CreditCardBank: String, CaseIterable {
             ]
         }
     }
+    
+    // Group banks for processing
+    var bankGroup: String {
+        switch self {
+        case .axis: return "AXIS"
+        case .icici: return "ICICI"
+        case .hdfc: return "HDFC"
+        case .sbi: return "SBI"
+        case .kotak: return "KOTAK"
+        }
+    }
+    
+    // Check if this is an HDFC bank
+    var isHDFC: Bool {
+        return self == .hdfc
+    }
+    
+    // Get all email addresses for this bank (HDFC has multiple)
+    var emailAddresses: [String] {
+        switch self {
+        case .hdfc:
+            return [
+                "Emailstatements.cards@hdfcbank.net",
+                "InstaEmailstatements.cards@hdfcbank.net"
+            ]
+        default:
+            return [self.rawValue]
+        }
+    }
 }

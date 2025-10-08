@@ -340,10 +340,13 @@ class ExpenseViewModel: ObservableObject {
             // Start timer for automatic interest calculation
     startInterestCalculationTimer()
     
-    // Load initial data
+    // Load initial data first
     fetchAccounts()
     fetchRecentTransactions()
     fetchBudgets()
+    
+    // Clean up orphaned bills after accounts are loaded
+    cleanupOrphanedBills()
     
     // Train AI categorization with existing data
     AICategorizationManager.shared.trainWithUserData(transactions: recentTransactions)
@@ -599,6 +602,38 @@ class ExpenseViewModel: ObservableObject {
         saveContext()
     }
     
+    // Clean up orphaned bills (bills for deleted credit card accounts)
+    private func cleanupOrphanedBills() {
+        let creditCardAccounts = accounts.filter { $0.accountType == AccountType.creditCard.rawValue }
+        let validAccountIds = Set(creditCardAccounts.compactMap { $0.id })
+        
+        print("DEBUG: 🧹 Checking for orphaned bills - \(creditCardAccounts.count) valid credit card accounts")
+        CreditCardBillStorage.shared.cleanupOrphanedBills(validAccountIds: validAccountIds)
+    }
+    
+    // Public function to manually clean up orphaned bills
+    func manualCleanupOrphanedBills() {
+        cleanupOrphanedBills()
+    }
+    
+    // Public function to clear all bills (for debugging)
+    func clearAllBills() {
+        CreditCardBillStorage.shared.clearAllBills()
+        
+        // Reset statement date tags for all credit card accounts
+        let creditCardAccounts = accounts.filter { $0.accountType == AccountType.creditCard.rawValue }
+        
+        for account in creditCardAccounts {
+            var metadata = account.metadataDictionary
+            metadata.removeValue(forKey: "lastBillLoadDate")
+            metadata.removeValue(forKey: "lastStatementDate")
+            account.metadataDictionary = metadata
+        }
+        
+        saveContext()
+        print("DEBUG: 🧹 Reset statement date tags for \(creditCardAccounts.count) credit card accounts")
+    }
+    
     deinit {
         NotificationCenter.default.removeObserver(self)
     }
@@ -836,6 +871,19 @@ class ExpenseViewModel: ObservableObject {
                     // First delete locally so export doesn't include deleted account
                     await withCheckedContinuation { continuation in
                         viewContext.performAndWait {
+                            // Clean up bills for this credit card account before deleting
+                            if account.accountType == AccountType.creditCard.rawValue, let accountId = account.id {
+                                CreditCardBillStorage.shared.saveBills([], for: accountId)
+                                
+                                // Reset load date tags
+                                var metadata = account.metadataDictionary
+                                metadata.removeValue(forKey: "lastBillLoadDate")
+                                metadata.removeValue(forKey: "lastStatementDate")
+                                account.metadataDictionary = metadata
+                                
+                                print("DEBUG: 🧹 Cleaned up bills and reset statement date tags for deleted credit card: \(accountName)")
+                            }
+                            
                             viewContext.delete(account)
                             try? viewContext.save()
                             continuation.resume()
@@ -868,6 +916,19 @@ class ExpenseViewModel: ObservableObject {
                 // Delete locally even if cloud fails
                 await withCheckedContinuation { continuation in
                     viewContext.performAndWait {
+                        // Clean up bills for this credit card account before deleting
+                        if account.accountType == AccountType.creditCard.rawValue, let accountId = account.id {
+                            CreditCardBillStorage.shared.saveBills([], for: accountId)
+                            
+                            // Reset load date tags
+                            var metadata = account.metadataDictionary
+                            metadata.removeValue(forKey: "lastBillLoadDate")
+                            metadata.removeValue(forKey: "lastStatementDate")
+                            account.metadataDictionary = metadata
+                            
+                            print("DEBUG: 🧹 Cleaned up bills and reset statement date tags for deleted credit card: \(accountName)")
+                        }
+                        
                         viewContext.delete(account)
                         try? viewContext.save()
                         continuation.resume()

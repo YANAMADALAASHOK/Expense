@@ -27,7 +27,7 @@ struct CreditCardRow: View {
     }
     
     private var currentUsage: Double {
-        abs(account.balance)
+        Double(metadata["currentUsage"] ?? "0") ?? abs(account.balance)
     }
     
     private var availableLimit: Double {

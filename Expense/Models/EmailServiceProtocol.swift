@@ -8,7 +8,7 @@ protocol EmailServiceProtocol {
 }
 
 // Unified email message structure
-struct EmailMessage {
+struct EmailMessage: Hashable {
     let id: String
     let receivedDateTime: String
     let subject: String?
@@ -16,15 +16,15 @@ struct EmailMessage {
     let body: EmailBody?
     let from: EmailFrom?
     
-    struct EmailBody {
+    struct EmailBody: Hashable {
         let content: String?
     }
     
-    struct EmailFrom {
+    struct EmailFrom: Hashable {
         let emailAddress: EmailAddress?
     }
     
-    struct EmailAddress {
+    struct EmailAddress: Hashable {
         let address: String?
         let name: String?
     }

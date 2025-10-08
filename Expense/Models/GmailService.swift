@@ -68,13 +68,17 @@ final class GmailService {
     private init() {}
 
     var isSignedIn: Bool {
-        (try? KeychainHelper.shared.getString(for: "GmailRefreshToken")) != nil
+        guard let token = try? KeychainHelper.shared.getString(for: "GmailRefreshToken") else {
+            return false
+        }
+        return !token.isEmpty
     }
 
     func signOut() {
-        try? KeychainHelper.shared.setString("", for: "GmailRefreshToken")
-        try? KeychainHelper.shared.setString("", for: "GmailAccessToken")
-        try? KeychainHelper.shared.setString("0", for: "GmailAccessTokenExpiry")
+        try? KeychainHelper.shared.deleteString(for: "GmailRefreshToken")
+        try? KeychainHelper.shared.deleteString(for: "GmailAccessToken")
+        try? KeychainHelper.shared.deleteString(for: "GmailAccessTokenExpiry")
+        print("DEBUG: 🔓 Gmail tokens deleted from Keychain")
     }
 
     // MARK: - Fetch
@@ -93,6 +97,7 @@ final class GmailService {
     }
     
     func fetchAttachments(for messageId: String) async throws -> [GmailAttachment] {
+        print("DEBUG: 🚀 Gmail fetchAttachments called for messageId: \(messageId)")
         return try await withCheckedThrowingContinuation { continuation in
             Task { @MainActor in
                 GmailOAuthManager.shared.getValidAccessToken { token in
@@ -106,6 +111,10 @@ final class GmailService {
                 request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
                 
                 URLSession.shared.dataTask(with: request) { data, response, error in
+                    if let httpResponse = response as? HTTPURLResponse {
+                        print("DEBUG: Gmail API status code: \(httpResponse.statusCode)")
+                    }
+                    
                     if let error = error {
                         continuation.resume(throwing: error)
                         return
@@ -116,11 +125,23 @@ final class GmailService {
                         return
                     }
                     
+                    // Log the raw response for debugging
+                    if let responseString = String(data: data, encoding: .utf8) {
+                        print("DEBUG: Gmail API response: \(responseString.prefix(500))...")
+                    }
+                    
                     do {
                         let message = try JSONDecoder().decode(GmailMessageFull.self, from: data)
+                        print("DEBUG: Gmail message payload parts count: \(message.payload?.parts?.count ?? 0)")
+                        if let parts = message.payload?.parts {
+                            for (index, part) in parts.enumerated() {
+                                print("DEBUG: Gmail part \(index): filename='\(part.filename ?? "none")', mimeType='\(part.mimeType ?? "none")', size=\(part.body?.size ?? 0)")
+                            }
+                        }
                         let attachments = self.extractAttachments(from: message)
                         continuation.resume(returning: attachments)
                     } catch {
+                        print("DEBUG: Gmail attachment parsing error: \(error)")
                         continuation.resume(throwing: error)
                     }
                 }.resume()

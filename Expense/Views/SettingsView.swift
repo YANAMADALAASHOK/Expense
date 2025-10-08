@@ -97,16 +97,28 @@ struct ManageCategoriesView: View {
     }
 }
 
+enum ImportType {
+    case data, axis
+}
+
 struct SettingsView: View {
     @EnvironmentObject var authManager: AuthenticationManager
     @EnvironmentObject var expenseViewModel: ExpenseViewModel
     @State private var showingCurrencyPicker = false
     @State private var showingCustomCategorySheet = false
     @State private var showingExportSheet = false
-    @State private var showingImportPicker = false
+    @State private var showingImportPicker = false {
+        didSet {
+            print("DEBUG: showingImportPicker changed to: \(showingImportPicker)")
+        }
+    }
+    @State private var currentImportType: ImportType = .data {
+        didSet {
+            print("DEBUG: currentImportType changed to: \(currentImportType)")
+        }
+    }
     @State private var showingGrowwImportPicker = false
     @State private var isImportingGroww = false
-    @State private var showingAxisImportPicker = false
     @State private var isImportingAxis = false
     @State private var showingAxisAccountPicker = false
     @State private var pendingAxisURL: URL?
@@ -117,6 +129,19 @@ struct SettingsView: View {
     @State private var isCheckingStatus = false
     @State private var showingError = false
     @State private var errorMessage = ""
+    @State private var showingSuccess = false
+    @State private var successMessage = ""
+    
+    // Computed property for export document
+    private var exportDocument: ExpenseExportDocument? {
+        do {
+            let data = try expenseViewModel.exportData()
+            return ExpenseExportDocument(data: data)
+        } catch {
+            print("Export error: \(error)")
+            return nil
+        }
+    }
     @State private var showingDeleteConfirmation = false
     @State private var isDeletingData = false
     @State private var selectedBank: CreditCardBank = .axis
@@ -204,6 +229,8 @@ struct SettingsView: View {
                     }
                     
                     Button(action: {
+                        print("DEBUG: Import Data button tapped")
+                        currentImportType = .data
                         showingImportPicker = true
                     }) {
                         Label("Import Data", systemImage: "square.and.arrow.down")
@@ -218,7 +245,8 @@ struct SettingsView: View {
                         }
                     }
                     Button(action: {
-                        showingAxisImportPicker = true
+                        currentImportType = .axis
+                        showingImportPicker = true
                     }) {
                         HStack {
                             Label("Import Axis Bank Statement (CSV)", systemImage: "doc.text")
@@ -305,9 +333,9 @@ struct SettingsView: View {
             }
             .fileExporter(
                 isPresented: $showingExportSheet,
-                document: ExpenseDataDocument(viewModel: expenseViewModel),
+                document: exportDocument,
                 contentType: .json,
-                defaultFilename: "ExpenseData.json"
+                defaultFilename: "ExpenseData_\(DateFormatter.filenameDateFormatter.string(from: Date())).json"
             ) { result in
                 switch result {
                 case .success(let url):
@@ -319,9 +347,10 @@ struct SettingsView: View {
             }
             .fileImporter(
                 isPresented: $showingImportPicker,
-                allowedContentTypes: [.json],
+                allowedContentTypes: currentImportType == .data ? [.json] : [.commaSeparatedText],
                 allowsMultipleSelection: false
             ) { result in
+                print("DEBUG: fileImporter callback triggered with result: \(result), type: \(currentImportType)")
                 switch result {
                 case .success(let urls):
                     guard let url = urls.first else {
@@ -340,13 +369,22 @@ struct SettingsView: View {
                         url.stopAccessingSecurityScopedResource()
                     }
                     
-                    do {
-                        let data = try Data(contentsOf: url)
-                        try expenseViewModel.importData(from: data)
-                        print("Data imported successfully")
-                    } catch {
-                        errorMessage = "Import failed: \(error.localizedDescription)"
-                        showingError = true
+                    switch currentImportType {
+                    case .data:
+                        do {
+                            let data = try Data(contentsOf: url)
+                            try expenseViewModel.importData(from: data)
+                            print("Data imported successfully")
+                            successMessage = "Data imported successfully! Please restart the app to see all changes."
+                            showingSuccess = true
+                        } catch {
+                            errorMessage = "Import failed: \(error.localizedDescription)"
+                            showingError = true
+                        }
+                    case .axis:
+                        // Handle Axis CSV import
+                        pendingAxisURL = url
+                        showingAxisAccountPicker = true
                     }
                     
                 case .failure(let error):
@@ -386,25 +424,6 @@ struct SettingsView: View {
                     showingGrowwImportPicker = false
                 })
             }
-            .fileImporter(
-                isPresented: $showingAxisImportPicker,
-                allowedContentTypes: [.commaSeparatedText],
-                allowsMultipleSelection: false
-            ) { result in
-                switch result {
-                case .success(let urls):
-                    guard let url = urls.first else {
-                        errorMessage = "No file selected for Axis import"
-                        showingError = true
-                        return
-                    }
-                    pendingAxisURL = url
-                    showingAxisAccountPicker = true
-                case .failure(let error):
-                    errorMessage = "Axis Import failed: \(error.localizedDescription)"
-                    showingError = true
-                }
-            }
             .sheet(isPresented: $showingAxisAccountPicker) {
                 if let url = pendingAxisURL {
                     NavigationView {
@@ -433,6 +452,11 @@ struct SettingsView: View {
                 Button("OK", role: .cancel) { }
             } message: {
                 Text(errorMessage)
+            }
+            .alert("Success", isPresented: $showingSuccess) {
+                Button("OK", role: .cancel) { }
+            } message: {
+                Text(successMessage)
             }
             .confirmationDialog(
                 "Delete All Data",
@@ -556,23 +580,32 @@ struct ProfileButtonView: View {
 }
 
 
-struct ExpenseDataDocument: FileDocument {
-    let viewModel: ExpenseViewModel
+
+extension DateFormatter {
+    static let filenameDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+        return formatter
+    }()
+}
+
+struct ExpenseExportDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.json] }
     
-    nonisolated static var readableContentTypes: [UTType] { [.json] }
+    let data: Data
     
-    init(viewModel: ExpenseViewModel) {
-        self.viewModel = viewModel
+    init(data: Data) {
+        self.data = data
     }
     
-    nonisolated init(configuration: ReadConfiguration) throws {
-        // This is a placeholder - FileDocument protocol requires this but we won't use it
-        fatalError("Reading ExpenseDataDocument from file is not supported")
+    init(configuration: ReadConfiguration) throws {
+        guard let data = configuration.file.regularFileContents else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        self.data = data
     }
     
-    nonisolated func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
-        // This needs to be synchronous for FileDocument protocol
-        // We'll need to export data synchronously
-        fatalError("Use the main viewModel export functionality instead")
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        return FileWrapper(regularFileWithContents: data)
     }
 } 
